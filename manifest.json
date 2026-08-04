@@ -1,0 +1,68 @@
+[
+  {
+    "guid": "a8ab0fed-cac9-406d-b98b-58161bf970b8",
+    "name": "Look it up",
+    "description": "Scans subtitles for names and shows short Wikipedia explanations during playback.",
+    "overview": "Timed Wikipedia popups from subtitle mentions",
+    "owner": "mohamed-sadek",
+    "category": "General",
+    "versions": [
+      {
+        "version": "1.0.6.0",
+        "changelog": "Reduce ALL-CAPS noise; prefer real names; reject disambiguation pages; 2s popup default",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.0.6.0/look-it-up_1.0.6.0.zip",
+        "checksum": "24a5dbae327b5e624aec71c15d5d6dc0",
+        "timestamp": "2026-08-04T21:35:00Z"
+      },
+      {
+        "version": "1.0.5.0",
+        "changelog": "Extract embedded text subtitles so names like Jon Voight appear",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.0.5.0/look-it-up_1.0.5.0.zip",
+        "checksum": "efad8cdc5d75538f1d563d5eb98f8b42",
+        "timestamp": "2026-08-04T17:20:00Z"
+      },
+      {
+        "version": "1.0.4.0",
+        "changelog": "Built for Jellyfin 10.11",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.0.4.0/look-it-up_1.0.4.0.zip",
+        "checksum": "6c6a69dcbc95a8e606e5249941820551",
+        "timestamp": "2026-08-04T17:10:00Z"
+      },
+      {
+        "version": "1.0.3.0",
+        "changelog": "Fix API 500s",
+        "targetAbi": "10.9.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.0.3.0/look-it-up_1.0.3.0.zip",
+        "checksum": "e4732c8067b6848ef9a9561b87ee161a",
+        "timestamp": "2026-08-04T17:05:00Z"
+      },
+      {
+        "version": "1.0.2.0",
+        "changelog": "Fix item detection",
+        "targetAbi": "10.9.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.0.2.0/look-it-up_1.0.2.0.zip",
+        "checksum": "69443b2041f10e6a88ef4d97ec2b6dcd",
+        "timestamp": "2026-08-04T17:00:00Z"
+      },
+      {
+        "version": "1.0.1.0",
+        "changelog": "Popup visibility fixes",
+        "targetAbi": "10.9.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.0.1.0/look-it-up_1.0.1.0.zip",
+        "checksum": "58bd9d07404ac8148bae1a51cb5ca105",
+        "timestamp": "2026-08-04T00:00:00Z"
+      },
+      {
+        "version": "1.0.0.0",
+        "changelog": "Initial release",
+        "targetAbi": "10.9.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.0.0.0/look-it-up_1.0.0.0.zip",
+        "checksum": "a0589fa1fb5b881d71d47c8d85ef6a3f",
+        "timestamp": "2026-08-04T00:00:00Z"
+      }
+    ]
+  }
+]

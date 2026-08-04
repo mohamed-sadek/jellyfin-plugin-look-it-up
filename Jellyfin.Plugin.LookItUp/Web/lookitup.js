@@ -1,11 +1,15 @@
 (function () {
   'use strict';
 
-  const CLIENT_VERSION = '1.0.6.1';
+  const CLIENT_VERSION = '1.0.6.2';
   const STYLE_ID = 'lookitup-styles';
   const POPUP_ID = 'lookitup-popup';
   const POLL_MS = 200;
   const DEFAULT_POPUP_MS = 2000;
+  const JUNK_TERMS = new Set([
+    'all', 'new', 'seem', 'consumer', 'yeah', 'heh', 'done', 'away', 'let', 'now',
+    'take', 'lie', 'thud', 'street', 'pop', 'car', 'limited', 'tim', 'vic', 'mom'
+  ]);
 
   let annotations = [];
   let currentItemId = null;
@@ -383,6 +387,31 @@
     return null;
   }
 
+  function isJunkAnnotation(a) {
+    const term = (a.term || '').trim();
+    const summary = (a.summary || '').toLowerCase();
+    if (!term) {
+      return true;
+    }
+    if (JUNK_TERMS.has(term.toLowerCase())) {
+      return true;
+    }
+    if (term.includes('(disambiguation)') || /disambiguation/i.test(term)) {
+      return true;
+    }
+    if (summary.includes('may refer to') || summary.includes('can refer to')) {
+      return true;
+    }
+    if (/^list of /i.test(term)) {
+      return true;
+    }
+    // Single ALL-CAPS / tiny filler
+    if (!term.includes(' ') && term.length <= 3 && term === term.toUpperCase()) {
+      return true;
+    }
+    return false;
+  }
+
   function normalizeAnnotations(list) {
     return (list || []).map((a) => ({
       term: readProp(a, 'term', 'Term') || '',
@@ -390,7 +419,13 @@
       url: readProp(a, 'url', 'Url') || null,
       startMs: Number(readProp(a, 'startMs', 'StartMs') || 0),
       endMs: Number(readProp(a, 'endMs', 'EndMs') || 0)
-    })).filter((a) => a.term && Number.isFinite(a.startMs) && Number.isFinite(a.endMs) && a.endMs >= a.startMs);
+    })).filter((a) =>
+      a.term &&
+      Number.isFinite(a.startMs) &&
+      Number.isFinite(a.endMs) &&
+      a.endMs >= a.startMs &&
+      !isJunkAnnotation(a)
+    );
   }
 
   async function loadAnnotations(itemId) {
@@ -433,9 +468,12 @@
         return;
       }
 
-      popupDurationMs = Number(data.popupDurationMs || data.PopupDurationMs || DEFAULT_POPUP_MS);
-      annotations = normalizeAnnotations(data.annotations || data.Annotations || []);
-      console.info('[Look it up] loaded', annotations.length, 'annotations for', itemId);
+      // Hard-cap at 2s even if server config is still 5000.
+      const rawDuration = Number(data.popupDurationMs || data.PopupDurationMs || DEFAULT_POPUP_MS);
+      popupDurationMs = Math.min(DEFAULT_POPUP_MS, Math.max(1000, rawDuration || DEFAULT_POPUP_MS));
+      const rawList = data.annotations || data.Annotations || [];
+      annotations = normalizeAnnotations(rawList);
+      console.info('[Look it up] loaded', annotations.length, 'annotations for', itemId, '(from', rawList.length, 'raw, durationMs', popupDurationMs + ')');
       console.info(
         '[Look it up] names ready',
         annotations.map((a) => ({
