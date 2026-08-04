@@ -23,10 +23,10 @@ public class PluginConfiguration : BasePluginConfiguration
         PrepareMovies = true;
         PrepareEpisodes = true;
         SkipAlreadyPrepared = true;
-        AiProvider = "OpenAI";
+        AiProvider = "Groq";
         AiApiKey = string.Empty;
-        AiModel = "gpt-4o-mini";
-        AiBaseUrl = "https://api.openai.com/v1";
+        AiModel = "llama-3.1-8b-instant";
+        AiBaseUrl = "https://api.groq.com/openai/v1";
     }
 
     /// <summary>Gets or sets whether Look it up is enabled.</summary>
@@ -63,16 +63,16 @@ public class PluginConfiguration : BasePluginConfiguration
     public bool SkipAlreadyPrepared { get; set; }
 
     /// <summary>
-    /// Gets or sets AI provider: <c>OpenAI</c> (OpenAI-compatible chat API) or <c>None</c> (legacy Wikipedia heuristics).
+    /// Gets or sets AI provider: <c>Groq</c>, <c>OpenAI</c>, <c>OpenRouter</c>, <c>Ollama</c>, or <c>None</c> (legacy Wikipedia).
     /// </summary>
     public string AiProvider { get; set; }
 
     /// <summary>Gets or sets the AI API key (stored in plugin config).</summary>
     public string AiApiKey { get; set; }
 
-    /// <summary>Gets or sets the chat model id (e.g. gpt-4o-mini).</summary>
+    /// <summary>Gets or sets the chat model id (e.g. llama-3.1-8b-instant, gpt-4o-mini).</summary>
     public string AiModel { get; set; }
 
-    /// <summary>Gets or sets the OpenAI-compatible base URL (e.g. https://api.openai.com/v1).</summary>
+    /// <summary>Gets or sets the OpenAI-compatible base URL (e.g. https://api.groq.com/openai/v1).</summary>
     public string AiBaseUrl { get; set; }
 }

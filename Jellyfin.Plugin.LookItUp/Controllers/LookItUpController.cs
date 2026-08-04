@@ -209,7 +209,12 @@ public class LookItUpController : ControllerBase
                 ? null
                 : OpenAiCompatibleEntityExtractor.ResolveBaseUrl(
                     config!,
-                    string.IsNullOrWhiteSpace(config?.AiModel) ? "gpt-4o-mini" : config!.AiModel),
+                    string.IsNullOrWhiteSpace(config?.AiModel)
+                        ? (string.Equals(config?.AiProvider, "Groq", StringComparison.OrdinalIgnoreCase)
+                           || (config?.AiBaseUrl ?? string.Empty).Contains("groq.com", StringComparison.OrdinalIgnoreCase)
+                            ? "llama-3.1-8b-instant"
+                            : "gpt-4o-mini")
+                        : config!.AiModel),
             aiConfigured = !string.IsNullOrWhiteSpace(config?.AiApiKey)
                            && !string.Equals(config?.AiProvider, "None", StringComparison.OrdinalIgnoreCase),
             cacheVersion = _lookItUpService.CacheVersion,

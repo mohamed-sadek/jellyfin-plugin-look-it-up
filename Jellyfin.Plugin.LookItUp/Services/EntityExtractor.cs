@@ -46,7 +46,7 @@ public partial class EntityExtractor : IEntityExtractor
         "Nothing", "Everything", "Anything", "Something", "Someone", "Everyone",
         "Apparently", "Excuse", "Ownership", "Afternoon", "Watch", "Eve",
         "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
-        "Dentist", "Taxi", "Jon", "Dallas"
+        "Dentist", "Taxi", "Dallas"
     };
 
     /// <summary>

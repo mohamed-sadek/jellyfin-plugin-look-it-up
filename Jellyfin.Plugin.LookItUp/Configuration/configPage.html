@@ -124,16 +124,16 @@
                         <h2 class="sectionTitle">AI extraction</h2>
                     </div>
                     <p>
-                        During <strong>prepare</strong>, timed subtitle lines are sent to an OpenAI-compatible chat model
-                        so it can identify people, places, films, and references <em>in context</em>
-                        (e.g. Jon Voight the actor, not a surname etymology).
+                        During <strong>prepare</strong>, local name candidates are collected from subtitles, then
+                        <strong>one</strong> OpenAI-compatible chat call resolves them <em>in context</em>
+                        (e.g. Jon Voight the actor, not a surname etymology). Prefer Groq
+                        <code>llama-3.1-8b-instant</code> for free-tier speed.
                     </p>
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="txtAiProvider">AI provider</label>
                         <input id="txtAiProvider" type="text" is="emby-input" />
                         <div class="fieldDescription">
-                            <code>OpenAI</code>, <code>Groq</code>, <code>OpenRouter</code>, <code>Ollama</code>, or <code>None</code> (legacy Wikipedia).
-                            For Groq free tier set provider to <code>Groq</code>.
+                            <code>Groq</code> (recommended), <code>OpenAI</code>, <code>OpenRouter</code>, <code>Ollama</code>, or <code>None</code> (legacy Wikipedia).
                         </div>
                     </div>
                     <div class="inputContainer">
@@ -144,7 +144,7 @@
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="txtAiModel">AI model</label>
                         <input id="txtAiModel" type="text" is="emby-input" />
-                        <div class="fieldDescription">Groq example: <code>llama-3.3-70b-versatile</code>. OpenAI: <code>gpt-4o-mini</code>.</div>
+                        <div class="fieldDescription">Recommended Groq: <code>llama-3.1-8b-instant</code> (fast). Optional: <code>llama-3.3-70b-versatile</code>. OpenAI: <code>gpt-4o-mini</code>.</div>
                     </div>
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="txtAiBaseUrl">AI base URL</label>
@@ -152,7 +152,6 @@
                         <div class="fieldDescription">
                             Groq: <code>https://api.groq.com/openai/v1</code>.
                             OpenAI: <code>https://api.openai.com/v1</code>.
-                            Provider <code>Groq</code> always uses the Groq URL even if this field still says OpenAI.
                         </div>
                     </div>
 
@@ -346,11 +345,11 @@
                         document.querySelector('#txtMaxAnnotations').value = config.MaxAnnotationsPerItem;
                         document.querySelector('#txtMinEntityLength').value = config.MinEntityLength;
                         document.querySelector('#txtPopupDuration').value = config.PopupDurationMs;
-                        document.querySelector('#txtAiProvider').value = config.AiProvider || 'OpenAI';
+                        document.querySelector('#txtAiProvider').value = config.AiProvider || 'Groq';
                         document.querySelector('#txtAiApiKey').value = '';
                         document.querySelector('#txtAiApiKey').placeholder = config.AiApiKey ? '(saved — enter new key to replace)' : '(not set)';
-                        document.querySelector('#txtAiModel').value = config.AiModel || 'gpt-4o-mini';
-                        document.querySelector('#txtAiBaseUrl').value = config.AiBaseUrl || 'https://api.openai.com/v1';
+                        document.querySelector('#txtAiModel').value = config.AiModel || 'llama-3.1-8b-instant';
+                        document.querySelector('#txtAiBaseUrl').value = config.AiBaseUrl || 'https://api.groq.com/openai/v1';
                         Dashboard.hideLoadingMsg();
                         refreshPrepareStatus();
                     });
@@ -378,9 +377,9 @@
                         config.MaxAnnotationsPerItem = parseInt(document.querySelector('#txtMaxAnnotations').value, 10);
                         config.MinEntityLength = parseInt(document.querySelector('#txtMinEntityLength').value, 10);
                         config.PopupDurationMs = parseInt(document.querySelector('#txtPopupDuration').value, 10);
-                        config.AiProvider = document.querySelector('#txtAiProvider').value || 'OpenAI';
-                        config.AiModel = document.querySelector('#txtAiModel').value || 'gpt-4o-mini';
-                        config.AiBaseUrl = document.querySelector('#txtAiBaseUrl').value || 'https://api.openai.com/v1';
+                        config.AiProvider = document.querySelector('#txtAiProvider').value || 'Groq';
+                        config.AiModel = document.querySelector('#txtAiModel').value || 'llama-3.1-8b-instant';
+                        config.AiBaseUrl = document.querySelector('#txtAiBaseUrl').value || 'https://api.groq.com/openai/v1';
                         var newKey = document.querySelector('#txtAiApiKey').value;
                         if (newKey) {
                             config.AiApiKey = newKey;
