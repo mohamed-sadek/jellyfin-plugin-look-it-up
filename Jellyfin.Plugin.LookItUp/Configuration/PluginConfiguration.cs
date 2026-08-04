@@ -23,70 +23,56 @@ public class PluginConfiguration : BasePluginConfiguration
         PrepareMovies = true;
         PrepareEpisodes = true;
         SkipAlreadyPrepared = true;
-        AiProvider = "None";
+        AiProvider = "OpenAI";
+        AiApiKey = string.Empty;
+        AiModel = "gpt-4o-mini";
+        AiBaseUrl = "https://api.openai.com/v1";
     }
 
-    /// <summary>
-    /// Gets or sets a value indicating whether Look it up is enabled.
-    /// </summary>
+    /// <summary>Gets or sets whether Look it up is enabled.</summary>
     public bool Enabled { get; set; }
 
-    /// <summary>
-    /// Gets or sets the Wikipedia language code used for lookups (e.g. en, fr, de).
-    /// </summary>
+    /// <summary>Gets or sets Wikipedia language (legacy heuristic mode).</summary>
     public string WikipediaLanguage { get; set; }
 
-    /// <summary>
-    /// Gets or sets the maximum number of annotations stored per media item.
-    /// </summary>
+    /// <summary>Gets or sets max annotations per item.</summary>
     public int MaxAnnotationsPerItem { get; set; }
 
-    /// <summary>
-    /// Gets or sets the minimum character length for a candidate entity name.
-    /// </summary>
+    /// <summary>Gets or sets minimum entity length (legacy heuristic mode).</summary>
     public int MinEntityLength { get; set; }
 
-    /// <summary>
-    /// Gets or sets how long a popup stays visible in milliseconds.
-    /// </summary>
+    /// <summary>Gets or sets popup duration in ms.</summary>
     public int PopupDurationMs { get; set; }
 
-    /// <summary>
-    /// Gets or sets a comma-separated list of preferred subtitle language codes.
-    /// </summary>
+    /// <summary>Gets or sets preferred subtitle language codes.</summary>
     public string PreferredSubtitleLanguages { get; set; }
 
-    /// <summary>
-    /// Gets or sets a value indicating whether playback may trigger an on-demand prepare
-    /// when no precomputed annotations exist. Prefer library prepare instead.
-    /// </summary>
+    /// <summary>Gets or sets whether playback may prepare on demand.</summary>
     public bool ScanOnPlayback { get; set; }
 
-    /// <summary>
-    /// Gets or sets a value indicating whether to also write <c>*.lookitup.json</c>
-    /// sidecars next to media files when the folder is writable.
-    /// </summary>
+    /// <summary>Gets or sets whether to write *.lookitup.json sidecars.</summary>
     public bool WriteSidecarFiles { get; set; }
 
-    /// <summary>
-    /// Gets or sets a value indicating whether library prepare includes movies.
-    /// </summary>
+    /// <summary>Gets or sets whether prepare includes movies.</summary>
     public bool PrepareMovies { get; set; }
 
-    /// <summary>
-    /// Gets or sets a value indicating whether library prepare includes episodes.
-    /// </summary>
+    /// <summary>Gets or sets whether prepare includes episodes.</summary>
     public bool PrepareEpisodes { get; set; }
 
-    /// <summary>
-    /// Gets or sets a value indicating whether library prepare skips items that already
-    /// have a current cache entry.
-    /// </summary>
+    /// <summary>Gets or sets whether prepare skips already-prepared items.</summary>
     public bool SkipAlreadyPrepared { get; set; }
 
     /// <summary>
-    /// Gets or sets the AI provider used during prepare (<c>None</c> for Wikipedia-only).
-    /// Reserved for future enrichment (OpenAI, etc.).
+    /// Gets or sets AI provider: <c>OpenAI</c> (OpenAI-compatible chat API) or <c>None</c> (legacy Wikipedia heuristics).
     /// </summary>
     public string AiProvider { get; set; }
+
+    /// <summary>Gets or sets the AI API key (stored in plugin config).</summary>
+    public string AiApiKey { get; set; }
+
+    /// <summary>Gets or sets the chat model id (e.g. gpt-4o-mini).</summary>
+    public string AiModel { get; set; }
+
+    /// <summary>Gets or sets the OpenAI-compatible base URL (e.g. https://api.openai.com/v1).</summary>
+    public string AiBaseUrl { get; set; }
 }

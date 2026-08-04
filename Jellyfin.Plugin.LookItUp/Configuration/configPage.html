@@ -107,10 +107,33 @@
                         <input id="txtPopupDuration" type="number" is="emby-input" min="1000" max="30000" step="500" />
                     </div>
 
+                    <div class="sectionTitleContainer flex align-items-center" style="margin-top:1.5em;">
+                        <h2 class="sectionTitle">AI extraction</h2>
+                    </div>
+                    <p>
+                        During <strong>prepare</strong>, timed subtitle lines are sent to an OpenAI-compatible chat model
+                        so it can identify people, places, films, and references <em>in context</em>
+                        (e.g. Jon Voight the actor, not a surname etymology).
+                    </p>
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="txtAiProvider">AI provider</label>
                         <input id="txtAiProvider" type="text" is="emby-input" />
-                        <div class="fieldDescription">Reserved for future offline AI enrichment. Use <code>None</code> for Wikipedia-only prepares.</div>
+                        <div class="fieldDescription">Use <code>OpenAI</code> for OpenAI-compatible APIs, or <code>None</code> for legacy Wikipedia heuristics.</div>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="txtAiApiKey">AI API key</label>
+                        <input id="txtAiApiKey" type="password" is="emby-input" autocomplete="off" />
+                        <div class="fieldDescription">Stored in Jellyfin plugin config. Leave blank to keep the existing key when saving.</div>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="txtAiModel">AI model</label>
+                        <input id="txtAiModel" type="text" is="emby-input" />
+                        <div class="fieldDescription">e.g. <code>gpt-4o-mini</code>, <code>gpt-4o</code>, or a gateway model id.</div>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="txtAiBaseUrl">AI base URL</label>
+                        <input id="txtAiBaseUrl" type="text" is="emby-input" />
+                        <div class="fieldDescription">OpenAI-compatible root, e.g. <code>https://api.openai.com/v1</code>.</div>
                     </div>
 
                     <div class="sectionTitleContainer flex align-items-center" style="margin-top:1.5em;">
@@ -234,7 +257,11 @@
                         document.querySelector('#txtMaxAnnotations').value = config.MaxAnnotationsPerItem;
                         document.querySelector('#txtMinEntityLength').value = config.MinEntityLength;
                         document.querySelector('#txtPopupDuration').value = config.PopupDurationMs;
-                        document.querySelector('#txtAiProvider').value = config.AiProvider || 'None';
+                        document.querySelector('#txtAiProvider').value = config.AiProvider || 'OpenAI';
+                        document.querySelector('#txtAiApiKey').value = '';
+                        document.querySelector('#txtAiApiKey').placeholder = config.AiApiKey ? '(saved — enter new key to replace)' : '(not set)';
+                        document.querySelector('#txtAiModel').value = config.AiModel || 'gpt-4o-mini';
+                        document.querySelector('#txtAiBaseUrl').value = config.AiBaseUrl || 'https://api.openai.com/v1';
                         Dashboard.hideLoadingMsg();
                         refreshPrepareStatus();
                     });
@@ -260,7 +287,13 @@
                         config.MaxAnnotationsPerItem = parseInt(document.querySelector('#txtMaxAnnotations').value, 10);
                         config.MinEntityLength = parseInt(document.querySelector('#txtMinEntityLength').value, 10);
                         config.PopupDurationMs = parseInt(document.querySelector('#txtPopupDuration').value, 10);
-                        config.AiProvider = document.querySelector('#txtAiProvider').value || 'None';
+                        config.AiProvider = document.querySelector('#txtAiProvider').value || 'OpenAI';
+                        config.AiModel = document.querySelector('#txtAiModel').value || 'gpt-4o-mini';
+                        config.AiBaseUrl = document.querySelector('#txtAiBaseUrl').value || 'https://api.openai.com/v1';
+                        var newKey = document.querySelector('#txtAiApiKey').value;
+                        if (newKey) {
+                            config.AiApiKey = newKey;
+                        }
                         ApiClient.updatePluginConfiguration(LookItUpConfig.pluginUniqueId, config).then(function (result) {
                             Dashboard.processPluginConfigurationUpdateResult(result);
                         });

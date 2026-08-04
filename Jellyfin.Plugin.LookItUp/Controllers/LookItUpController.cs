@@ -182,6 +182,9 @@ public class LookItUpController : ControllerBase
             scanOnPlayback = config?.ScanOnPlayback ?? false,
             writeSidecarFiles = config?.WriteSidecarFiles ?? false,
             aiProvider = config?.AiProvider ?? "None",
+            aiModel = config?.AiModel,
+            aiConfigured = !string.IsNullOrWhiteSpace(config?.AiApiKey)
+                           && !string.Equals(config?.AiProvider, "None", StringComparison.OrdinalIgnoreCase),
             cacheVersion = _lookItUpService.CacheVersion,
             prepare = _prepareService.GetStatus(),
             instanceLoaded = Plugin.Instance is not null,

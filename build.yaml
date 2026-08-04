@@ -1,16 +1,16 @@
 ---
 name: "Look it up"
 guid: "a8ab0fed-cac9-406d-b98b-58161bf970b8"
-version: "1.1.0.0"
+version: "1.2.0.0"
 targetAbi: "10.11.0.0"
 framework: "net9.0"
-overview: "Precompute subtitle annotations, then show timed Wikipedia popups during playback"
+overview: "AI-prepare subtitle references, then show short popups during playback"
 description: >
-  Prepares timed Wikipedia annotations from subtitles offline (library prepare task),
-  then shows short popups during playback. AI provider hook reserved for future enrichment.
+  Prepares timed explainer popups from subtitles using an OpenAI-compatible model
+  with full cue context (or legacy Wikipedia heuristics), then shows them during playback.
 category: "General"
 owner: "lookitup"
 artifacts:
   - "Jellyfin.Plugin.LookItUp.dll"
 changelog: >
-  Offline library prepare job, cache-first playback, optional sidecar JSON, AI provider placeholder
+  AI subtitle-context extraction via OpenAI-compatible API; fixes wrong Wikipedia surname matches

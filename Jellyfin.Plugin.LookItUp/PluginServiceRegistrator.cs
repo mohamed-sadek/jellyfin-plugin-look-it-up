@@ -16,6 +16,7 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton<ISubtitleParser, SubtitleParser>();
         serviceCollection.AddSingleton<IEntityExtractor, EntityExtractor>();
         serviceCollection.AddSingleton<IWikipediaLookupService, WikipediaLookupService>();
+        serviceCollection.AddSingleton<IAiEntityExtractor, OpenAiCompatibleEntityExtractor>();
         serviceCollection.AddSingleton<IAnnotationStore, AnnotationStore>();
         serviceCollection.AddSingleton<ILookItUpService, LookItUpService>();
         serviceCollection.AddSingleton<ILookItUpPrepareService, LookItUpPrepareService>();

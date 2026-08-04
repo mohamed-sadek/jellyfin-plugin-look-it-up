@@ -49,7 +49,7 @@ public class LookItUpService : ILookItUpService
     /// <summary>
     /// Bump when scan logic changes so stale caches are ignored.
     /// </summary>
-    public const int CurrentCacheVersion = 5;
+    public const int CurrentCacheVersion = 6;
 
     private static readonly HashSet<string> TextSubtitleCodecs = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -62,6 +62,7 @@ public class LookItUpService : ILookItUpService
     private readonly ISubtitleParser _subtitleParser;
     private readonly IEntityExtractor _entityExtractor;
     private readonly IWikipediaLookupService _wikipedia;
+    private readonly IAiEntityExtractor _aiExtractor;
     private readonly IAnnotationStore _store;
     private readonly ILogger<LookItUpService> _logger;
 
@@ -75,6 +76,7 @@ public class LookItUpService : ILookItUpService
         ISubtitleParser subtitleParser,
         IEntityExtractor entityExtractor,
         IWikipediaLookupService wikipedia,
+        IAiEntityExtractor aiExtractor,
         IAnnotationStore store,
         ILogger<LookItUpService> logger)
     {
@@ -84,6 +86,7 @@ public class LookItUpService : ILookItUpService
         _subtitleParser = subtitleParser;
         _entityExtractor = entityExtractor;
         _wikipedia = wikipedia;
+        _aiExtractor = aiExtractor;
         _store = store;
         _logger = logger;
     }
@@ -170,72 +173,45 @@ public class LookItUpService : ILookItUpService
             }
 
             var cues = _subtitleParser.Parse(subtitle.Content, subtitle.Label);
-            var candidates = new List<(ContextAnnotation Annotation, int Score)>();
-            var usedTerms = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var max = Math.Max(1, config.MaxAnnotationsPerItem);
+            List<ContextAnnotation> annotations;
 
-            foreach (var cue in cues)
+            if (_aiExtractor.IsConfigured(config))
             {
-                cancellationToken.ThrowIfCancellationRequested();
+                _logger.LogInformation(
+                    "Look it up preparing {Item} with AI ({Provider}/{Model})",
+                    item.Name,
+                    config.AiProvider,
+                    config.AiModel);
 
-                IReadOnlyList<string> entities;
-                try
-                {
-                    entities = _entityExtractor.Extract(cue.Text, config.MinEntityLength);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogDebug(ex, "Entity extract failed for cue at {StartMs}", cue.StartMs);
-                    continue;
-                }
+                var mentions = await _aiExtractor
+                    .ExtractAsync(item.Name ?? itemId.ToString("N"), cues, config, max, cancellationToken)
+                    .ConfigureAwait(false);
 
-                foreach (var entity in entities)
-                {
-                    if (!usedTerms.Add(entity))
+                var popupMs = Math.Max(config.PopupDurationMs, 2000);
+                annotations = mentions
+                    .Select(m => new ContextAnnotation
                     {
-                        continue;
-                    }
-
-                    EntityLookupResult lookup;
-                    try
-                    {
-                        lookup = await _wikipedia
-                            .LookupAsync(entity, config.WikipediaLanguage, cancellationToken)
-                            .ConfigureAwait(false);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogDebug(ex, "Wikipedia lookup failed for {Entity}", entity);
-                        continue;
-                    }
-
-                    if (!lookup.Found)
-                    {
-                        continue;
-                    }
-
-                    var score = ScoreEntity(entity, lookup.Title);
-                    var matchWindowMs = Math.Max(config.PopupDurationMs, score >= 30 ? 6000 : 4000);
-                    var annotation = new ContextAnnotation
-                    {
-                        Term = lookup.Title,
-                        Summary = $"{lookup.Title}: {lookup.Summary}",
-                        Url = lookup.Url,
-                        StartMs = cue.StartMs,
-                        EndMs = Math.Max(cue.EndMs, cue.StartMs + matchWindowMs)
-                    };
-
-                    candidates.Add((annotation, score));
-                }
+                        Term = m.Term.Trim(),
+                        Summary = m.Summary.Trim().StartsWith(m.Term, StringComparison.OrdinalIgnoreCase)
+                            ? m.Summary.Trim()
+                            : $"{m.Term.Trim()}: {m.Summary.Trim()}",
+                        Url = null,
+                        StartMs = m.StartMs,
+                        EndMs = Math.Max(m.EndMs, m.StartMs + popupMs)
+                    })
+                    .OrderBy(a => a.StartMs)
+                    .Take(max)
+                    .ToList();
             }
-
-            var annotations = candidates
-                .OrderByDescending(c => c.Score)
-                .ThenBy(c => c.Annotation.StartMs)
-                .Take(max)
-                .Select(c => c.Annotation)
-                .OrderBy(a => a.StartMs)
-                .ToList();
+            else
+            {
+                _logger.LogInformation(
+                    "Look it up preparing {Item} with legacy Wikipedia heuristics (set AiProvider + AiApiKey for AI)",
+                    item.Name);
+                annotations = await PrepareWithHeuristicsAsync(cues, config, max, cancellationToken)
+                    .ConfigureAwait(false);
+            }
 
             var cache = SaveCache(itemId, subtitle.Label, annotations);
             MaybeWriteSidecar(item, cache, config.WriteSidecarFiles);
@@ -253,6 +229,77 @@ public class LookItUpService : ILookItUpService
             _logger.LogError(ex, "Look it up prepare failed for item {ItemId}: {Message}", itemId, ex.Message);
             return null;
         }
+    }
+
+    private async Task<List<ContextAnnotation>> PrepareWithHeuristicsAsync(
+        IReadOnlyList<SubtitleCue> cues,
+        Configuration.PluginConfiguration config,
+        int max,
+        CancellationToken cancellationToken)
+    {
+        var candidates = new List<(ContextAnnotation Annotation, int Score)>();
+        var usedTerms = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var cue in cues)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            IReadOnlyList<string> entities;
+            try
+            {
+                entities = _entityExtractor.Extract(cue.Text, config.MinEntityLength);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Entity extract failed for cue at {StartMs}", cue.StartMs);
+                continue;
+            }
+
+            foreach (var entity in entities)
+            {
+                if (!usedTerms.Add(entity))
+                {
+                    continue;
+                }
+
+                EntityLookupResult lookup;
+                try
+                {
+                    lookup = await _wikipedia
+                        .LookupAsync(entity, config.WikipediaLanguage, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Wikipedia lookup failed for {Entity}", entity);
+                    continue;
+                }
+
+                if (!lookup.Found)
+                {
+                    continue;
+                }
+
+                var score = ScoreEntity(entity, lookup.Title);
+                var matchWindowMs = Math.Max(config.PopupDurationMs, score >= 30 ? 6000 : 4000);
+                candidates.Add((new ContextAnnotation
+                {
+                    Term = lookup.Title,
+                    Summary = $"{lookup.Title}: {lookup.Summary}",
+                    Url = lookup.Url,
+                    StartMs = cue.StartMs,
+                    EndMs = Math.Max(cue.EndMs, cue.StartMs + matchWindowMs)
+                }, score));
+            }
+        }
+
+        return candidates
+            .OrderByDescending(c => c.Score)
+            .ThenBy(c => c.Annotation.StartMs)
+            .Take(max)
+            .Select(c => c.Annotation)
+            .OrderBy(a => a.StartMs)
+            .ToList();
     }
 
     private ItemAnnotationCache SaveCache(Guid itemId, string? label, List<ContextAnnotation> annotations)
