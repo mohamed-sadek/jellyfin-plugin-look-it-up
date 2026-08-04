@@ -63,15 +63,28 @@
                         </label>
                     </div>
 
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="txtPrepareItemId">Prepare one item (id)</label>
+                        <input id="txtPrepareItemId" type="text" is="emby-input" placeholder="72b39aa7-cd22-99a0-06b8-7945fa520a04" />
+                        <div class="fieldDescription">Use this for testing a single episode/movie. Do not use Prepare library for that.</div>
+                    </div>
                     <div style="display:flex;gap:12px;flex-wrap:wrap;margin:1em 0;">
-                        <button is="emby-button" type="button" id="btnPrepareLibrary" class="raised button-submit emby-button">
-                            <span>Prepare library</span>
+                        <button is="emby-button" type="button" id="btnPrepareOne" class="raised button-submit emby-button">
+                            <span>Prepare this item</span>
                         </button>
-                        <button is="emby-button" type="button" id="btnPrepareForce" class="raised emby-button">
-                            <span>Force re-prepare all</span>
+                        <button is="emby-button" type="button" id="btnCancelPrepare" class="raised button-cancel emby-button">
+                            <span>Stop library prepare</span>
                         </button>
                         <button is="emby-button" type="button" id="btnRefreshStatus" class="raised emby-button">
                             <span>Refresh status</span>
+                        </button>
+                    </div>
+                    <div style="display:flex;gap:12px;flex-wrap:wrap;margin:0 0 1em;">
+                        <button is="emby-button" type="button" id="btnPrepareLibrary" class="raised emby-button">
+                            <span>Prepare entire library…</span>
+                        </button>
+                        <button is="emby-button" type="button" id="btnPrepareForce" class="raised emby-button">
+                            <span>Force re-prepare entire library…</span>
                         </button>
                     </div>
                     <pre id="prepareStatusBox" style="white-space:pre-wrap;word-break:break-word;background:rgba(0,0,0,.08);padding:12px;border-radius:8px;min-height:4em;">Status will appear here.</pre>
@@ -208,7 +221,29 @@
                 });
             }
 
+            function applyStatusObject(status, startedFallback) {
+                renderPrepareStatus({
+                    IsRunning: status.IsRunning ?? status.isRunning ?? startedFallback,
+                    Completed: status.Completed ?? status.completed,
+                    Total: status.Total ?? status.total,
+                    Percent: status.Percent ?? status.percent,
+                    WithAnnotations: status.WithAnnotations ?? status.withAnnotations,
+                    Skipped: status.Skipped ?? status.skipped,
+                    Failed: status.Failed ?? status.failed,
+                    CurrentItem: status.CurrentItem ?? status.currentItem,
+                    LastError: status.LastError ?? status.lastError,
+                    StartedAtUtc: status.StartedAtUtc ?? status.startedAtUtc,
+                    FinishedAtUtc: status.FinishedAtUtc ?? status.finishedAtUtc
+                });
+            }
+
             function startPrepare(force) {
+                var msg = force
+                    ? 'Force re-prepare the ENTIRE library? This can take a long time and use AI credits.'
+                    : 'Prepare the ENTIRE library? For one episode, use “Prepare this item” instead.';
+                if (!window.confirm(msg)) {
+                    return;
+                }
                 Dashboard.showLoadingMsg();
                 ApiClient.ajax({
                     url: ApiClient.getUrl('LookItUp/prepare') + (force ? '?force=true' : ''),
@@ -216,29 +251,66 @@
                     dataType: 'json'
                 }).then(function (result) {
                     Dashboard.hideLoadingMsg();
-                    var status = result.status || result.Status || result;
-                    renderPrepareStatus({
-                        IsRunning: status.IsRunning ?? status.isRunning ?? result.started,
-                        Completed: status.Completed ?? status.completed,
-                        Total: status.Total ?? status.total,
-                        Percent: status.Percent ?? status.percent,
-                        WithAnnotations: status.WithAnnotations ?? status.withAnnotations,
-                        Skipped: status.Skipped ?? status.skipped,
-                        Failed: status.Failed ?? status.failed,
-                        CurrentItem: status.CurrentItem ?? status.currentItem,
-                        LastError: status.LastError ?? status.lastError,
-                        StartedAtUtc: status.StartedAtUtc ?? status.startedAtUtc,
-                        FinishedAtUtc: status.FinishedAtUtc ?? status.finishedAtUtc
-                    });
+                    applyStatusObject(result.status || result.Status || result, result.started);
                     if (!LookItUpConfig.statusTimer) {
                         LookItUpConfig.statusTimer = setInterval(refreshPrepareStatus, 2000);
                     }
                     Dashboard.alert(result.started === false
                         ? 'A prepare job is already running.'
-                        : 'Library prepare started. This can take a while on large libraries.');
+                        : 'Library prepare started. Use Stop library prepare to cancel.');
                 }).catch(function (err) {
                     Dashboard.hideLoadingMsg();
                     Dashboard.alert('Failed to start prepare: ' + err);
+                });
+            }
+
+            function cancelPrepare() {
+                Dashboard.showLoadingMsg();
+                ApiClient.ajax({
+                    url: ApiClient.getUrl('LookItUp/prepare/cancel'),
+                    type: 'POST',
+                    dataType: 'json'
+                }).then(function (result) {
+                    Dashboard.hideLoadingMsg();
+                    applyStatusObject(result.status || result.Status || result, false);
+                    Dashboard.alert(result.cancelled
+                        ? 'Stop requested. Current item may finish, then the job will halt.'
+                        : 'No library prepare job was running.');
+                    refreshPrepareStatus();
+                }).catch(function (err) {
+                    Dashboard.hideLoadingMsg();
+                    Dashboard.alert('Failed to cancel: ' + err);
+                });
+            }
+
+            function prepareOneItem() {
+                var id = (document.querySelector('#txtPrepareItemId').value || '').trim();
+                if (!id) {
+                    Dashboard.alert('Enter an item id first.');
+                    return;
+                }
+                Dashboard.showLoadingMsg();
+                document.querySelector('#prepareStatusBox').textContent = 'Preparing one item: ' + id + ' …';
+                ApiClient.ajax({
+                    url: ApiClient.getUrl('LookItUp/' + id + '/prepare'),
+                    type: 'POST',
+                    dataType: 'json'
+                }).then(function (result) {
+                    Dashboard.hideLoadingMsg();
+                    var count = result.count ?? result.Count ?? 0;
+                    var terms = (result.annotations || result.Annotations || []).slice(0, 15).map(function (a) {
+                        return (a.term || a.Term || '');
+                    }).filter(Boolean);
+                    document.querySelector('#prepareStatusBox').textContent = [
+                        'Single-item prepare finished.',
+                        'Item: ' + id,
+                        'Annotations: ' + count,
+                        'Sample: ' + (terms.join(', ') || '(none)')
+                    ].join('\n');
+                    Dashboard.alert('Prepared item with ' + count + ' annotations.');
+                }).catch(function (err) {
+                    Dashboard.hideLoadingMsg();
+                    Dashboard.alert('Single-item prepare failed: ' + err);
                 });
             }
 
@@ -267,6 +339,8 @@
                     });
                 });
 
+            document.querySelector('#btnPrepareOne').addEventListener('click', prepareOneItem);
+            document.querySelector('#btnCancelPrepare').addEventListener('click', cancelPrepare);
             document.querySelector('#btnPrepareLibrary').addEventListener('click', function () { startPrepare(false); });
             document.querySelector('#btnPrepareForce').addEventListener('click', function () { startPrepare(true); });
             document.querySelector('#btnRefreshStatus').addEventListener('click', refreshPrepareStatus);

@@ -158,6 +158,21 @@ public class LookItUpController : ControllerBase
     }
 
     /// <summary>
+    /// Cancels a running library prepare job.
+    /// </summary>
+    [HttpPost("prepare/cancel")]
+    [Authorize]
+    public ActionResult CancelLibraryPrepare()
+    {
+        var cancelled = _prepareService.TryCancelLibraryPrepare();
+        return Ok(new
+        {
+            cancelled,
+            status = _prepareService.GetStatus()
+        });
+    }
+
+    /// <summary>
     /// Gets library prepare job progress.
     /// </summary>
     [HttpGet("prepare/status")]

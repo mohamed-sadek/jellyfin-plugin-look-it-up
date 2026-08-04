@@ -25,6 +25,12 @@ public interface ILookItUpPrepareService
     bool TryStartLibraryPrepare(bool force);
 
     /// <summary>
+    /// Cancels a running library prepare job, if any.
+    /// </summary>
+    /// <returns>True if a job was cancelled.</returns>
+    bool TryCancelLibraryPrepare();
+
+    /// <summary>
     /// Prepares a single item synchronously (for API / scheduled task item loops).
     /// </summary>
     Task<ItemAnnotationCache?> PrepareItemAsync(Guid itemId, bool force, CancellationToken cancellationToken);
@@ -103,6 +109,13 @@ public class LookItUpPrepareService : ILookItUpPrepareService
                 catch (OperationCanceledException)
                 {
                     _logger.LogInformation("Look it up library prepare cancelled");
+                    lock (_gate)
+                    {
+                        _status.IsRunning = false;
+                        _status.CurrentItem = null;
+                        _status.FinishedAtUtc = DateTime.UtcNow;
+                        _status.LastError = "Cancelled by user";
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -116,6 +129,40 @@ public class LookItUpPrepareService : ILookItUpPrepareService
                 }
             }, token);
 
+            return true;
+        }
+    }
+
+    /// <inheritdoc />
+    public bool TryCancelLibraryPrepare()
+    {
+        lock (_gate)
+        {
+            if (!_status.IsRunning || _cts is null)
+            {
+                return false;
+            }
+
+            _cts.Cancel();
+            _status.LastError = "Cancelled by user";
+            _logger.LogInformation("Look it up library prepare cancel requested");
+            return true;
+        }
+    }
+
+    /// <inheritdoc />
+    public bool TryCancelLibraryPrepare()
+    {
+        lock (_gate)
+        {
+            if (!_status.IsRunning || _cts is null)
+            {
+                return false;
+            }
+
+            _logger.LogInformation("Look it up library prepare cancel requested");
+            _cts.Cancel();
+            _status.LastError = "Cancelled by user";
             return true;
         }
     }
@@ -221,6 +268,14 @@ public class LookItUpPrepareService : ILookItUpPrepareService
             }
             catch (OperationCanceledException)
             {
+                lock (_gate)
+                {
+                    _status.IsRunning = false;
+                    _status.CurrentItem = null;
+                    _status.FinishedAtUtc = DateTime.UtcNow;
+                    _status.LastError = "Cancelled by user";
+                }
+
                 throw;
             }
             catch (Exception ex)
