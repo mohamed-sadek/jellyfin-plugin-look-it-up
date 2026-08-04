@@ -197,13 +197,50 @@
   }
 
   function getApiClient() {
-    return window.ApiClient || null;
+    return window.ApiClient || window.ServerConnections?.currentApiClient?.() || null;
+  }
+
+  function getPlaybackManager() {
+    return window.playbackManager || null;
+  }
+
+  function getActivePlayer(pm) {
+    if (!pm) {
+      return null;
+    }
+    return pm._currentPlayer || (typeof pm.getCurrentPlayer === 'function' ? pm.getCurrentPlayer() : null);
+  }
+
+  function extractGuid(text) {
+    if (!text) {
+      return null;
+    }
+    const match = String(text).match(
+      /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/
+    );
+    return match ? match[0] : null;
   }
 
   function getCurrentItemId() {
+    const pm = getPlaybackManager();
+    const player = getActivePlayer(pm);
+
+    // Jellyfin 10.10+/10.11: currentItem(player) requires a player and throws if null.
     try {
-      if (window.playbackManager && typeof window.playbackManager.getCurrentItem === 'function') {
-        const item = window.playbackManager.getCurrentItem();
+      if (pm && player && typeof pm.currentItem === 'function') {
+        const item = pm.currentItem(player);
+        if (item && (item.Id || item.id)) {
+          return item.Id || item.id;
+        }
+      }
+    } catch (err) {
+      console.debug('[Look it up] currentItem(player) failed', err);
+    }
+
+    try {
+      if (pm && typeof pm.getPlayerState === 'function') {
+        const state = pm.getPlayerState(player || undefined);
+        const item = state?.NowPlayingItem || state?.nowPlayingItem;
         if (item && (item.Id || item.id)) {
           return item.Id || item.id;
         }
@@ -212,23 +249,17 @@
       /* ignore */
     }
 
-    try {
-      if (window.playbackManager && typeof window.playbackManager.currentItem === 'function') {
-        const item = window.playbackManager.currentItem();
-        if (item && (item.Id || item.id)) {
-          return item.Id || item.id;
-        }
-      }
-    } catch (_) {
-      /* ignore */
+    // URL / media element fallbacks
+    const fromHash = extractGuid(location.hash) || extractGuid(location.href);
+    if (fromHash) {
+      return fromHash;
     }
 
     const video = document.querySelector('.videoPlayerContainer video, video');
     if (video) {
-      const haystack = [video.src, video.currentSrc, location.href].join(' ');
-      const match = haystack.match(/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/);
-      if (match) {
-        return match[0];
+      const fromVideo = extractGuid(video.src) || extractGuid(video.currentSrc);
+      if (fromVideo) {
+        return fromVideo;
       }
     }
 
@@ -241,12 +272,13 @@
       return Math.floor(video.currentTime * 1000);
     }
 
+    const pm = getPlaybackManager();
+    const player = getActivePlayer(pm);
     try {
-      if (window.playbackManager && typeof window.playbackManager.currentTime === 'function') {
-        const value = window.playbackManager.currentTime();
-        // Jellyfin may return seconds or ticks depending on version/path.
-        if (typeof value === 'number' && !Number.isNaN(value)) {
-          return value > 1000000 ? Math.floor(value / 10000) : Math.floor(value * 1000);
+      if (pm && player && typeof pm.getCurrentTicks === 'function') {
+        const ticks = pm.getCurrentTicks(player);
+        if (typeof ticks === 'number' && !Number.isNaN(ticks)) {
+          return Math.floor(ticks / 10000);
         }
       }
     } catch (_) {
@@ -269,8 +301,14 @@
   async function loadAnnotations(itemId) {
     const api = getApiClient();
     if (!api || !itemId) {
+      console.warn('[Look it up] cannot load annotations', {
+        hasApiClient: !!api,
+        itemId
+      });
       return;
     }
+
+    console.info('[Look it up] fetching annotations for', itemId);
 
     try {
       const url = api.getUrl(`LookItUp/${itemId}`);
@@ -303,12 +341,24 @@
     }
   }
 
+  let noItemLogAt = 0;
+
   function tick() {
     const itemId = getCurrentItemId();
     const video = document.querySelector('.videoPlayerContainer video, video');
     const videoPlaying = !!(video && !video.paused && video.readyState >= 2);
 
     if (!itemId) {
+      if (videoPlaying && Date.now() - noItemLogAt > 5000) {
+        noItemLogAt = Date.now();
+        const pm = getPlaybackManager();
+        console.warn('[Look it up] video playing but no item id', {
+          hasPlaybackManager: !!pm,
+          hasPlayer: !!getActivePlayer(pm),
+          hash: location.hash,
+          videoSrc: video?.currentSrc || video?.src || null
+        });
+      }
       // Don't wipe state on brief detection gaps during OSD transitions.
       if (currentItemId && !videoPlaying) {
         missingItemTicks += 1;

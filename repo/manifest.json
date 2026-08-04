@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "1.0.2.0",
+        "changelog": "Fix Jellyfin 10.11 item detection so annotations load during playback; richer debug logs",
+        "targetAbi": "10.9.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.0.2.0/look-it-up_1.0.2.0.zip",
+        "checksum": "69443b2041f10e6a88ef4d97ec2b6dcd",
+        "timestamp": "2026-08-04T17:00:00Z"
+      },
+      {
         "version": "1.0.1.0",
         "changelog": "More visible fullscreen-safe popups, stabler playback detection, richer console debug logs",
         "targetAbi": "10.9.0.0",
