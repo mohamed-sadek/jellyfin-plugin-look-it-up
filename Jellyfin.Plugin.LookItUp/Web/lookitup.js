@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  const CLIENT_VERSION = '1.0.5.1';
+  const CLIENT_VERSION = '1.0.6.0';
   const STYLE_ID = 'lookitup-styles';
   const POPUP_ID = 'lookitup-popup';
   const POLL_MS = 200;
@@ -472,7 +472,17 @@
       return;
     }
 
-    const active = annotations.find((a) => now >= a.startMs && now <= a.endMs);
+    // Prefer multi-word / longer names when several cues overlap.
+    const active = annotations
+      .filter((a) => now >= a.startMs && now <= a.endMs)
+      .sort((a, b) => {
+        const aw = (a.term.match(/\s+/g) || []).length;
+        const bw = (b.term.match(/\s+/g) || []).length;
+        if (bw !== aw) {
+          return bw - aw;
+        }
+        return b.term.length - a.term.length;
+      })[0];
     if (!active) {
       return;
     }

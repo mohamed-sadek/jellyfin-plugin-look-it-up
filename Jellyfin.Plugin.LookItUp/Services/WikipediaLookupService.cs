@@ -15,10 +15,6 @@ public interface IWikipediaLookupService
     /// <summary>
     /// Looks up a term on Wikipedia.
     /// </summary>
-    /// <param name="term">Entity name.</param>
-    /// <param name="language">Wikipedia language code.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>Lookup result.</returns>
     Task<EntityLookupResult> LookupAsync(string term, string language, CancellationToken cancellationToken);
 }
 
@@ -34,7 +30,6 @@ public class WikipediaLookupService : IWikipediaLookupService
     /// <summary>
     /// Initializes a new instance of the <see cref="WikipediaLookupService"/> class.
     /// </summary>
-    /// <param name="logger">Logger.</param>
     public WikipediaLookupService(ILogger<WikipediaLookupService> logger)
     {
         _logger = logger;
@@ -59,23 +54,46 @@ public class WikipediaLookupService : IWikipediaLookupService
 
             if (!response.IsSuccessStatusCode)
             {
-                var missed = new EntityLookupResult { Title = term, Found = false };
-                _cache[cacheKey] = missed;
-                return missed;
+                return Miss(term, cacheKey);
             }
 
             await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
             var payload = await JsonSerializer.DeserializeAsync<WikipediaSummary>(stream, cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
+
             if (payload is null || string.IsNullOrWhiteSpace(payload.Extract))
             {
-                var missed = new EntityLookupResult { Title = term, Found = false };
-                _cache[cacheKey] = missed;
-                return missed;
+                return Miss(term, cacheKey);
             }
 
-            // Prefer a short first-sentence style summary.
-            var summary = payload.Extract.Trim();
+            // Drop disambiguation / non-article pages ("Mom (disambiguation)", "All", etc.).
+            if (!string.Equals(payload.Type, "standard", StringComparison.OrdinalIgnoreCase))
+            {
+                return Miss(term, cacheKey);
+            }
+
+            var title = string.IsNullOrWhiteSpace(payload.Title) ? term : payload.Title.Trim();
+            if (title.Contains("disambiguation", StringComparison.OrdinalIgnoreCase))
+            {
+                return Miss(term, cacheKey);
+            }
+
+            var extract = payload.Extract.Trim();
+            if (extract.Contains("may refer to", StringComparison.OrdinalIgnoreCase)
+                || extract.Contains("can refer to", StringComparison.OrdinalIgnoreCase))
+            {
+                return Miss(term, cacheKey);
+            }
+
+            // Single-word query that Wikipedia "corrected" into a totally different multi-concept title
+            // is often noise (e.g. TIM → something odd). Keep person/film-like redirects.
+            if (!term.Contains(' ', StringComparison.Ordinal)
+                && title.Contains("List of", StringComparison.OrdinalIgnoreCase))
+            {
+                return Miss(term, cacheKey);
+            }
+
+            var summary = extract;
             var sentenceEnd = summary.IndexOf(". ", StringComparison.Ordinal);
             if (sentenceEnd > 40 && sentenceEnd < 220)
             {
@@ -88,7 +106,7 @@ public class WikipediaLookupService : IWikipediaLookupService
 
             var result = new EntityLookupResult
             {
-                Title = string.IsNullOrWhiteSpace(payload.Title) ? term : payload.Title,
+                Title = title,
                 Summary = summary,
                 Url = payload.ContentUrls?.Desktop?.Page,
                 Found = true
@@ -102,6 +120,13 @@ public class WikipediaLookupService : IWikipediaLookupService
             _logger.LogWarning(ex, "Wikipedia lookup failed for {Term}", term);
             return new EntityLookupResult { Title = term, Found = false };
         }
+    }
+
+    private EntityLookupResult Miss(string term, string cacheKey)
+    {
+        var missed = new EntityLookupResult { Title = term, Found = false };
+        _cache[cacheKey] = missed;
+        return missed;
     }
 
     private static HttpClient CreateClient()
@@ -119,6 +144,9 @@ public class WikipediaLookupService : IWikipediaLookupService
 
     private sealed class WikipediaSummary
     {
+        [JsonPropertyName("type")]
+        public string? Type { get; set; }
+
         [JsonPropertyName("title")]
         public string? Title { get; set; }
 

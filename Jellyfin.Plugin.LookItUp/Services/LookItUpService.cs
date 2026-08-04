@@ -29,9 +29,9 @@ public interface ILookItUpService
 public class LookItUpService : ILookItUpService
 {
     /// <summary>
-    /// Bump when scan logic changes so stale empty caches are ignored.
+    /// Bump when scan logic changes so stale caches are ignored.
     /// </summary>
-    private const int CacheVersion = 2;
+    private const int CacheVersion = 3;
 
     private static readonly HashSet<string> TextSubtitleCodecs = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -110,17 +110,12 @@ public class LookItUpService : ILookItUpService
             }
 
             var cues = _subtitleParser.Parse(subtitle.Content, subtitle.Label);
-            var annotations = new List<ContextAnnotation>();
+            var candidates = new List<(ContextAnnotation Annotation, int Score)>();
             var usedTerms = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var max = Math.Max(1, config.MaxAnnotationsPerItem);
 
             foreach (var cue in cues)
             {
-                if (annotations.Count >= max)
-                {
-                    break;
-                }
-
                 IReadOnlyList<string> entities;
                 try
                 {
@@ -134,7 +129,7 @@ public class LookItUpService : ILookItUpService
 
                 foreach (var entity in entities)
                 {
-                    if (annotations.Count >= max || !usedTerms.Add(entity))
+                    if (!usedTerms.Add(entity))
                     {
                         continue;
                     }
@@ -157,23 +152,36 @@ public class LookItUpService : ILookItUpService
                         continue;
                     }
 
-                    var popupMs = Math.Max(config.PopupDurationMs, 2000);
-                    annotations.Add(new ContextAnnotation
+                    var score = ScoreEntity(entity, lookup.Title);
+                    // Multi-word names (Jon Voight) get a longer on-screen window.
+                    var popupMs = Math.Max(config.PopupDurationMs, score >= 30 ? 8000 : 4000);
+                    var annotation = new ContextAnnotation
                     {
                         Term = lookup.Title,
                         Summary = $"{lookup.Title}: {lookup.Summary}",
                         Url = lookup.Url,
                         StartMs = cue.StartMs,
                         EndMs = Math.Max(cue.EndMs, cue.StartMs + popupMs)
-                    });
+                    };
 
+                    candidates.Add((annotation, score));
                     _logger.LogInformation(
-                        "Look it up matched {Term} at {StartMs}ms in {Item}",
+                        "Look it up matched {Term} at {StartMs}ms (score {Score}) in {Item}",
                         lookup.Title,
                         cue.StartMs,
+                        score,
                         item.Name);
                 }
             }
+
+            // Keep the best names overall, then play them in timeline order.
+            var annotations = candidates
+                .OrderByDescending(c => c.Score)
+                .ThenBy(c => c.Annotation.StartMs)
+                .Take(max)
+                .Select(c => c.Annotation)
+                .OrderBy(a => a.StartMs)
+                .ToList();
 
             _store.Save(new ItemAnnotationCache
             {
@@ -209,6 +217,47 @@ public class LookItUpService : ILookItUpService
             SubtitlePath = label,
             Annotations = []
         });
+    }
+
+    private static int ScoreEntity(string query, string title)
+    {
+        var score = 0;
+        var qWords = query.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var tWords = title.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+
+        // Prefer "Jon Voight", "Midnight Cowboy" over single tokens.
+        if (qWords.Length >= 2)
+        {
+            score += 40;
+        }
+        else
+        {
+            score += 5;
+        }
+
+        if (tWords.Length >= 2)
+        {
+            score += 15;
+        }
+
+        // Person-like First Last
+        if (qWords.Length == 2
+            && qWords.All(w => w.Length >= 2 && char.IsUpper(w[0])))
+        {
+            score += 20;
+        }
+
+        if (title.Contains('(', StringComparison.Ordinal))
+        {
+            score -= 25;
+        }
+
+        if (title.StartsWith("List of", StringComparison.OrdinalIgnoreCase))
+        {
+            score -= 50;
+        }
+
+        return score;
     }
 
     private async Task<SubtitleContent?> ResolveSubtitleContentAsync(

@@ -18,14 +18,6 @@ public interface IEntityExtractor
 
 /// <summary>
 /// Finds likely proper nouns in English subtitle cues.
-/// <para>
-/// Strategy (v1):
-/// 1. Find capitalized word sequences ("France", "New York").
-/// 2. Drop dialogue/grammar noise via stop words and sentence-start filtering.
-/// 3. Let Wikipedia confirmation (in <see cref="LookItUpService"/>) decide what is real.
-/// </para>
-/// This is intentionally not full NLP — subtitles are short, timed lines, and a
-/// Wikipedia hit is a strong signal that a candidate is a real named entity.
 /// </summary>
 public partial class EntityExtractor : IEntityExtractor
 {
@@ -42,7 +34,27 @@ public partial class EntityExtractor : IEntityExtractor
         "Not", "Don", "Didn", "Isn", "Aren", "Wasn", "Weren", "Hasn", "Haven", "Hadn",
         "Mr", "Mrs", "Ms", "Dr", "Sir", "Madam", "Captain", "Episode", "Season",
         "Oh", "Ah", "Uh", "Um", "Right", "Sure", "Maybe", "Really", "Actually", "Anyway",
-        "Today", "Tomorrow", "Yesterday", "Tonight", "Morning", "Night", "God", "Hell", "Damn"
+        "Today", "Tomorrow", "Yesterday", "Tonight", "Morning", "Night", "God", "Hell", "Damn",
+        // Dialogue / subtitle shouting noise that Wikipedia often still resolves.
+        "All", "Yeah", "Yah", "Yep", "Nah", "Huh", "Heh", "Hah", "Ha", "Whoa", "Wow",
+        "Done", "Away", "Seem", "Let", "Now", "Take", "Lie", "Thud", "Come", "Go", "Get",
+        "Got", "See", "Saw", "Look", "Listen", "Wait", "Stop", "Start", "End", "Back",
+        "Out", "Off", "Up", "Down", "Man", "Boy", "Girl", "Guy", "Kid", "Dude",
+        "Mom", "Dad", "Pop", "Buddy", "Pal", "Honey", "Baby", "Dear",
+        "New", "Old", "Big", "Little", "Good", "Bad", "Fine", "Nice", "Great",
+        "Limited", "Consumer", "Street"
+    };
+
+    /// <summary>
+    /// Short ALL-CAPS tokens allowed through (real acronyms). Everything else
+    /// matching the 2–5 letter caps pattern is treated as shouting ("ALL", "YES").
+    /// </summary>
+    private static readonly HashSet<string> AcronymAllowlist = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "NASA", "FBI", "CIA", "NSA", "BBC", "CNN", "NBC", "ABC", "CBS", "HBO",
+        "USA", "UK", "UN", "EU", "USSR", "NYC", "LA", "SF", "DC",
+        "IBM", "BMW", "VW", "GM", "GE", "ATF", "DEA", "IRS", "DMV",
+        "NFL", "NBA", "MLB", "NHL", "UFC", "WWE", "MIT", "UCLA", "NYU"
     };
 
     /// <inheritdoc />
@@ -53,7 +65,6 @@ public partial class EntityExtractor : IEntityExtractor
             return [];
         }
 
-        // Normalize ellipses / odd spacing so "France..." still matches cleanly.
         var normalized = EllipsisRegex().Replace(text, " ");
         normalized = WhitespaceRegex().Replace(normalized, " ").Trim();
 
@@ -68,13 +79,12 @@ public partial class EntityExtractor : IEntityExtractor
                 continue;
             }
 
-            // Skip ALL-CAPS shouting ("LOOK OUT") — not useful as entity names.
-            if (candidate.Length > 1 && candidate.All(c => !char.IsLetter(c) || char.IsUpper(c))
-                && candidate.Any(char.IsLetter)
-                && !candidate.Contains(' '))
+            // ALL-CAPS single token: only keep known acronyms (not "ALL", "YES", "NOW").
+            if (!candidate.Contains(' ')
+                && candidate.All(c => !char.IsLetter(c) || char.IsUpper(c))
+                && candidate.Any(char.IsLetter))
             {
-                // Allow short acronyms like "NASA", "UN", "UK" (2–5 letters).
-                if (candidate.Length is < 2 or > 5)
+                if (!AcronymAllowlist.Contains(candidate))
                 {
                     continue;
                 }
@@ -86,35 +96,23 @@ public partial class EntityExtractor : IEntityExtractor
                 continue;
             }
 
-            // Drop leading stop words: "The Louvre" stays "Louvre" only if we want
-            // single tokens — keep "New York" intact; strip only pure grammar words.
             while (tokens.Length > 1 && StopWords.Contains(tokens[0]))
             {
                 tokens = tokens.Skip(1).ToArray();
             }
 
-            if (tokens.Length == 1 && StopWords.Contains(tokens[0]))
+            while (tokens.Length > 1 && StopWords.Contains(tokens[^1]))
+            {
+                tokens = tokens.Take(tokens.Length - 1).ToArray();
+            }
+
+            if (tokens.Length == 0 || (tokens.Length == 1 && StopWords.Contains(tokens[0])))
             {
                 continue;
             }
 
             candidate = string.Join(' ', tokens);
-            if (candidate.Length < minLength)
-            {
-                continue;
-            }
-
-            // Sentence-start single words are often just normal words ("Then we left").
-            // Keep them only when they are mid-sentence or multi-word phrases.
-            // Example: "This is from France" → France is mid-sentence → keep.
-            // Example: "France is beautiful" → France at start, single word → still keep
-            // if not a stop word (countries often start sentences). Wikipedia filters false positives.
-            if (tokens.Length == 1 && IsLikelySentenceStartNoise(normalized, match.Index, candidate))
-            {
-                continue;
-            }
-
-            if (!seen.Add(candidate))
+            if (candidate.Length < minLength || !seen.Add(candidate))
             {
                 continue;
             }
@@ -122,47 +120,15 @@ public partial class EntityExtractor : IEntityExtractor
             results.Add(candidate);
         }
 
-        return results;
+        // Prefer multi-word names first within the cue (Jon Voight before Car).
+        return results
+            .OrderByDescending(r => r.Count(c => c == ' '))
+            .ThenByDescending(r => r.Length)
+            .ToList();
     }
 
-    /// <summary>
-    /// Returns true when a single capitalized word at the start of a clause is
-    /// probably grammar, not a named entity (e.g. "Then", already stopped, or
-    /// generic openers). Real entities at sentence start still pass if not stop words;
-    /// Wikipedia confirmation removes most remaining false positives.
-    /// </summary>
-    private static bool IsLikelySentenceStartNoise(string text, int matchIndex, string candidate)
-    {
-        if (StopWords.Contains(candidate))
-        {
-            return true;
-        }
-
-        // If preceded by a letter/digit, it's mid-sentence → good signal ("from France").
-        for (var i = matchIndex - 1; i >= 0; i--)
-        {
-            var c = text[i];
-            if (char.IsWhiteSpace(c) || c is '"' or '\'' or '«' or '»')
-            {
-                continue;
-            }
-
-            if (char.IsLetterOrDigit(c))
-            {
-                return false;
-            }
-
-            // After . ? ! — sentence start. Allow through; Wikipedia is the gate.
-            return false;
-        }
-
-        // Start of cue — allow through for places/names; stop words already filtered.
-        return false;
-    }
-
-    // Capitalized sequences: "France", "New York", "United Nations"
-    // Also short acronyms: "NASA", "FBI"
-    [GeneratedRegex(@"\b(?:[A-Z]{2,5}|[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b", RegexOptions.CultureInvariant)]
+    // Title Case phrases + allowlisted-style acronyms (filtered in code).
+    [GeneratedRegex(@"\b(?:[A-Z]{2,6}|[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,4})\b", RegexOptions.CultureInvariant)]
     private static partial Regex ProperNounRegex();
 
     [GeneratedRegex(@"\.{2,}|…", RegexOptions.CultureInvariant)]

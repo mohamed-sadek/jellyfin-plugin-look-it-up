@@ -1,7 +1,7 @@
 ---
 name: "Look it up"
 guid: "a8ab0fed-cac9-406d-b98b-58161bf970b8"
-version: "1.0.5.0"
+version: "1.0.6.0"
 targetAbi: "10.11.0.0"
 framework: "net9.0"
 overview: "Show timed popups explaining names mentioned in subtitles"
@@ -14,4 +14,4 @@ owner: "lookitup"
 artifacts:
   - "Jellyfin.Plugin.LookItUp.dll"
 changelog: >
-  Extract embedded text subtitles (e.g. MKV subrip) so names like Jon Voight can be found
+  Reduce ALL-CAPS noise; prefer real names like Jon Voight; reject Wikipedia disambiguation pages
