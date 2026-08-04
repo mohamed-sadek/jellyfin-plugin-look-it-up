@@ -1,14 +1,20 @@
 (function () {
   'use strict';
 
-  const CLIENT_VERSION = '1.0.6.2';
+  const CLIENT_VERSION = '1.0.6.3';
   const STYLE_ID = 'lookitup-styles';
   const POPUP_ID = 'lookitup-popup';
   const POLL_MS = 200;
   const DEFAULT_POPUP_MS = 2000;
   const JUNK_TERMS = new Set([
     'all', 'new', 'seem', 'consumer', 'yeah', 'heh', 'done', 'away', 'let', 'now',
-    'take', 'lie', 'thud', 'street', 'pop', 'car', 'limited', 'tim', 'vic', 'mom'
+    'take', 'lie', 'thud', 'street', 'pop', 'car', 'limited', 'tim', 'vic', 'mom',
+    'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
+    'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august',
+    'september', 'october', 'november', 'december', 'today', 'tomorrow', 'yesterday',
+    'tonight', 'morning', 'night', 'week', 'month', 'year', 'day', 'time',
+    'heh', 'huh', 'whoa', 'wow', 'okay', 'right', 'sure', 'really', 'maybe',
+    'ford', 'ltd', 'integra', 'supra', 'volvo' // brand shout-outs without context are noisy in this ep
   ]);
 
   let annotations = [];
@@ -399,7 +405,13 @@
     if (term.includes('(disambiguation)') || /disambiguation/i.test(term)) {
       return true;
     }
-    if (summary.includes('may refer to') || summary.includes('can refer to')) {
+    if (
+      summary.includes('may refer to') ||
+      summary.includes('can refer to') ||
+      summary.includes('commonly refers to') ||
+      summary.includes('usually refers to') ||
+      summary.includes('most often refers to')
+    ) {
       return true;
     }
     if (/^list of /i.test(term)) {
@@ -407,6 +419,10 @@
     }
     // Single ALL-CAPS / tiny filler
     if (!term.includes(' ') && term.length <= 3 && term === term.toUpperCase()) {
+      return true;
+    }
+    // Bare calendar words / generic single tokens with dictionary-y blurbs
+    if (!term.includes(' ') && /day of the week|month of the year|is a day\b/i.test(summary)) {
       return true;
     }
     return false;
@@ -616,11 +632,19 @@
     tryShowForCurrentTime();
   }
 
-  async function logServerVersion() {
+  async function logServerVersion(attempt) {
+    const n = attempt || 0;
     try {
       const api = getApiClient();
       if (!api) {
-        console.info('[Look it up] client', CLIENT_VERSION, '(no ApiClient yet for server version)');
+        if (n < 10) {
+          setTimeout(() => logServerVersion(n + 1), 500);
+          if (n === 0) {
+            console.info('[Look it up] client', CLIENT_VERSION, '(waiting for ApiClient…)');
+          }
+          return;
+        }
+        console.info('[Look it up] client', CLIENT_VERSION, '(no ApiClient for server version)');
         return;
       }
       const status = await api.ajax({
@@ -628,13 +652,21 @@
         type: 'GET',
         dataType: 'json'
       });
+      const server = (status && (status.version || status.Version)) || 'unknown';
       console.info('[Look it up] loaded', {
         client: CLIENT_VERSION,
-        server: (status && (status.version || status.Version)) || 'unknown',
+        server: server,
         enabled: status && (status.enabled ?? status.Enabled),
         targetServer: status && (status.targetServer || status.TargetServer)
       });
+      if (String(server).startsWith('1.0.5') || String(server).startsWith('1.0.4') || String(server).startsWith('1.0.3')) {
+        console.warn('[Look it up] server plugin is outdated (' + server + '). Install 1.0.6.0+ for better name filtering.');
+      }
     } catch (err) {
+      if (n < 5) {
+        setTimeout(() => logServerVersion(n + 1), 500);
+        return;
+      }
       console.warn('[Look it up] client', CLIENT_VERSION, '— could not read server /LookItUp/status', err);
     }
   }
@@ -643,7 +675,7 @@
     ensurePopup();
     setInterval(tick, POLL_MS);
     console.info('[Look it up] overlay ready', CLIENT_VERSION);
-    logServerVersion();
+    logServerVersion(0);
   }
 
   if (document.readyState === 'loading') {
