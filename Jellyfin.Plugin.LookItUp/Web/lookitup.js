@@ -201,7 +201,11 @@
   }
 
   function getPlaybackManager() {
-    return window.playbackManager || null;
+    return (
+      window.playbackManager ||
+      window.PlaybackManager ||
+      null
+    );
   }
 
   function getActivePlayer(pm) {
@@ -211,26 +215,59 @@
     return pm._currentPlayer || (typeof pm.getCurrentPlayer === 'function' ? pm.getCurrentPlayer() : null);
   }
 
-  function extractGuid(text) {
+  function formatGuid(value) {
+    if (!value) {
+      return null;
+    }
+    const raw = String(value).replace(/[{}]/g, '');
+    if (/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(raw)) {
+      return raw;
+    }
+    const hex = raw.replace(/-/g, '');
+    if (!/^[0-9a-fA-F]{32}$/.test(hex)) {
+      return null;
+    }
+    const h = hex.toLowerCase();
+    return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+  }
+
+  function extractItemId(text) {
     if (!text) {
       return null;
     }
-    const match = String(text).match(
-      /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/
-    );
-    return match ? match[0] : null;
+
+    const str = String(text);
+
+    // /Videos/{itemId}/... (hyphenated GUID or compact 32-hex)
+    let match = str.match(/\/Videos\/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9a-fA-F]{32})(?=[/?#]|$)/i);
+    if (match) {
+      return formatGuid(match[1]);
+    }
+
+    // /Items/{itemId}/...
+    match = str.match(/\/Items\/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9a-fA-F]{32})(?=[/?#]|$)/i);
+    if (match) {
+      return formatGuid(match[1]);
+    }
+
+    // Any hyphenated GUID
+    match = str.match(/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/);
+    if (match) {
+      return match[0];
+    }
+
+    return null;
   }
 
   function getCurrentItemId() {
     const pm = getPlaybackManager();
     const player = getActivePlayer(pm);
 
-    // Jellyfin 10.10+/10.11: currentItem(player) requires a player and throws if null.
     try {
       if (pm && player && typeof pm.currentItem === 'function') {
         const item = pm.currentItem(player);
         if (item && (item.Id || item.id)) {
-          return item.Id || item.id;
+          return formatGuid(item.Id || item.id);
         }
       }
     } catch (err) {
@@ -242,24 +279,34 @@
         const state = pm.getPlayerState(player || undefined);
         const item = state?.NowPlayingItem || state?.nowPlayingItem;
         if (item && (item.Id || item.id)) {
-          return item.Id || item.id;
+          return formatGuid(item.Id || item.id);
         }
       }
     } catch (_) {
       /* ignore */
     }
 
-    // URL / media element fallbacks
-    const fromHash = extractGuid(location.hash) || extractGuid(location.href);
-    if (fromHash) {
-      return fromHash;
+    const video = document.querySelector('.videoPlayerContainer video, video');
+    const candidates = [
+      video?.currentSrc,
+      video?.src,
+      location.href,
+      location.hash
+    ];
+
+    if (video) {
+      try {
+        Array.from(video.querySelectorAll('source')).forEach((el) => candidates.push(el.src));
+      } catch (_) {
+        /* ignore */
+      }
     }
 
-    const video = document.querySelector('.videoPlayerContainer video, video');
-    if (video) {
-      const fromVideo = extractGuid(video.src) || extractGuid(video.currentSrc);
-      if (fromVideo) {
-        return fromVideo;
+    for (const candidate of candidates) {
+      const id = extractItemId(candidate);
+      if (id) {
+        console.info('[Look it up] resolved item id from media url', id);
+        return id;
       }
     }
 
