@@ -48,7 +48,9 @@ public interface IAiEntityExtractor
 /// </summary>
 public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
 {
-    private const int MaxCandidates = 40;
+    private const int MaxCandidates = 24;
+    private const int CandidatesPerCall = 12;
+    private const int MentionsPerCall = 8;
     private static readonly HttpClient Http = CreateClient();
     private readonly IEntityExtractor _entityExtractor;
     private readonly ILogger<OpenAiCompatibleEntityExtractor> _logger;
@@ -109,58 +111,48 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         }
 
         _logger.LogInformation(
-            "Look it up AI one-shot for {Item}: {CandidateCount} candidates → {BaseUrl} model={Model}",
+            "Look it up AI resolve for {Item}: {CandidateCount} candidates → {BaseUrl} model={Model}",
             itemName,
             candidates.Count,
             baseUrl,
             model);
 
-        var first = await ResolveCandidatesAsync(
-                itemName,
-                candidates,
-                config,
-                model,
-                baseUrl,
-                maxAnnotations,
-                cancellationToken)
-            .ConfigureAwait(false);
+        // Two small calls beat one huge call (Groq JSON mode hits max_tokens on 40 candidates).
+        var chunks = ChunkList(candidates, CandidatesPerCall);
+        var results = new List<AiEntityMention>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        string? lastError = null;
 
-        if (!string.IsNullOrWhiteSpace(first.Error) && first.Mentions.Count == 0)
+        for (var i = 0; i < chunks.Count && results.Count < maxAnnotations; i++)
         {
-            _logger.LogWarning("Look it up AI produced 0 mentions for {Item}: {Warning}", itemName, first.Error);
-            return new AiExtractionResult { Warning = first.Error };
-        }
+            if (i > 0)
+            {
+                await Task.Delay(400, cancellationToken).ConfigureAwait(false);
+            }
 
-        var results = new List<AiEntityMention>(first.Mentions);
-        var seen = new HashSet<string>(results.Select(m => m.Term.Trim()), StringComparer.OrdinalIgnoreCase);
-
-        // One continuation for candidates the model skipped (truncation / too many).
-        var leftover = candidates
-            .Where(c => !seen.Contains(c.Term)
-                        && !results.Any(m =>
-                            m.Term.Contains(c.Term, StringComparison.OrdinalIgnoreCase)
-                            || c.Term.Contains(m.Term, StringComparison.OrdinalIgnoreCase)))
-            .Take(Math.Max(0, maxAnnotations - results.Count))
-            .ToList();
-
-        if (leftover.Count >= 3 && results.Count < maxAnnotations && first.MayHaveMore)
-        {
             _logger.LogInformation(
-                "Look it up AI continuation for {Item}: {Leftover} leftover candidates",
+                "Look it up AI chunk {Index}/{Total} for {Item} ({Count} candidates)",
+                i + 1,
+                chunks.Count,
                 itemName,
-                leftover.Count);
+                chunks[i].Count);
 
-            var second = await ResolveCandidatesAsync(
+            var chunkResult = await ResolveCandidatesAsync(
                     itemName,
-                    leftover,
+                    chunks[i],
                     config,
                     model,
                     baseUrl,
-                    maxAnnotations - results.Count,
+                    Math.Min(MentionsPerCall, maxAnnotations - results.Count),
                     cancellationToken)
                 .ConfigureAwait(false);
 
-            foreach (var mention in second.Mentions)
+            if (!string.IsNullOrWhiteSpace(chunkResult.Error))
+            {
+                lastError = chunkResult.Error;
+            }
+
+            foreach (var mention in chunkResult.Mentions)
             {
                 if (string.IsNullOrWhiteSpace(mention.Term) || string.IsNullOrWhiteSpace(mention.Summary))
                 {
@@ -181,14 +173,13 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         }
 
         var ordered = results
-            .Where(m => !string.IsNullOrWhiteSpace(m.Term) && !string.IsNullOrWhiteSpace(m.Summary))
             .OrderBy(m => m.StartMs)
             .Take(maxAnnotations)
             .ToList();
 
         if (ordered.Count == 0)
         {
-            var warning = first.Error ?? "AI returned no mentions for the candidate list.";
+            var warning = lastError ?? "AI returned no mentions for the candidate list.";
             _logger.LogWarning("Look it up AI produced 0 mentions for {Item}: {Warning}", itemName, warning);
             return new AiExtractionResult { Warning = warning };
         }
@@ -226,10 +217,11 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 var prev = i > 0 ? cues[i - 1].Text.Replace('\n', ' ').Trim() : string.Empty;
                 var curr = cue.Text.Replace('\n', ' ').Trim();
                 var next = i + 1 < cues.Count ? cues[i + 1].Text.Replace('\n', ' ').Trim() : string.Empty;
-                var context = string.Join(" / ", new[] { prev, curr, next }.Where(s => s.Length > 0));
-                if (context.Length > 220)
+                // Prefer the cue that contains the term; keep context short for free-tier models.
+                var context = curr.Length > 0 ? curr : string.Join(" / ", new[] { prev, next }.Where(s => s.Length > 0));
+                if (context.Length > 120)
                 {
-                    context = context[..220];
+                    context = context[..120];
                 }
 
                 byTerm[term] = new AiCandidate
@@ -264,43 +256,38 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         CancellationToken cancellationToken)
     {
         var url = baseUrl + "/chat/completions";
-        var mentionCap = Math.Clamp(maxMentions, 1, candidates.Count);
+        var mentionCap = Math.Clamp(maxMentions, 1, MentionsPerCall);
+        var isGroq = baseUrl.Contains("groq.com", StringComparison.OrdinalIgnoreCase);
 
         var candidateBlock = new StringBuilder();
         foreach (var c in candidates)
         {
-            candidateBlock.Append("- candidate=\"")
+            candidateBlock.Append("- ")
                 .Append(c.Term.Replace('"', '\''))
-                .Append("\" t=")
+                .Append(" @")
                 .Append(c.StartMs)
-                .Append("ms context=\"")
+                .Append(" | ")
                 .Append(c.Context.Replace('"', '\''))
-                .Append('"')
                 .Append('\n');
         }
 
         var system = """
-            You resolve subtitle name candidates into short on-screen explainer popups.
-            Reply with ONE JSON object only. No markdown. No prose.
-            Schema: {"mentions":[{"term":"Jon Voight","kind":"person","summary":"American actor (Midnight Cowboy).","startMs":59766,"endMs":62766}]}
-            Rules:
-            - Only keep candidates that are real people, places, films, songs, brands, or cultural references.
-            - Drop ordinary dialogue words, greetings, and the show's regular cast first names unless famously referential.
-            - Use CONTEXT to pick the intended meaning (Jon Voight the actor, not a surname etymology).
-            - term = full common name; summary <= 140 chars; kind = person|place|film|org|other.
-            - startMs must be the candidate's t= value (or nearby); endMs ~= startMs + 3000.
-            - If none worth keeping: {"mentions":[]}
+            Return ONE JSON object only. No markdown. No prose before or after.
+            Schema: {"mentions":[{"term":"Jon Voight","kind":"person","summary":"American actor.","startMs":59766,"endMs":62766}]}
+            Keep real people/places/films/brands; drop cast first-names and generic words.
+            Use context for meaning. summary <= 80 chars. kind=person|place|film|org|other.
+            startMs from the @ value. If none: {"mentions":[]}
             """;
 
         var user =
-            "Show/episode: " + itemName + "\n" +
-            "Return at most " + mentionCap + " mentions from these candidates.\n" +
-            "Output must start with { and be valid JSON only.\n" +
+            "Show: " + itemName + "\n" +
+            "Keep at most " + mentionCap + " items. JSON only, start with {\n" +
             candidateBlock;
 
         const int maxAttempts = 4;
         string? lastError = null;
-        var useJsonObjectMode = true;
+        // Groq json_object mode often fails with max_tokens on larger prompts; parse braces instead.
+        var useJsonObjectMode = !isGroq;
 
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
@@ -310,7 +297,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             {
                 ["model"] = model,
                 ["temperature"] = 0.1,
-                ["max_tokens"] = 2500,
+                ["max_tokens"] = 1200,
                 ["messages"] = new object[]
                 {
                     new { role = "system", content = system },
@@ -527,6 +514,17 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
 
         var oneLine = value.Replace('\r', ' ').Replace('\n', ' ');
         return oneLine.Length <= max ? oneLine : oneLine[..max] + "…";
+    }
+
+    private static List<List<AiCandidate>> ChunkList(IReadOnlyList<AiCandidate> items, int size)
+    {
+        var chunks = new List<List<AiCandidate>>();
+        for (var i = 0; i < items.Count; i += size)
+        {
+            chunks.Add(items.Skip(i).Take(size).ToList());
+        }
+
+        return chunks;
     }
 
     private static TimeSpan? ParseRetryDelay(string body)
