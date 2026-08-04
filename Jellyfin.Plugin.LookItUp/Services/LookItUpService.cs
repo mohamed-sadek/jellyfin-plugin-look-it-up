@@ -189,8 +189,9 @@ public class LookItUpService : ILookItUpService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Look it up failed for item {ItemId}", itemId);
-            throw;
+            // Never bubble to a hard 500 — return empty so playback keeps working.
+            _logger.LogError(ex, "Look it up failed for item {ItemId}: {Message}", itemId, ex.Message);
+            return Array.Empty<ContextAnnotation>();
         }
     }
 
@@ -213,10 +214,20 @@ public class LookItUpService : ILookItUpService
 
         var candidates = new List<(string Path, int Score)>();
 
-        // 1) External streams indexed by Jellyfin
+        // 1) External streams indexed by Jellyfin (BaseItem first — more stable across versions)
         try
         {
-            foreach (var stream in _mediaSourceManager.GetMediaStreams(item.Id))
+            IEnumerable<MediaStream> streams;
+            try
+            {
+                streams = item.GetMediaStreams();
+            }
+            catch
+            {
+                streams = _mediaSourceManager.GetMediaStreams(item.Id);
+            }
+
+            foreach (var stream in streams)
             {
                 if (stream.Type != MediaStreamType.Subtitle || !stream.IsExternal || string.IsNullOrWhiteSpace(stream.Path))
                 {

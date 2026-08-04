@@ -117,10 +117,10 @@ public class LookItUpController : ControllerBase
     }
 
     /// <summary>
-    /// Health/debug endpoint.
+    /// Health/debug endpoint (no auth — safe to open in a browser tab).
     /// </summary>
     [HttpGet("status")]
-    [Authorize]
+    [AllowAnonymous]
     public ActionResult GetStatus()
     {
         var config = Plugin.Instance?.Configuration;
@@ -130,7 +130,8 @@ public class LookItUpController : ControllerBase
             version = Plugin.Instance?.Version?.ToString(),
             enabled = config?.Enabled ?? false,
             wikipediaLanguage = config?.WikipediaLanguage,
-            instanceLoaded = Plugin.Instance is not null
+            instanceLoaded = Plugin.Instance is not null,
+            targetServer = "10.11.x"
         });
     }
 
