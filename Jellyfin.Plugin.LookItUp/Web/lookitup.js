@@ -1,10 +1,10 @@
 (function () {
   'use strict';
 
-  const CLIENT_VERSION = '1.0.5.0';
+  const CLIENT_VERSION = '1.0.5.1';
   const STYLE_ID = 'lookitup-styles';
   const POPUP_ID = 'lookitup-popup';
-  const POLL_MS = 250;
+  const POLL_MS = 200;
   const MIN_VISIBLE_MS = 4500;
 
   let annotations = [];
@@ -17,6 +17,8 @@
   let lastResolvedLogId = null;
   let loadInFlight = false;
   let lastLoadErrorAt = 0;
+  let lastDiagAt = 0;
+  let lastCueLogTerm = null;
 
   function ensureStyles() {
     let style = document.getElementById(STYLE_ID);
@@ -26,28 +28,28 @@
       document.head.appendChild(style);
     }
 
-    // Re-apply so updates win over older cached CSS.
     style.textContent = `
       #${POPUP_ID} {
-        position: absolute !important;
+        position: fixed !important;
         left: 50% !important;
-        bottom: max(8%, 64px) !important;
+        bottom: max(10vh, 72px) !important;
         transform: translateX(-50%) !important;
         z-index: 2147483647 !important;
-        max-width: min(560px, 90%) !important;
+        max-width: min(560px, 92vw) !important;
         width: max-content !important;
         padding: 16px 20px !important;
         border-radius: 14px !important;
-        border: 1px solid rgba(255, 255, 255, 0.18) !important;
-        background: rgba(8, 12, 20, 0.94) !important;
+        border: 1px solid rgba(255, 255, 255, 0.22) !important;
+        background: rgba(8, 12, 20, 0.96) !important;
         color: #f7fafc !important;
         font: 600 16px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif !important;
-        box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55) !important;
+        box-shadow: 0 16px 48px rgba(0, 0, 0, 0.65) !important;
         opacity: 0;
         visibility: hidden;
         pointer-events: none !important;
         transition: opacity 160ms ease, visibility 160ms ease !important;
         text-align: left !important;
+        display: block !important;
       }
       #${POPUP_ID}.visible {
         opacity: 1 !important;
@@ -73,17 +75,13 @@
       #${POPUP_ID} a:hover {
         text-decoration: underline !important;
       }
-      .videoPlayerContainer, .videoPlayerContainer-withCredits, .htmlvideoplayer, .videoosdhide {
-        /* ensure positioned ancestor for absolute popup */
-      }
-      .videoPlayerContainer {
-        position: relative !important;
-      }
     `;
   }
 
-  function getPlayerRoot() {
+  function getMountRoot() {
     return (
+      document.fullscreenElement ||
+      document.webkitFullscreenElement ||
       document.querySelector('.videoPlayerContainer') ||
       document.querySelector('.htmlvideoplayer') ||
       document.querySelector('#videoOsdPage') ||
@@ -94,7 +92,7 @@
   function ensurePopup() {
     ensureStyles();
     let popup = document.getElementById(POPUP_ID);
-    const root = getPlayerRoot();
+    const root = getMountRoot() || document.body;
 
     if (!popup) {
       popup = document.createElement('div');
@@ -102,7 +100,7 @@
       popup.setAttribute('role', 'status');
       popup.setAttribute('aria-live', 'polite');
       root.appendChild(popup);
-    } else if (popup.parentElement !== root && root) {
+    } else if (popup.parentElement !== root) {
       root.appendChild(popup);
     }
 
@@ -143,7 +141,6 @@
     }
 
     if (lastShownTerm === term && popup.classList.contains('visible')) {
-      // Refresh hide timer while still in the cue window.
       if (hideTimer) {
         clearTimeout(hideTimer);
       }
@@ -166,7 +163,7 @@
     if (term && summary.toLowerCase().startsWith((term + ':').toLowerCase())) {
       text = summary.slice(term.length + 1).trim();
     }
-    body.textContent = text || summary;
+    body.textContent = text || summary || 'Mentioned in subtitles';
     popup.appendChild(body);
 
     if (url) {
@@ -181,10 +178,14 @@
       popup.appendChild(link);
     }
 
-    // Force a reflow so the opacity transition always runs.
     popup.classList.remove('visible');
     void popup.offsetWidth;
     popup.classList.add('visible');
+
+    // Fixed positioning can still be clipped by transformed ancestors; pin inline too.
+    popup.style.cssText +=
+      ';position:fixed!important;left:50%!important;bottom:max(10vh,72px)!important;' +
+      'transform:translateX(-50%)!important;z-index:2147483647!important;opacity:1!important;visibility:visible!important;';
 
     if (hideTimer) {
       clearTimeout(hideTimer);
@@ -205,11 +206,7 @@
   }
 
   function getPlaybackManager() {
-    return (
-      window.playbackManager ||
-      window.PlaybackManager ||
-      null
-    );
+    return window.playbackManager || window.PlaybackManager || null;
   }
 
   function getActivePlayer(pm) {
@@ -241,26 +238,42 @@
     }
 
     const str = String(text);
-
-    // /Videos/{itemId}/... (hyphenated GUID or compact 32-hex)
     let match = str.match(/\/Videos\/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9a-fA-F]{32})(?=[/?#]|$)/i);
     if (match) {
       return formatGuid(match[1]);
     }
 
-    // /Items/{itemId}/...
     match = str.match(/\/Items\/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9a-fA-F]{32})(?=[/?#]|$)/i);
     if (match) {
       return formatGuid(match[1]);
     }
 
-    // Any hyphenated GUID
     match = str.match(/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/);
     if (match) {
       return match[0];
     }
 
     return null;
+  }
+
+  function getVideoElement() {
+    const videos = Array.from(document.querySelectorAll('video'));
+    if (!videos.length) {
+      return null;
+    }
+
+    // Prefer the visibly playing / largest player, not a tiny preview.
+    const ranked = videos
+      .map((v) => {
+        const rect = v.getBoundingClientRect();
+        const area = Math.max(0, rect.width) * Math.max(0, rect.height);
+        const playing = !v.paused && v.readyState >= 2 ? 1 : 0;
+        const hasTime = v.currentTime > 0 ? 1 : 0;
+        return { v, score: playing * 1e9 + hasTime * 1e8 + area };
+      })
+      .sort((a, b) => b.score - a.score);
+
+    return ranked[0].v;
   }
 
   function getCurrentItemId() {
@@ -290,7 +303,7 @@
       /* ignore */
     }
 
-    const video = document.querySelector('.videoPlayerContainer video, video');
+    const video = getVideoElement();
     const candidates = [
       video?.currentSrc,
       video?.src,
@@ -321,18 +334,44 @@
   }
 
   function getCurrentTimeMs() {
-    const video = document.querySelector('.videoPlayerContainer video, video');
-    if (video && !Number.isNaN(video.currentTime)) {
+    const video = getVideoElement();
+    if (video && Number.isFinite(video.currentTime)) {
       return Math.floor(video.currentTime * 1000);
     }
 
     const pm = getPlaybackManager();
     const player = getActivePlayer(pm);
     try {
+      if (pm && player && typeof pm.currentTime === 'function') {
+        const seconds = pm.currentTime(player);
+        if (typeof seconds === 'number' && Number.isFinite(seconds)) {
+          // Jellyfin may return seconds or ticks depending on player.
+          if (seconds > 1e10) {
+            return Math.floor(seconds / 10000);
+          }
+          return Math.floor(seconds * 1000);
+        }
+      }
+    } catch (_) {
+      /* ignore */
+    }
+
+    try {
       if (pm && player && typeof pm.getCurrentTicks === 'function') {
         const ticks = pm.getCurrentTicks(player);
-        if (typeof ticks === 'number' && !Number.isNaN(ticks)) {
+        if (typeof ticks === 'number' && Number.isFinite(ticks)) {
           return Math.floor(ticks / 10000);
+        }
+      }
+    } catch (_) {
+      /* ignore */
+    }
+
+    try {
+      if (player && typeof player.currentTime === 'function') {
+        const seconds = player.currentTime();
+        if (typeof seconds === 'number' && Number.isFinite(seconds)) {
+          return Math.floor(seconds * 1000);
         }
       }
     } catch (_) {
@@ -349,7 +388,7 @@
       url: readProp(a, 'url', 'Url') || null,
       startMs: Number(readProp(a, 'startMs', 'StartMs') || 0),
       endMs: Number(readProp(a, 'endMs', 'EndMs') || 0)
-    })).filter((a) => a.term && a.endMs >= a.startMs);
+    })).filter((a) => a.term && Number.isFinite(a.startMs) && Number.isFinite(a.endMs) && a.endMs >= a.startMs);
   }
 
   async function loadAnnotations(itemId) {
@@ -366,7 +405,6 @@
       return;
     }
 
-    // Back off briefly after a server error so we don't spam 500s.
     if (Date.now() - lastLoadErrorAt < 15000) {
       return;
     }
@@ -375,7 +413,6 @@
     console.info('[Look it up] fetching annotations for', itemId);
 
     try {
-      // force=true once per item so server rescans after plugin upgrades
       const forceKey = 'lookitup-force-' + itemId;
       const force = !sessionStorage.getItem(forceKey);
       const url = api.getUrl(`LookItUp/${itemId}`) + (force ? '?force=true' : '');
@@ -402,9 +439,13 @@
         annotations.map((a) => ({
           term: a.term,
           startMs: a.startMs,
-          endMs: a.endMs
+          endMs: a.endMs,
+          hasSummary: !!a.summary
         }))
       );
+
+      // Immediate pass after load so we don't wait another poll interval.
+      tryShowForCurrentTime();
     } catch (err) {
       lastLoadErrorAt = Date.now();
       let detail = err;
@@ -424,11 +465,34 @@
     }
   }
 
+  function tryShowForCurrentTime() {
+    ensurePopup();
+    const now = getCurrentTimeMs();
+    if (now == null || !annotations.length) {
+      return;
+    }
+
+    const active = annotations.find((a) => now >= a.startMs && now <= a.endMs);
+    if (!active) {
+      return;
+    }
+
+    if (lastCueLogTerm !== active.term) {
+      lastCueLogTerm = active.term;
+      console.info('[Look it up] cue match → search/popup', {
+        term: active.term,
+        playbackMs: now,
+        window: [active.startMs, active.endMs]
+      });
+    }
+    showPopup(active);
+  }
+
   let noItemLogAt = 0;
 
   function tick() {
     const itemId = getCurrentItemId();
-    const video = document.querySelector('.videoPlayerContainer video, video');
+    const video = getVideoElement();
     const videoPlaying = !!(video && !video.paused && video.readyState >= 2);
 
     if (!itemId) {
@@ -442,7 +506,6 @@
           videoSrc: video?.currentSrc || video?.src || null
         });
       }
-      // Don't wipe state on brief detection gaps during OSD transitions.
       if (currentItemId && !videoPlaying) {
         missingItemTicks += 1;
         if (missingItemTicks > 8) {
@@ -465,25 +528,26 @@
       return;
     }
 
-    // Keep popup mounted on the active player root (fullscreen-safe).
-    ensurePopup();
-
     const now = getCurrentTimeMs();
+    if (Date.now() - lastDiagAt > 4000 && annotations.length) {
+      lastDiagAt = Date.now();
+      const next = annotations.find((a) => a.startMs >= (now || 0)) || annotations[0];
+      console.info('[Look it up] playback tick', {
+        playbackMs: now,
+        annotations: annotations.length,
+        videoPaused: video ? video.paused : null,
+        videoTime: video ? video.currentTime : null,
+        nextTerm: next && next.term,
+        nextAtMs: next && next.startMs,
+        popupVisible: !!document.getElementById(POPUP_ID)?.classList.contains('visible')
+      });
+    }
+
     if (now == null || !annotations.length) {
       return;
     }
 
-    const active = annotations.find((a) => now >= a.startMs && now <= a.endMs);
-    if (active) {
-      if (lastShownTerm !== active.term) {
-        console.info('[Look it up] cue match → search/popup', {
-          term: active.term,
-          playbackMs: now,
-          window: [active.startMs, active.endMs]
-        });
-      }
-      showPopup(active);
-    }
+    tryShowForCurrentTime();
   }
 
   async function logServerVersion() {
@@ -500,7 +564,7 @@
       });
       console.info('[Look it up] loaded', {
         client: CLIENT_VERSION,
-        server: status && (status.version || status.Version) || 'unknown',
+        server: (status && (status.version || status.Version)) || 'unknown',
         enabled: status && (status.enabled ?? status.Enabled),
         targetServer: status && (status.targetServer || status.TargetServer)
       });
