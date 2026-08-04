@@ -1,6 +1,7 @@
 (function () {
   'use strict';
 
+  const CLIENT_VERSION = '1.0.5.0';
   const STYLE_ID = 'lookitup-styles';
   const POPUP_ID = 'lookitup-popup';
   const POLL_MS = 250;
@@ -485,10 +486,34 @@
     }
   }
 
+  async function logServerVersion() {
+    try {
+      const api = getApiClient();
+      if (!api) {
+        console.info('[Look it up] client', CLIENT_VERSION, '(no ApiClient yet for server version)');
+        return;
+      }
+      const status = await api.ajax({
+        url: api.getUrl('LookItUp/status'),
+        type: 'GET',
+        dataType: 'json'
+      });
+      console.info('[Look it up] loaded', {
+        client: CLIENT_VERSION,
+        server: status && (status.version || status.Version) || 'unknown',
+        enabled: status && (status.enabled ?? status.Enabled),
+        targetServer: status && (status.targetServer || status.TargetServer)
+      });
+    } catch (err) {
+      console.warn('[Look it up] client', CLIENT_VERSION, '— could not read server /LookItUp/status', err);
+    }
+  }
+
   function start() {
     ensurePopup();
     setInterval(tick, POLL_MS);
-    console.info('[Look it up] overlay ready');
+    console.info('[Look it up] overlay ready', CLIENT_VERSION);
+    logServerVersion();
   }
 
   if (document.readyState === 'loading') {
