@@ -1,0 +1,116 @@
+using System.Collections.Concurrent;
+using System.Text.Json;
+using Jellyfin.Plugin.LookItUp.Models;
+using MediaBrowser.Common.Configuration;
+using Microsoft.Extensions.Logging;
+
+namespace Jellyfin.Plugin.LookItUp.Services;
+
+/// <summary>
+/// Persists scanned annotations per media item.
+/// </summary>
+public interface IAnnotationStore
+{
+    /// <summary>
+    /// Tries to get a cached scan for an item.
+    /// </summary>
+    /// <param name="itemId">Media item id.</param>
+    /// <returns>Cached entry, or null.</returns>
+    ItemAnnotationCache? Get(Guid itemId);
+
+    /// <summary>
+    /// Saves a scan result.
+    /// </summary>
+    /// <param name="cache">Cache entry.</param>
+    void Save(ItemAnnotationCache cache);
+
+    /// <summary>
+    /// Removes a cached scan.
+    /// </summary>
+    /// <param name="itemId">Media item id.</param>
+    void Remove(Guid itemId);
+}
+
+/// <summary>
+/// JSON file-backed annotation cache under the plugin data folder.
+/// </summary>
+public class AnnotationStore : IAnnotationStore
+{
+    private readonly ILogger<AnnotationStore> _logger;
+    private readonly string _directory;
+    private readonly ConcurrentDictionary<Guid, ItemAnnotationCache> _memory = new();
+    private readonly JsonSerializerOptions _jsonOptions = new() { WriteIndented = true };
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="AnnotationStore"/> class.
+    /// </summary>
+    /// <param name="appPaths">Application paths.</param>
+    /// <param name="logger">Logger.</param>
+    public AnnotationStore(IApplicationPaths appPaths, ILogger<AnnotationStore> logger)
+    {
+        _logger = logger;
+        _directory = Path.Combine(appPaths.PluginConfigurationsPath, "LookItUp", "cache");
+        Directory.CreateDirectory(_directory);
+    }
+
+    /// <inheritdoc />
+    public ItemAnnotationCache? Get(Guid itemId)
+    {
+        if (_memory.TryGetValue(itemId, out var cached))
+        {
+            return cached;
+        }
+
+        var path = GetPath(itemId);
+        if (!File.Exists(path))
+        {
+            return null;
+        }
+
+        try
+        {
+            var json = File.ReadAllText(path);
+            var entry = JsonSerializer.Deserialize<ItemAnnotationCache>(json);
+            if (entry is not null)
+            {
+                _memory[itemId] = entry;
+            }
+
+            return entry;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to read Look it up cache for {ItemId}", itemId);
+            return null;
+        }
+    }
+
+    /// <inheritdoc />
+    public void Save(ItemAnnotationCache cache)
+    {
+        _memory[cache.ItemId] = cache;
+        var path = GetPath(cache.ItemId);
+        try
+        {
+            var json = JsonSerializer.Serialize(cache, _jsonOptions);
+            File.WriteAllText(path, json);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to write Look it up cache for {ItemId}", cache.ItemId);
+        }
+    }
+
+    /// <inheritdoc />
+    public void Remove(Guid itemId)
+    {
+        _memory.TryRemove(itemId, out _);
+        var path = GetPath(itemId);
+        if (File.Exists(path))
+        {
+            File.Delete(path);
+        }
+    }
+
+    private string GetPath(Guid itemId) => Path.Combine(_directory, $"{itemId:N}.json");
+}

@@ -1,0 +1,9 @@
+bin/
+obj/
+.vs/
+.idea/
+artifacts/
+*.user
+*.suo
+repo/look-it-up_1.0.0.0/
+repo/serve.ps1

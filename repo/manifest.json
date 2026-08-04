@@ -1,0 +1,20 @@
+[
+  {
+    "guid": "a8ab0fed-cac9-406d-b98b-58161bf970b8",
+    "name": "Look it up",
+    "description": "Scans subtitles for names and shows short Wikipedia explanations during playback.",
+    "overview": "Timed Wikipedia popups from subtitle mentions",
+    "owner": "mohamed-sadek",
+    "category": "General",
+    "versions": [
+      {
+        "version": "1.0.0.0",
+        "changelog": "Initial release: subtitle scanning, Wikipedia lookups, web playback overlay",
+        "targetAbi": "10.9.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.0.0.0/look-it-up_1.0.0.0.zip",
+        "checksum": "a0589fa1fb5b881d71d47c8d85ef6a3f",
+        "timestamp": "2026-08-04T00:00:00Z"
+      }
+    ]
+  }
+]

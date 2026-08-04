@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Look it up</title>
+</head>
+<body>
+    <div id="lookItUpConfigPage" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button,emby-checkbox,emby-select">
+        <div data-role="content">
+            <div class="content-primary">
+                <form id="lookItUpConfigForm">
+                    <div class="sectionTitleContainer flex align-items-center">
+                        <h2 class="sectionTitle">Look it up</h2>
+                    </div>
+
+                    <p>
+                        Scans external subtitles for names (places, people, organizations), looks them up on Wikipedia,
+                        and shows a short popup at the moment they are mentioned during playback.
+                    </p>
+
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label class="emby-checkbox-label">
+                            <input id="chkEnabled" type="checkbox" is="emby-checkbox" />
+                            <span>Enable Look it up</span>
+                        </label>
+                    </div>
+
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="txtWikipediaLanguage">Wikipedia language</label>
+                        <input id="txtWikipediaLanguage" type="text" is="emby-input" />
+                        <div class="fieldDescription">Language code for Wikipedia summaries (e.g. en, fr, de).</div>
+                    </div>
+
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="txtPreferredSubtitleLanguages">Preferred subtitle languages</label>
+                        <input id="txtPreferredSubtitleLanguages" type="text" is="emby-input" />
+                        <div class="fieldDescription">Comma-separated language codes used when choosing a subtitle file (e.g. en,eng).</div>
+                    </div>
+
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="txtMaxAnnotations">Max annotations per item</label>
+                        <input id="txtMaxAnnotations" type="number" is="emby-input" min="1" max="200" />
+                    </div>
+
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="txtMinEntityLength">Minimum entity length</label>
+                        <input id="txtMinEntityLength" type="number" is="emby-input" min="2" max="40" />
+                    </div>
+
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="txtPopupDuration">Popup duration (ms)</label>
+                        <input id="txtPopupDuration" type="number" is="emby-input" min="1000" max="30000" step="500" />
+                    </div>
+
+                    <div class="sectionTitleContainer flex align-items-center" style="margin-top:1.5em;">
+                        <h2 class="sectionTitle">Web client overlay</h2>
+                    </div>
+                    <p>
+                        Jellyfin server plugins cannot inject playback UI by themselves. Load the overlay script in your
+                        web client (Custom JavaScript plugin, userscript, or a small web client patch):
+                    </p>
+                    <pre style="white-space:pre-wrap;word-break:break-all;background:rgba(0,0,0,.08);padding:12px;border-radius:8px;">&lt;script src="/LookItUp/script.js"&gt;&lt;/script&gt;</pre>
+
+                    <div>
+                        <button is="emby-button" type="submit" class="raised button-submit block emby-button">
+                            <span>Save</span>
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <script type="text/javascript">
+            var LookItUpConfig = {
+                pluginUniqueId: 'a8ab0fed-cac9-406d-b98b-58161bf970b8'
+            };
+
+            document.querySelector('#lookItUpConfigPage')
+                .addEventListener('pageshow', function () {
+                    Dashboard.showLoadingMsg();
+                    ApiClient.getPluginConfiguration(LookItUpConfig.pluginUniqueId).then(function (config) {
+                        document.querySelector('#chkEnabled').checked = config.Enabled;
+                        document.querySelector('#txtWikipediaLanguage').value = config.WikipediaLanguage || 'en';
+                        document.querySelector('#txtPreferredSubtitleLanguages').value = config.PreferredSubtitleLanguages || 'en';
+                        document.querySelector('#txtMaxAnnotations').value = config.MaxAnnotationsPerItem;
+                        document.querySelector('#txtMinEntityLength').value = config.MinEntityLength;
+                        document.querySelector('#txtPopupDuration').value = config.PopupDurationMs;
+                        Dashboard.hideLoadingMsg();
+                    });
+                });
+
+            document.querySelector('#lookItUpConfigForm')
+                .addEventListener('submit', function (e) {
+                    e.preventDefault();
+                    Dashboard.showLoadingMsg();
+                    ApiClient.getPluginConfiguration(LookItUpConfig.pluginUniqueId).then(function (config) {
+                        config.Enabled = document.querySelector('#chkEnabled').checked;
+                        config.WikipediaLanguage = document.querySelector('#txtWikipediaLanguage').value;
+                        config.PreferredSubtitleLanguages = document.querySelector('#txtPreferredSubtitleLanguages').value;
+                        config.MaxAnnotationsPerItem = parseInt(document.querySelector('#txtMaxAnnotations').value, 10);
+                        config.MinEntityLength = parseInt(document.querySelector('#txtMinEntityLength').value, 10);
+                        config.PopupDurationMs = parseInt(document.querySelector('#txtPopupDuration').value, 10);
+                        ApiClient.updatePluginConfiguration(LookItUpConfig.pluginUniqueId, config).then(function (result) {
+                            Dashboard.processPluginConfigurationUpdateResult(result);
+                        });
+                    });
+                    return false;
+                });
+        </script>
+    </div>
+</body>
+</html>
