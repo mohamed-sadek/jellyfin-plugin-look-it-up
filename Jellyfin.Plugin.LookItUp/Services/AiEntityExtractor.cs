@@ -292,11 +292,11 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             - If none worth keeping: {"mentions":[]}
             """;
 
-        var user = $"""
-            Show/episode: {itemName}
-            Return at most {mentionCap} mentions from these candidates:
-            {candidateBlock}
-            """;
+        var user =
+            "Show/episode: " + itemName + "\n" +
+            "Return at most " + mentionCap + " mentions from these candidates.\n" +
+            "Output must start with { and be valid JSON only.\n" +
+            candidateBlock;
 
         const int maxAttempts = 4;
         string? lastError = null;
@@ -362,10 +362,30 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                     return ([], lastError, false);
                 }
 
-                var (mentions, finishReason) = ParseMentions(body);
-                var mayHaveMore = string.Equals(finishReason, "length", StringComparison.OrdinalIgnoreCase)
-                                  || mentions.Count < Math.Min(mentionCap, candidates.Count) / 2;
-                return (mentions, null, mayHaveMore);
+                var parsed = TryParseMentions(body);
+                if (!parsed.Ok)
+                {
+                    lastError = parsed.Error ?? "Failed to parse AI response.";
+                    _logger.LogWarning(
+                        "AI parse failed on attempt {Attempt}/{Max}: {Error}. Body starts: {Snippet}",
+                        attempt,
+                        maxAttempts,
+                        lastError,
+                        Truncate(body, 180));
+
+                    // Prose / broken JSON mode → retry without response_format, insist on raw JSON.
+                    if (useJsonObjectMode)
+                    {
+                        useJsonObjectMode = false;
+                    }
+
+                    await Task.Delay(500, cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                var mayHaveMore = string.Equals(parsed.FinishReason, "length", StringComparison.OrdinalIgnoreCase)
+                                  || parsed.Mentions.Count < Math.Min(mentionCap, candidates.Count) / 2;
+                return (parsed.Mentions, null, mayHaveMore);
             }
             catch (OperationCanceledException)
             {
@@ -405,38 +425,108 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         return "gpt-4o-mini";
     }
 
-    private static (IReadOnlyList<AiEntityMention> Mentions, string? FinishReason) ParseMentions(string completionBody)
+    private static ParseMentionsResult TryParseMentions(string completionBody)
     {
-        using var doc = JsonDocument.Parse(completionBody);
-        string? finishReason = null;
-        if (doc.RootElement.TryGetProperty("choices", out var choices)
-            && choices.GetArrayLength() > 0
-            && choices[0].TryGetProperty("finish_reason", out var fr))
+        if (string.IsNullOrWhiteSpace(completionBody))
         {
-            finishReason = fr.GetString();
+            return ParseMentionsResult.Fail("Empty AI HTTP body.");
         }
 
-        var content = doc.RootElement
-            .GetProperty("choices")[0]
-            .GetProperty("message")
-            .GetProperty("content")
-            .GetString();
-
-        if (string.IsNullOrWhiteSpace(content))
+        var trimmedBody = completionBody.TrimStart();
+        if (trimmedBody.Length == 0 || trimmedBody[0] != '{')
         {
-            return ([], finishReason);
+            return ParseMentionsResult.Fail(
+                "AI HTTP body was not JSON (starts with: " + Truncate(trimmedBody, 80) + ").");
         }
 
-        content = StripCodeFence(content);
-        var start = content.IndexOf('{');
-        var end = content.LastIndexOf('}');
-        if (start >= 0 && end > start)
+        try
         {
+            using var doc = JsonDocument.Parse(completionBody);
+            if (!doc.RootElement.TryGetProperty("choices", out var choices) || choices.GetArrayLength() == 0)
+            {
+                return ParseMentionsResult.Fail("AI response missing choices[].");
+            }
+
+            var choice = choices[0];
+            string? finishReason = null;
+            if (choice.TryGetProperty("finish_reason", out var fr))
+            {
+                finishReason = fr.GetString();
+            }
+
+            if (!choice.TryGetProperty("message", out var message))
+            {
+                return ParseMentionsResult.Fail("AI response missing message.");
+            }
+
+            var content = ReadMessageContent(message);
+            if (string.IsNullOrWhiteSpace(content))
+            {
+                return ParseMentionsResult.Fail("AI message content was empty.");
+            }
+
+            content = StripCodeFence(content.Trim());
+            var start = content.IndexOf('{');
+            var end = content.LastIndexOf('}');
+            if (start < 0 || end <= start)
+            {
+                return ParseMentionsResult.Fail(
+                    "AI content had no JSON object (starts with: " + Truncate(content, 80) + ").");
+            }
+
             content = content[start..(end + 1)];
+            var parsed = JsonSerializer.Deserialize<AiResponse>(content, JsonOptions);
+            return new ParseMentionsResult
+            {
+                Ok = true,
+                Mentions = parsed?.Mentions ?? [],
+                FinishReason = finishReason
+            };
+        }
+        catch (JsonException ex)
+        {
+            return ParseMentionsResult.Fail("AI JSON parse error: " + ex.Message);
+        }
+    }
+
+    private static string? ReadMessageContent(JsonElement message)
+    {
+        if (!message.TryGetProperty("content", out var content))
+        {
+            return null;
         }
 
-        var parsed = JsonSerializer.Deserialize<AiResponse>(content, JsonOptions);
-        return (parsed?.Mentions ?? [], finishReason);
+        return content.ValueKind switch
+        {
+            JsonValueKind.String => content.GetString(),
+            JsonValueKind.Array => string.Concat(content.EnumerateArray().Select(part =>
+            {
+                if (part.ValueKind == JsonValueKind.String)
+                {
+                    return part.GetString() ?? string.Empty;
+                }
+
+                if (part.ValueKind == JsonValueKind.Object && part.TryGetProperty("text", out var text))
+                {
+                    return text.GetString() ?? string.Empty;
+                }
+
+                return string.Empty;
+            })),
+            JsonValueKind.Null => null,
+            _ => content.GetRawText()
+        };
+    }
+
+    private static string Truncate(string value, int max)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return string.Empty;
+        }
+
+        var oneLine = value.Replace('\r', ' ').Replace('\n', ' ');
+        return oneLine.Length <= max ? oneLine : oneLine[..max] + "…";
     }
 
     private static TimeSpan? ParseRetryDelay(string body)
@@ -556,5 +646,18 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
     {
         [JsonPropertyName("mentions")]
         public List<AiEntityMention> Mentions { get; set; } = [];
+    }
+
+    private sealed class ParseMentionsResult
+    {
+        public bool Ok { get; init; }
+
+        public IReadOnlyList<AiEntityMention> Mentions { get; init; } = [];
+
+        public string? FinishReason { get; init; }
+
+        public string? Error { get; init; }
+
+        public static ParseMentionsResult Fail(string error) => new() { Ok = false, Error = error };
     }
 }
