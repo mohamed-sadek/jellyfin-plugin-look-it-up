@@ -80,7 +80,9 @@ public class WikipediaLookupService : IWikipediaLookupService
 
             var extract = payload.Extract.Trim();
             if (extract.Contains("may refer to", StringComparison.OrdinalIgnoreCase)
-                || extract.Contains("can refer to", StringComparison.OrdinalIgnoreCase))
+                || extract.Contains("can refer to", StringComparison.OrdinalIgnoreCase)
+                || extract.Contains("commonly refers to", StringComparison.OrdinalIgnoreCase)
+                || extract.Contains("usually refers to", StringComparison.OrdinalIgnoreCase))
             {
                 return Miss(term, cacheKey);
             }

@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "1.0.7.0",
+        "changelog": "Tighter name filters; clearer cue-gap logging; force rescan on server upgrade",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.0.7.0/look-it-up_1.0.7.0.zip",
+        "checksum": "f91b12b699746f1bddcc9ca1682d125e",
+        "timestamp": "2026-08-04T21:40:00Z"
+      },
+      {
         "version": "1.0.6.0",
         "changelog": "Reduce ALL-CAPS noise; prefer real names; reject disambiguation pages; 2s popup default",
         "targetAbi": "10.11.0.0",

@@ -42,7 +42,11 @@ public partial class EntityExtractor : IEntityExtractor
         "Out", "Off", "Up", "Down", "Man", "Boy", "Girl", "Guy", "Kid", "Dude",
         "Mom", "Dad", "Pop", "Buddy", "Pal", "Honey", "Baby", "Dear",
         "New", "Old", "Big", "Little", "Good", "Bad", "Fine", "Nice", "Great",
-        "Limited", "Consumer", "Street"
+        "Limited", "Consumer", "Street",
+        "Nothing", "Everything", "Anything", "Something", "Someone", "Everyone",
+        "Apparently", "Excuse", "Ownership", "Afternoon", "Watch", "Eve",
+        "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
+        "Dentist", "Taxi", "Jon", "Dallas"
     };
 
     /// <summary>

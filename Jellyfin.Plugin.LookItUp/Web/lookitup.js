@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  const CLIENT_VERSION = '1.0.6.3';
+  const CLIENT_VERSION = '1.0.6.4';
   const STYLE_ID = 'lookitup-styles';
   const POPUP_ID = 'lookitup-popup';
   const POLL_MS = 200;
@@ -12,9 +12,11 @@
     'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
     'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august',
     'september', 'october', 'november', 'december', 'today', 'tomorrow', 'yesterday',
-    'tonight', 'morning', 'night', 'week', 'month', 'year', 'day', 'time',
+    'tonight', 'morning', 'afternoon', 'night', 'week', 'month', 'year', 'day', 'time',
     'heh', 'huh', 'whoa', 'wow', 'okay', 'right', 'sure', 'really', 'maybe',
-    'ford', 'ltd', 'integra', 'supra', 'volvo' // brand shout-outs without context are noisy in this ep
+    'nothing', 'everything', 'anything', 'something', 'someone', 'everyone',
+    'ownership', 'apparently', 'excuse', 'dentist', 'watch', 'eve', 'jon',
+    'taxi', 'dallas', 'ford', 'ltd', 'integra', 'supra', 'volvo'
   ]);
 
   let annotations = [];
@@ -466,7 +468,15 @@
     console.info('[Look it up] fetching annotations for', itemId);
 
     try {
-      const forceKey = 'lookitup-force-' + itemId;
+      // Rescan when server plugin updates (cache key includes server version).
+      let serverVer = 'unknown';
+      try {
+        const st = await api.ajax({ url: api.getUrl('LookItUp/status'), type: 'GET', dataType: 'json' });
+        serverVer = (st && (st.version || st.Version)) || 'unknown';
+      } catch (_) {
+        /* ignore */
+      }
+      const forceKey = 'lookitup-force-' + itemId + '-' + serverVer;
       const force = !sessionStorage.getItem(forceKey);
       const url = api.getUrl(`LookItUp/${itemId}`) + (force ? '?force=true' : '');
       const data = await api.ajax({
@@ -613,14 +623,19 @@
     const now = getCurrentTimeMs();
     if (Date.now() - lastDiagAt > 4000 && annotations.length) {
       lastDiagAt = Date.now();
+      const activeNow = annotations.filter((a) => now != null && now >= a.startMs && now <= a.endMs);
       const next = annotations.find((a) => a.startMs >= (now || 0)) || annotations[0];
+      const prev = [...annotations].reverse().find((a) => a.endMs < (now || 0));
       console.info('[Look it up] playback tick', {
         playbackMs: now,
         annotations: annotations.length,
-        videoPaused: video ? video.paused : null,
-        videoTime: video ? video.currentTime : null,
+        activeNow: activeNow.map((a) => a.term),
+        inCueGap: activeNow.length === 0,
+        prevTerm: prev && prev.term,
+        prevEndedMs: prev && prev.endMs,
         nextTerm: next && next.term,
         nextAtMs: next && next.startMs,
+        nextInSec: next && now != null ? Math.max(0, Math.round((next.startMs - now) / 1000)) : null,
         popupVisible: !!document.getElementById(POPUP_ID)?.classList.contains('visible')
       });
     }

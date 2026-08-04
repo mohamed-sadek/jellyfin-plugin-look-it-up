@@ -31,7 +31,7 @@ public class LookItUpService : ILookItUpService
     /// <summary>
     /// Bump when scan logic changes so stale caches are ignored.
     /// </summary>
-    private const int CacheVersion = 3;
+    private const int CacheVersion = 4;
 
     private static readonly HashSet<string> TextSubtitleCodecs = new(StringComparer.OrdinalIgnoreCase)
     {
