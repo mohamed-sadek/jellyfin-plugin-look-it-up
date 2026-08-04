@@ -33,7 +33,7 @@ public interface ILookItUpPrepareService
     /// <summary>
     /// Prepares a single item synchronously (for API / scheduled task item loops).
     /// </summary>
-    Task<ItemAnnotationCache?> PrepareItemAsync(Guid itemId, bool force, CancellationToken cancellationToken);
+    Task<PrepareItemResult> PrepareItemAsync(Guid itemId, bool force, CancellationToken cancellationToken);
 
     /// <summary>
     /// Runs a full library prepare (used by the scheduled task).
@@ -151,7 +151,7 @@ public class LookItUpPrepareService : ILookItUpPrepareService
     }
 
     /// <inheritdoc />
-    public Task<ItemAnnotationCache?> PrepareItemAsync(Guid itemId, bool force, CancellationToken cancellationToken)
+    public Task<PrepareItemResult> PrepareItemAsync(Guid itemId, bool force, CancellationToken cancellationToken)
         => _lookItUpService.PrepareItemAsync(itemId, force, cancellationToken);
 
     /// <inheritdoc />
@@ -228,20 +228,28 @@ public class LookItUpPrepareService : ILookItUpPrepareService
                     continue;
                 }
 
-                var cache = await _lookItUpService
+                var result = await _lookItUpService
                     .PrepareItemAsync(item.Id, force: true, cancellationToken)
                     .ConfigureAwait(false);
 
                 lock (_gate)
                 {
                     _status.Completed = i + 1;
-                    if (cache is null)
+                    if (result.Cache is null)
                     {
                         _status.Failed++;
+                        if (!string.IsNullOrWhiteSpace(result.Warning))
+                        {
+                            _status.LastError = result.Warning;
+                        }
                     }
-                    else if (cache.Annotations.Count == 0)
+                    else if (result.Cache.Annotations.Count == 0)
                     {
                         _status.Skipped++;
+                        if (!string.IsNullOrWhiteSpace(result.Warning))
+                        {
+                            _status.LastError = result.Warning;
+                        }
                     }
                     else
                     {

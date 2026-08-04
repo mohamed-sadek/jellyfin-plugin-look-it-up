@@ -131,22 +131,29 @@
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="txtAiProvider">AI provider</label>
                         <input id="txtAiProvider" type="text" is="emby-input" />
-                        <div class="fieldDescription">Use <code>OpenAI</code> for OpenAI-compatible APIs, or <code>None</code> for legacy Wikipedia heuristics.</div>
+                        <div class="fieldDescription">
+                            <code>OpenAI</code>, <code>Groq</code>, <code>OpenRouter</code>, <code>Ollama</code>, or <code>None</code> (legacy Wikipedia).
+                            For Groq free tier set provider to <code>Groq</code>.
+                        </div>
                     </div>
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="txtAiApiKey">AI API key</label>
                         <input id="txtAiApiKey" type="password" is="emby-input" autocomplete="off" />
-                        <div class="fieldDescription">Stored in Jellyfin plugin config. Leave blank to keep the existing key when saving.</div>
+                        <div class="fieldDescription">Stored in Jellyfin plugin config. Leave blank to keep the existing key when saving. Groq: console.groq.com/keys</div>
                     </div>
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="txtAiModel">AI model</label>
                         <input id="txtAiModel" type="text" is="emby-input" />
-                        <div class="fieldDescription">e.g. <code>gpt-4o-mini</code>, <code>gpt-4o</code>, or a gateway model id.</div>
+                        <div class="fieldDescription">Groq example: <code>llama-3.3-70b-versatile</code>. OpenAI: <code>gpt-4o-mini</code>.</div>
                     </div>
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="txtAiBaseUrl">AI base URL</label>
                         <input id="txtAiBaseUrl" type="text" is="emby-input" />
-                        <div class="fieldDescription">OpenAI-compatible root, e.g. <code>https://api.openai.com/v1</code>.</div>
+                        <div class="fieldDescription">
+                            Groq: <code>https://api.groq.com/openai/v1</code>.
+                            OpenAI: <code>https://api.openai.com/v1</code>.
+                            Provider <code>Groq</code> always uses the Groq URL even if this field still says OpenAI.
+                        </div>
                     </div>
 
                     <div class="sectionTitleContainer flex align-items-center" style="margin-top:1.5em;">
@@ -298,16 +305,26 @@
                 }).then(function (result) {
                     Dashboard.hideLoadingMsg();
                     var count = result.count ?? result.Count ?? 0;
+                    var warning = result.warning || result.Warning || '';
+                    var mode = result.mode || result.Mode || '';
+                    var aiUrl = result.aiBaseUrl || result.AiBaseUrl || '';
+                    var aiModel = result.aiModel || result.AiModel || '';
                     var terms = (result.annotations || result.Annotations || []).slice(0, 15).map(function (a) {
                         return (a.term || a.Term || '');
                     }).filter(Boolean);
                     document.querySelector('#prepareStatusBox').textContent = [
                         'Single-item prepare finished.',
                         'Item: ' + id,
+                        'Mode: ' + mode,
+                        'AI endpoint: ' + (aiUrl || '-'),
+                        'AI model: ' + (aiModel || '-'),
                         'Annotations: ' + count,
-                        'Sample: ' + (terms.join(', ') || '(none)')
-                    ].join('\n');
-                    Dashboard.alert('Prepared item with ' + count + ' annotations.');
+                        'Sample: ' + (terms.join(', ') || '(none)'),
+                        warning ? ('Warning: ' + warning) : ''
+                    ].filter(Boolean).join('\n');
+                    Dashboard.alert(warning && count === 0
+                        ? ('AI prepare returned 0 annotations.\n' + warning)
+                        : ('Prepared item with ' + count + ' annotations.'));
                 }).catch(function (err) {
                     Dashboard.hideLoadingMsg();
                     Dashboard.alert('Single-item prepare failed: ' + err);

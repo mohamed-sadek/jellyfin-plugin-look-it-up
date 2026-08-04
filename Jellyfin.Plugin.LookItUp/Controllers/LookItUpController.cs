@@ -107,16 +107,21 @@ public class LookItUpController : ControllerBase
                 return NotFound();
             }
 
-            var cache = await _prepareService
+            var result = await _prepareService
                 .PrepareItemAsync(itemId, force: true, cancellationToken)
                 .ConfigureAwait(false);
 
+            var cache = result.Cache;
             return Ok(new
             {
                 itemId,
                 count = cache?.Annotations.Count ?? 0,
                 preparedAtUtc = cache?.ScannedAtUtc,
                 subtitle = cache?.SubtitlePath,
+                mode = result.Mode,
+                aiBaseUrl = result.AiBaseUrl,
+                aiModel = result.AiModel,
+                warning = result.Warning,
                 annotations = cache?.Annotations ?? []
             });
         }
@@ -198,6 +203,13 @@ public class LookItUpController : ControllerBase
             writeSidecarFiles = config?.WriteSidecarFiles ?? false,
             aiProvider = config?.AiProvider ?? "None",
             aiModel = config?.AiModel,
+            aiBaseUrl = config?.AiBaseUrl,
+            aiResolvedBaseUrl = string.IsNullOrWhiteSpace(config?.AiApiKey)
+                || string.Equals(config?.AiProvider, "None", StringComparison.OrdinalIgnoreCase)
+                ? null
+                : OpenAiCompatibleEntityExtractor.ResolveBaseUrl(
+                    config!,
+                    string.IsNullOrWhiteSpace(config?.AiModel) ? "gpt-4o-mini" : config!.AiModel),
             aiConfigured = !string.IsNullOrWhiteSpace(config?.AiApiKey)
                            && !string.Equals(config?.AiProvider, "None", StringComparison.OrdinalIgnoreCase),
             cacheVersion = _lookItUpService.CacheVersion,

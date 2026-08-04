@@ -29,7 +29,7 @@ public interface ILookItUpService
     /// <summary>
     /// Precomputes and stores annotations for an item.
     /// </summary>
-    Task<ItemAnnotationCache?> PrepareItemAsync(
+    Task<PrepareItemResult> PrepareItemAsync(
         Guid itemId,
         bool force,
         CancellationToken cancellationToken);
@@ -133,11 +133,11 @@ public class LookItUpService : ILookItUpService
 
         var prepared = await PrepareItemAsync(itemId, force: true, cancellationToken)
             .ConfigureAwait(false);
-        return (IReadOnlyList<ContextAnnotation>)(prepared?.Annotations ?? []);
+        return (IReadOnlyList<ContextAnnotation>)(prepared.Cache?.Annotations ?? []);
     }
 
     /// <inheritdoc />
-    public async Task<ItemAnnotationCache?> PrepareItemAsync(
+    public async Task<PrepareItemResult> PrepareItemAsync(
         Guid itemId,
         bool force,
         CancellationToken cancellationToken)
@@ -147,19 +147,19 @@ public class LookItUpService : ILookItUpService
             var config = Plugin.Instance?.Configuration;
             if (config is null || !config.Enabled)
             {
-                return null;
+                return new PrepareItemResult { Warning = "Plugin disabled." };
             }
 
             if (!force && TryGetPrepared(itemId, out var existing) && existing is not null)
             {
-                return existing;
+                return new PrepareItemResult { Cache = existing, Mode = "cache" };
             }
 
             var item = _libraryManager.GetItemById(itemId);
             if (item is null)
             {
                 _logger.LogWarning("Look it up prepare: item {ItemId} not found", itemId);
-                return null;
+                return new PrepareItemResult { Warning = "Item not found." };
             }
 
             var subtitle = await ResolveSubtitleContentAsync(item, config.PreferredSubtitleLanguages, cancellationToken)
@@ -169,27 +169,50 @@ public class LookItUpService : ILookItUpService
                 _logger.LogInformation("No readable text subtitles found for {Item}", item.Name);
                 var empty = SaveCache(itemId, null, []);
                 MaybeWriteSidecar(item, empty, config.WriteSidecarFiles);
-                return empty;
+                return new PrepareItemResult
+                {
+                    Cache = empty,
+                    Mode = "none",
+                    Warning = "No readable text subtitles found."
+                };
             }
 
             var cues = _subtitleParser.Parse(subtitle.Content, subtitle.Label);
             var max = Math.Max(1, config.MaxAnnotationsPerItem);
             List<ContextAnnotation> annotations;
+            string mode;
+            string? warning = null;
+            string? aiBaseUrl = null;
+            string? aiModel = null;
 
             if (_aiExtractor.IsConfigured(config))
             {
+                mode = "ai";
+                aiModel = string.IsNullOrWhiteSpace(config.AiModel) ? "gpt-4o-mini" : config.AiModel.Trim();
+                aiBaseUrl = OpenAiCompatibleEntityExtractor.ResolveBaseUrl(config, aiModel);
+
                 _logger.LogInformation(
-                    "Look it up preparing {Item} with AI ({Provider}/{Model})",
+                    "Look it up preparing {Item} with AI ({Provider}/{Model}) via {BaseUrl}",
                     item.Name,
                     config.AiProvider,
-                    config.AiModel);
+                    aiModel,
+                    aiBaseUrl);
 
-                var mentions = await _aiExtractor
+                var aiResult = await _aiExtractor
                     .ExtractAsync(item.Name ?? itemId.ToString("N"), cues, config, max, cancellationToken)
                     .ConfigureAwait(false);
 
+                warning = aiResult.Warning;
+                if (!string.IsNullOrWhiteSpace(warning))
+                {
+                    _logger.LogWarning(
+                        "Look it up AI prepare warning for {Item}: {Warning}",
+                        item.Name,
+                        warning);
+                }
+
                 var popupMs = Math.Max(config.PopupDurationMs, 2000);
-                annotations = mentions
+                annotations = aiResult.Mentions
                     .Select(m => new ContextAnnotation
                     {
                         Term = m.Term.Trim(),
@@ -206,6 +229,7 @@ public class LookItUpService : ILookItUpService
             }
             else
             {
+                mode = "legacy";
                 _logger.LogInformation(
                     "Look it up preparing {Item} with legacy Wikipedia heuristics (set AiProvider + AiApiKey for AI)",
                     item.Name);
@@ -222,12 +246,19 @@ public class LookItUpService : ILookItUpService
                 annotations.Count,
                 subtitle.Label);
 
-            return cache;
+            return new PrepareItemResult
+            {
+                Cache = cache,
+                Mode = mode,
+                AiBaseUrl = aiBaseUrl,
+                AiModel = aiModel,
+                Warning = warning
+            };
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Look it up prepare failed for item {ItemId}: {Message}", itemId, ex.Message);
-            return null;
+            return new PrepareItemResult { Warning = ex.Message };
         }
     }
 

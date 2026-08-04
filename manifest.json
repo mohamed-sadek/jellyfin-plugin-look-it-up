@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "1.2.2.0",
+        "changelog": "Fix Groq AI prepare: retry 429s, smaller batches, higher max_tokens, recover from json_validate_failed; surface AI errors on /prepare",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.2.0/look-it-up_1.2.2.0.zip",
+        "checksum": "ca29a771751c32c146b0e5bf93940270",
+        "timestamp": "2026-08-04T22:15:00Z"
+      },
+      {
         "version": "1.2.1.0",
         "changelog": "Cancel library prepare; prepare one item from plugin page; confirm before full-library scan",
         "targetAbi": "10.11.0.0",
