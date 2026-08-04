@@ -18,6 +18,11 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton<IWikipediaLookupService, WikipediaLookupService>();
         serviceCollection.AddSingleton<IAnnotationStore, AnnotationStore>();
         serviceCollection.AddSingleton<ILookItUpService, LookItUpService>();
-        serviceCollection.AddHttpClient(nameof(WikipediaLookupService));
+        serviceCollection.AddHttpClient(nameof(WikipediaLookupService), client =>
+        {
+            client.DefaultRequestHeaders.UserAgent.ParseAdd(
+                "Jellyfin.Plugin.LookItUp/1.0 (https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up)");
+            client.Timeout = TimeSpan.FromSeconds(10);
+        });
     }
 }

@@ -49,8 +49,18 @@ public class AnnotationStore : IAnnotationStore
     public AnnotationStore(IApplicationPaths appPaths, ILogger<AnnotationStore> logger)
     {
         _logger = logger;
-        _directory = Path.Combine(appPaths.PluginConfigurationsPath, "LookItUp", "cache");
-        Directory.CreateDirectory(_directory);
+        var root = appPaths.PluginConfigurationsPath
+                   ?? appPaths.ProgramDataPath
+                   ?? Path.GetTempPath();
+        _directory = Path.Combine(root, "LookItUp", "cache");
+        try
+        {
+            Directory.CreateDirectory(_directory);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not create Look it up cache directory at {Directory}", _directory);
+        }
     }
 
     /// <inheritdoc />

@@ -52,7 +52,6 @@ public class WikipediaLookupService : IWikipediaLookupService
 
         var languageCode = string.IsNullOrWhiteSpace(language) ? "en" : language.Trim().ToLowerInvariant();
         var client = _httpClientFactory.CreateClient(nameof(WikipediaLookupService));
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("Jellyfin.Plugin.LookItUp/1.0 (https://jellyfin.org)");
 
         try
         {

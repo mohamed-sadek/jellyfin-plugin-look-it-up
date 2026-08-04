@@ -13,6 +13,9 @@
   let hideTimer = null;
   let popupDurationMs = 5000;
   let missingItemTicks = 0;
+  let lastResolvedLogId = null;
+  let loadInFlight = false;
+  let lastLoadErrorAt = 0;
 
   function ensureStyles() {
     let style = document.getElementById(STYLE_ID);
@@ -305,7 +308,10 @@
     for (const candidate of candidates) {
       const id = extractItemId(candidate);
       if (id) {
-        console.info('[Look it up] resolved item id from media url', id);
+        if (lastResolvedLogId !== id) {
+          lastResolvedLogId = id;
+          console.info('[Look it up] resolved item id from media url', id);
+        }
         return id;
       }
     }
@@ -355,6 +361,16 @@
       return;
     }
 
+    if (loadInFlight) {
+      return;
+    }
+
+    // Back off briefly after a server error so we don't spam 500s.
+    if (Date.now() - lastLoadErrorAt < 15000) {
+      return;
+    }
+
+    loadInFlight = true;
     console.info('[Look it up] fetching annotations for', itemId);
 
     try {
@@ -367,7 +383,7 @@
 
       if (!data || data.enabled === false || data.Enabled === false) {
         annotations = [];
-        console.info('[Look it up] disabled or empty for', itemId);
+        console.info('[Look it up] disabled or empty for', itemId, data);
         return;
       }
 
@@ -383,8 +399,21 @@
         }))
       );
     } catch (err) {
-      console.warn('[Look it up] failed to load annotations', err);
+      lastLoadErrorAt = Date.now();
+      let detail = err;
+      try {
+        if (err && typeof err.text === 'function') {
+          detail = await err.text();
+        } else if (err && typeof err.json === 'function') {
+          detail = await err.json();
+        }
+      } catch (_) {
+        /* ignore */
+      }
+      console.warn('[Look it up] failed to load annotations', detail || err);
       annotations = [];
+    } finally {
+      loadInFlight = false;
     }
   }
 

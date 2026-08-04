@@ -4,6 +4,7 @@ using MediaBrowser.Controller.Library;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.LookItUp.Controllers;
 
@@ -16,59 +17,72 @@ public class LookItUpController : ControllerBase
 {
     private readonly ILookItUpService _lookItUpService;
     private readonly ILibraryManager _libraryManager;
+    private readonly ILogger<LookItUpController> _logger;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="LookItUpController"/> class.
     /// </summary>
-    /// <param name="lookItUpService">Look it up service.</param>
-    /// <param name="libraryManager">Library manager.</param>
-    public LookItUpController(ILookItUpService lookItUpService, ILibraryManager libraryManager)
+    public LookItUpController(
+        ILookItUpService lookItUpService,
+        ILibraryManager libraryManager,
+        ILogger<LookItUpController> logger)
     {
         _lookItUpService = lookItUpService;
         _libraryManager = libraryManager;
+        _logger = logger;
     }
 
     /// <summary>
     /// Gets timed annotations for a media item.
     /// </summary>
-    /// <param name="itemId">Media item id.</param>
-    /// <param name="force">Force a rescan.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>Annotation payload.</returns>
     [HttpGet("{itemId}")]
     [Authorize]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status500InternalServerError)]
     public async Task<ActionResult> GetAnnotations(
         [FromRoute] Guid itemId,
         [FromQuery] bool force = false,
         CancellationToken cancellationToken = default)
     {
-        if (_libraryManager.GetItemById(itemId) is null)
+        try
         {
-            return NotFound();
+            var item = _libraryManager.GetItemById(itemId);
+            if (item is null)
+            {
+                return NotFound(new { error = "Item not found", itemId });
+            }
+
+            var annotations = await _lookItUpService
+                .GetAnnotationsAsync(itemId, force, cancellationToken)
+                .ConfigureAwait(false);
+
+            var config = Plugin.Instance?.Configuration;
+            return Ok(new
+            {
+                itemId,
+                itemName = item.Name,
+                enabled = config?.Enabled ?? false,
+                popupDurationMs = config?.PopupDurationMs ?? 5000,
+                count = annotations.Count,
+                annotations
+            });
         }
-
-        var annotations = await _lookItUpService
-            .GetAnnotationsAsync(itemId, force, cancellationToken)
-            .ConfigureAwait(false);
-
-        var config = Plugin.Instance?.Configuration;
-        return Ok(new
+        catch (Exception ex)
         {
-            itemId,
-            enabled = config?.Enabled ?? false,
-            popupDurationMs = config?.PopupDurationMs ?? 5000,
-            annotations
-        });
+            _logger.LogError(ex, "LookItUp GET failed for {ItemId}", itemId);
+            return StatusCode(StatusCodes.Status500InternalServerError, new
+            {
+                error = ex.Message,
+                type = ex.GetType().Name,
+                itemId
+            });
+        }
     }
 
     /// <summary>
     /// Forces a subtitle rescan for a media item.
     /// </summary>
-    /// <param name="itemId">Media item id.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>Fresh annotations.</returns>
     [HttpPost("{itemId}/scan")]
     [Authorize]
     [ProducesResponseType(StatusCodes.Status200OK)]
@@ -77,22 +91,52 @@ public class LookItUpController : ControllerBase
         [FromRoute] Guid itemId,
         CancellationToken cancellationToken = default)
     {
-        if (_libraryManager.GetItemById(itemId) is null)
+        try
         {
-            return NotFound();
+            if (_libraryManager.GetItemById(itemId) is null)
+            {
+                return NotFound();
+            }
+
+            var annotations = await _lookItUpService
+                .GetAnnotationsAsync(itemId, forceRescan: true, cancellationToken)
+                .ConfigureAwait(false);
+
+            return Ok(new { itemId, count = annotations.Count, annotations });
         }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "LookItUp scan failed for {ItemId}", itemId);
+            return StatusCode(StatusCodes.Status500InternalServerError, new
+            {
+                error = ex.Message,
+                type = ex.GetType().Name,
+                itemId
+            });
+        }
+    }
 
-        var annotations = await _lookItUpService
-            .GetAnnotationsAsync(itemId, forceRescan: true, cancellationToken)
-            .ConfigureAwait(false);
-
-        return Ok(new { itemId, count = annotations.Count, annotations });
+    /// <summary>
+    /// Health/debug endpoint.
+    /// </summary>
+    [HttpGet("status")]
+    [Authorize]
+    public ActionResult GetStatus()
+    {
+        var config = Plugin.Instance?.Configuration;
+        return Ok(new
+        {
+            plugin = Plugin.Instance?.Name,
+            version = Plugin.Instance?.Version?.ToString(),
+            enabled = config?.Enabled ?? false,
+            wikipediaLanguage = config?.WikipediaLanguage,
+            instanceLoaded = Plugin.Instance is not null
+        });
     }
 
     /// <summary>
     /// Serves the web client overlay script.
     /// </summary>
-    /// <returns>JavaScript payload.</returns>
     [HttpGet("script.js")]
     [AllowAnonymous]
     [Produces("application/javascript")]
