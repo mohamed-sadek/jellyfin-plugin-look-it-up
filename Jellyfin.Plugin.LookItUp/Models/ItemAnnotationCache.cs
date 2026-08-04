@@ -13,6 +13,11 @@ public class ItemAnnotationCache
     public Guid ItemId { get; set; }
 
     /// <summary>
+    /// Gets or sets the scan logic version used to produce this cache entry.
+    /// </summary>
+    public int Version { get; set; }
+
+    /// <summary>
     /// Gets or sets when the cache entry was created (UTC).
     /// </summary>
     public DateTime ScannedAtUtc { get; set; }

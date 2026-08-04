@@ -1,6 +1,8 @@
+using System.Text;
 using Jellyfin.Plugin.LookItUp.Models;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.MediaEncoding;
 using MediaBrowser.Model.Entities;
 using Microsoft.Extensions.Logging;
 
@@ -21,12 +23,24 @@ public interface ILookItUpService
 }
 
 /// <summary>
-/// Builds timed Wikipedia annotations from a media item's external subtitles.
+/// Builds timed Wikipedia annotations from a media item's subtitles
+/// (external SRT/VTT or embedded text tracks).
 /// </summary>
 public class LookItUpService : ILookItUpService
 {
+    /// <summary>
+    /// Bump when scan logic changes so stale empty caches are ignored.
+    /// </summary>
+    private const int CacheVersion = 2;
+
+    private static readonly HashSet<string> TextSubtitleCodecs = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "subrip", "srt", "ass", "ssa", "webvtt", "vtt", "mov_text", "text", "microdvd", "mpl2", "sami", "stl", "ttml", "dfxp"
+    };
+
     private readonly ILibraryManager _libraryManager;
     private readonly IMediaSourceManager _mediaSourceManager;
+    private readonly ISubtitleEncoder _subtitleEncoder;
     private readonly ISubtitleParser _subtitleParser;
     private readonly IEntityExtractor _entityExtractor;
     private readonly IWikipediaLookupService _wikipedia;
@@ -39,6 +53,7 @@ public class LookItUpService : ILookItUpService
     public LookItUpService(
         ILibraryManager libraryManager,
         IMediaSourceManager mediaSourceManager,
+        ISubtitleEncoder subtitleEncoder,
         ISubtitleParser subtitleParser,
         IEntityExtractor entityExtractor,
         IWikipediaLookupService wikipedia,
@@ -47,6 +62,7 @@ public class LookItUpService : ILookItUpService
     {
         _libraryManager = libraryManager;
         _mediaSourceManager = mediaSourceManager;
+        _subtitleEncoder = subtitleEncoder;
         _subtitleParser = subtitleParser;
         _entityExtractor = entityExtractor;
         _wikipedia = wikipedia;
@@ -71,7 +87,7 @@ public class LookItUpService : ILookItUpService
             if (!forceRescan)
             {
                 var cached = _store.Get(itemId);
-                if (cached is not null)
+                if (cached is not null && cached.Version >= CacheVersion)
                 {
                     return cached.Annotations;
                 }
@@ -84,27 +100,16 @@ public class LookItUpService : ILookItUpService
                 return Array.Empty<ContextAnnotation>();
             }
 
-            var subtitlePath = FindSubtitlePath(item, config.PreferredSubtitleLanguages);
-            if (subtitlePath is null)
+            var subtitle = await ResolveSubtitleContentAsync(item, config.PreferredSubtitleLanguages, cancellationToken)
+                .ConfigureAwait(false);
+            if (subtitle is null)
             {
-                _logger.LogInformation("No external SRT/VTT subtitles found for {Item}", item.Name);
-                SaveEmpty(itemId);
+                _logger.LogInformation("No readable text subtitles found for {Item}", item.Name);
+                SaveEmpty(itemId, null);
                 return Array.Empty<ContextAnnotation>();
             }
 
-            string content;
-            try
-            {
-                content = await File.ReadAllTextAsync(subtitlePath, cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to read subtitle file {Path}", subtitlePath);
-                SaveEmpty(itemId);
-                return Array.Empty<ContextAnnotation>();
-            }
-
-            var cues = _subtitleParser.Parse(content, subtitlePath);
+            var cues = _subtitleParser.Parse(subtitle.Content, subtitle.Label);
             var annotations = new List<ContextAnnotation>();
             var usedTerms = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var max = Math.Max(1, config.MaxAnnotationsPerItem);
@@ -170,51 +175,165 @@ public class LookItUpService : ILookItUpService
                 }
             }
 
-            var cache = new ItemAnnotationCache
+            _store.Save(new ItemAnnotationCache
             {
                 ItemId = itemId,
+                Version = CacheVersion,
                 ScannedAtUtc = DateTime.UtcNow,
-                SubtitlePath = subtitlePath,
+                SubtitlePath = subtitle.Label,
                 Annotations = annotations
-            };
-            _store.Save(cache);
+            });
 
             _logger.LogInformation(
                 "Look it up scanned {Item}: {Count} annotations from {Subtitle}",
                 item.Name,
                 annotations.Count,
-                subtitlePath);
+                subtitle.Label);
 
             return annotations;
         }
         catch (Exception ex)
         {
-            // Never bubble to a hard 500 — return empty so playback keeps working.
             _logger.LogError(ex, "Look it up failed for item {ItemId}: {Message}", itemId, ex.Message);
             return Array.Empty<ContextAnnotation>();
         }
     }
 
-    private void SaveEmpty(Guid itemId)
+    private void SaveEmpty(Guid itemId, string? label)
     {
         _store.Save(new ItemAnnotationCache
         {
             ItemId = itemId,
+            Version = CacheVersion,
             ScannedAtUtc = DateTime.UtcNow,
+            SubtitlePath = label,
             Annotations = []
         });
     }
 
-    private string? FindSubtitlePath(BaseItem item, string preferredLanguages)
+    private async Task<SubtitleContent?> ResolveSubtitleContentAsync(
+        BaseItem item,
+        string preferredLanguages,
+        CancellationToken cancellationToken)
     {
         var preferred = (preferredLanguages ?? "en")
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(l => l.ToLowerInvariant())
-            .ToHashSet();
+            .Select(NormalizeLang)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
+        // 1) External sidecar / indexed external files
+        var externalPath = FindExternalSubtitlePath(item, preferred);
+        if (externalPath is not null)
+        {
+            try
+            {
+                var content = await File.ReadAllTextAsync(externalPath, cancellationToken).ConfigureAwait(false);
+                if (!string.IsNullOrWhiteSpace(content))
+                {
+                    return new SubtitleContent(content, externalPath);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to read subtitle file {Path}", externalPath);
+            }
+        }
+
+        // 2) Embedded text tracks via Jellyfin's subtitle encoder (ffmpeg)
+        return await ExtractEmbeddedSubtitleAsync(item, preferred, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<SubtitleContent?> ExtractEmbeddedSubtitleAsync(
+        BaseItem item,
+        HashSet<string> preferred,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            IReadOnlyList<MediaBrowser.Model.Dto.MediaSourceInfo> sources;
+            try
+            {
+                sources = _mediaSourceManager.GetStaticMediaSources(item, enablePathSubstitution: false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "GetStaticMediaSources failed for {Item}", item.Name);
+                return null;
+            }
+
+            var mediaSource = sources.FirstOrDefault();
+            if (mediaSource is null)
+            {
+                return null;
+            }
+
+            var candidates = mediaSource.MediaStreams
+                .Where(s => s.Type == MediaStreamType.Subtitle && IsTextSubtitle(s))
+                .Select(s => (Stream: s, Score: ScoreSubtitleStream(s, preferred)))
+                .OrderByDescending(x => x.Score)
+                .ToList();
+
+            if (candidates.Count == 0)
+            {
+                _logger.LogInformation("No embedded text subtitle streams for {Item}", item.Name);
+                return null;
+            }
+
+            foreach (var (stream, score) in candidates)
+            {
+                try
+                {
+                    _logger.LogInformation(
+                        "Extracting embedded subtitle #{Index} ({Codec}/{Lang}, score {Score}) for {Item}",
+                        stream.Index,
+                        stream.Codec,
+                        stream.Language,
+                        score,
+                        item.Name);
+
+                    await using var streamData = await _subtitleEncoder.GetSubtitles(
+                            item,
+                            mediaSource.Id,
+                            stream.Index,
+                            "srt",
+                            startTimeTicks: 0,
+                            endTimeTicks: 0,
+                            preserveOriginalTimestamps: true,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+
+                    using var reader = new StreamReader(streamData, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+                    var content = await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
+                    if (string.IsNullOrWhiteSpace(content))
+                    {
+                        continue;
+                    }
+
+                    var label = $"embedded:{stream.Index}:{stream.Codec}:{stream.Language ?? "und"}";
+                    return new SubtitleContent(content, label);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(
+                        ex,
+                        "Failed to extract embedded subtitle #{Index} for {Item}",
+                        stream.Index,
+                        item.Name);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Embedded subtitle extraction failed for {Item}", item.Name);
+        }
+
+        return null;
+    }
+
+    private string? FindExternalSubtitlePath(BaseItem item, HashSet<string> preferred)
+    {
         var candidates = new List<(string Path, int Score)>();
 
-        // 1) External streams indexed by Jellyfin (BaseItem first — more stable across versions)
         try
         {
             IEnumerable<MediaStream> streams;
@@ -240,14 +359,7 @@ public class LookItUpService : ILookItUpService
                     continue;
                 }
 
-                var score = 30;
-                if (!string.IsNullOrWhiteSpace(stream.Language)
-                    && preferred.Contains(stream.Language.ToLowerInvariant()))
-                {
-                    score += 5;
-                }
-
-                candidates.Add((stream.Path, score));
+                candidates.Add((stream.Path, 30 + ScoreSubtitleStream(stream, preferred)));
             }
         }
         catch (Exception ex)
@@ -255,7 +367,6 @@ public class LookItUpService : ILookItUpService
             _logger.LogWarning(ex, "GetMediaStreams failed for {Item}", item.Name);
         }
 
-        // 2) Sidecar files next to the media
         try
         {
             var folder = item.ContainingFolderPath;
@@ -290,7 +401,8 @@ public class LookItUpService : ILookItUpService
                     {
                         if (name.Contains($".{lang}", StringComparison.Ordinal)
                             || name.EndsWith($"_{lang}", StringComparison.Ordinal)
-                            || name.EndsWith($"-{lang}", StringComparison.Ordinal))
+                            || name.EndsWith($"-{lang}", StringComparison.Ordinal)
+                            || name.Contains($".{ExpandLang(lang)}", StringComparison.Ordinal))
                         {
                             score += 5;
                         }
@@ -310,7 +422,6 @@ public class LookItUpService : ILookItUpService
             _logger.LogWarning(ex, "Folder subtitle scan failed for {Item}", item.Name);
         }
 
-        // 3) Same-name sidecar beside the video file
         try
         {
             if (!string.IsNullOrWhiteSpace(item.Path))
@@ -351,4 +462,81 @@ public class LookItUpService : ILookItUpService
                 }
             });
     }
+
+    private static bool IsTextSubtitle(MediaStream stream)
+    {
+        if (stream.IsTextSubtitleStream)
+        {
+            return true;
+        }
+
+        var codec = stream.Codec ?? string.Empty;
+        return TextSubtitleCodecs.Contains(codec);
+    }
+
+    private static int ScoreSubtitleStream(MediaStream stream, HashSet<string> preferred)
+    {
+        var score = 0;
+        var lang = NormalizeLang(stream.Language);
+        if (!string.IsNullOrEmpty(lang) && preferred.Contains(lang))
+        {
+            score += 20;
+        }
+
+        if (stream.IsDefault)
+        {
+            score += 5;
+        }
+
+        if (stream.IsForced)
+        {
+            score -= 10;
+        }
+
+        if (stream.IsHearingImpaired)
+        {
+            score -= 2;
+        }
+
+        var codec = stream.Codec ?? string.Empty;
+        if (codec.Equals("subrip", StringComparison.OrdinalIgnoreCase)
+            || codec.Equals("srt", StringComparison.OrdinalIgnoreCase))
+        {
+            score += 3;
+        }
+
+        return score;
+    }
+
+    private static string NormalizeLang(string? language)
+    {
+        if (string.IsNullOrWhiteSpace(language))
+        {
+            return string.Empty;
+        }
+
+        var lang = language.Trim().ToLowerInvariant();
+        return lang switch
+        {
+            "eng" => "en",
+            "fre" or "fra" => "fr",
+            "ger" or "deu" => "de",
+            "spa" => "es",
+            "ita" => "it",
+            "jpn" => "ja",
+            "chi" or "zho" => "zh",
+            _ => lang.Length > 2 ? lang[..2] : lang
+        };
+    }
+
+    private static string ExpandLang(string lang) => lang switch
+    {
+        "en" => "eng",
+        "fr" => "fre",
+        "de" => "ger",
+        "es" => "spa",
+        _ => lang
+    };
+
+    private sealed record SubtitleContent(string Content, string Label);
 }

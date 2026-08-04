@@ -374,12 +374,18 @@
     console.info('[Look it up] fetching annotations for', itemId);
 
     try {
-      const url = api.getUrl(`LookItUp/${itemId}`);
+      // force=true once per item so server rescans after plugin upgrades
+      const forceKey = 'lookitup-force-' + itemId;
+      const force = !sessionStorage.getItem(forceKey);
+      const url = api.getUrl(`LookItUp/${itemId}`) + (force ? '?force=true' : '');
       const data = await api.ajax({
         url,
         type: 'GET',
         dataType: 'json'
       });
+      if (force) {
+        sessionStorage.setItem(forceKey, '1');
+      }
 
       if (!data || data.enabled === false || data.Enabled === false) {
         annotations = [];
