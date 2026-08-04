@@ -16,7 +16,7 @@ public class PluginConfiguration : BasePluginConfiguration
         WikipediaLanguage = "en";
         MaxAnnotationsPerItem = 40;
         MinEntityLength = 3;
-        PopupDurationMs = 5000;
+        PopupDurationMs = 2000;
         PreferredSubtitleLanguages = "en";
     }
 

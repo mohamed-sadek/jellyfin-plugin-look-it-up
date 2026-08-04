@@ -153,15 +153,15 @@ public class LookItUpService : ILookItUpService
                     }
 
                     var score = ScoreEntity(entity, lookup.Title);
-                    // Multi-word names (Jon Voight) get a longer on-screen window.
-                    var popupMs = Math.Max(config.PopupDurationMs, score >= 30 ? 8000 : 4000);
+                    // Match window for playback sync (display duration is client-controlled).
+                    var matchWindowMs = Math.Max(config.PopupDurationMs, score >= 30 ? 6000 : 4000);
                     var annotation = new ContextAnnotation
                     {
                         Term = lookup.Title,
                         Summary = $"{lookup.Title}: {lookup.Summary}",
                         Url = lookup.Url,
                         StartMs = cue.StartMs,
-                        EndMs = Math.Max(cue.EndMs, cue.StartMs + popupMs)
+                        EndMs = Math.Max(cue.EndMs, cue.StartMs + matchWindowMs)
                     };
 
                     candidates.Add((annotation, score));

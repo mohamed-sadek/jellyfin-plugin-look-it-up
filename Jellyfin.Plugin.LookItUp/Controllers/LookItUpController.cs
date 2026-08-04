@@ -63,7 +63,7 @@ public class LookItUpController : ControllerBase
                 itemId,
                 itemName = item.Name,
                 enabled = config?.Enabled ?? false,
-                popupDurationMs = config?.PopupDurationMs ?? 5000,
+                popupDurationMs = config?.PopupDurationMs ?? 2000,
                 count = annotations.Count,
                 annotations
             });

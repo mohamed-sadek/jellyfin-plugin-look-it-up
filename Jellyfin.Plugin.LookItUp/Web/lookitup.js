@@ -1,24 +1,26 @@
 (function () {
   'use strict';
 
-  const CLIENT_VERSION = '1.0.6.0';
+  const CLIENT_VERSION = '1.0.6.1';
   const STYLE_ID = 'lookitup-styles';
   const POPUP_ID = 'lookitup-popup';
   const POLL_MS = 200;
-  const MIN_VISIBLE_MS = 4500;
+  const DEFAULT_POPUP_MS = 2000;
 
   let annotations = [];
   let currentItemId = null;
   let lastShownTerm = null;
   let shownAtMs = 0;
   let hideTimer = null;
-  let popupDurationMs = 5000;
+  let popupDurationMs = DEFAULT_POPUP_MS;
   let missingItemTicks = 0;
   let lastResolvedLogId = null;
   let loadInFlight = false;
   let lastLoadErrorAt = 0;
   let lastDiagAt = 0;
   let lastCueLogTerm = null;
+  // Terms already shown for their current cue window (don't re-show after auto-hide).
+  const shownThisPass = new Set();
 
   function ensureStyles() {
     let style = document.getElementById(STYLE_ID);
@@ -107,17 +109,19 @@
     return popup;
   }
 
-  function hidePopup(force) {
-    if (!force && lastShownTerm && Date.now() - shownAtMs < MIN_VISIBLE_MS) {
-      return;
-    }
-
+  function hidePopup() {
     const popup = document.getElementById(POPUP_ID);
     if (popup) {
       popup.classList.remove('visible');
+      popup.style.opacity = '0';
+      popup.style.visibility = 'hidden';
     }
     lastShownTerm = null;
     shownAtMs = 0;
+    if (hideTimer) {
+      clearTimeout(hideTimer);
+      hideTimer = null;
+    }
   }
 
   function readProp(obj, camel, pascal) {
@@ -140,11 +144,8 @@
       return;
     }
 
+    // Already on screen for this term — do not refresh the hide timer.
     if (lastShownTerm === term && popup.classList.contains('visible')) {
-      if (hideTimer) {
-        clearTimeout(hideTimer);
-      }
-      hideTimer = setTimeout(() => hidePopup(true), Math.max(popupDurationMs, MIN_VISIBLE_MS));
       return;
     }
 
@@ -182,7 +183,6 @@
     void popup.offsetWidth;
     popup.classList.add('visible');
 
-    // Fixed positioning can still be clipped by transformed ancestors; pin inline too.
     popup.style.cssText +=
       ';position:fixed!important;left:50%!important;bottom:max(10vh,72px)!important;' +
       'transform:translateX(-50%)!important;z-index:2147483647!important;opacity:1!important;visibility:visible!important;';
@@ -190,11 +190,13 @@
     if (hideTimer) {
       clearTimeout(hideTimer);
     }
-    hideTimer = setTimeout(() => hidePopup(true), Math.max(popupDurationMs, MIN_VISIBLE_MS));
+    const duration = Math.max(1000, Number(popupDurationMs) || DEFAULT_POPUP_MS);
+    hideTimer = setTimeout(() => hidePopup(), duration);
     console.info('[Look it up] name triggered', {
       term: term,
       summary: summary,
       url: url || null,
+      durationMs: duration,
       startMs: readProp(annotation, 'startMs', 'StartMs'),
       endMs: readProp(annotation, 'endMs', 'EndMs'),
       playbackMs: getCurrentTimeMs()
@@ -431,7 +433,7 @@
         return;
       }
 
-      popupDurationMs = Number(data.popupDurationMs || data.PopupDurationMs || 5000);
+      popupDurationMs = Number(data.popupDurationMs || data.PopupDurationMs || DEFAULT_POPUP_MS);
       annotations = normalizeAnnotations(data.annotations || data.Annotations || []);
       console.info('[Look it up] loaded', annotations.length, 'annotations for', itemId);
       console.info(
@@ -472,8 +474,7 @@
       return;
     }
 
-    // Prefer multi-word / longer names when several cues overlap.
-    const active = annotations
+    const matches = annotations
       .filter((a) => now >= a.startMs && now <= a.endMs)
       .sort((a, b) => {
         const aw = (a.term.match(/\s+/g) || []).length;
@@ -482,17 +483,32 @@
           return bw - aw;
         }
         return b.term.length - a.term.length;
-      })[0];
+      });
+
+    // Drop remembered terms once their cue window ends.
+    for (const term of [...shownThisPass]) {
+      if (!matches.some((m) => m.term === term)) {
+        shownThisPass.delete(term);
+      }
+    }
+
+    if (!matches.length) {
+      return;
+    }
+
+    const active = matches.find((m) => !shownThisPass.has(m.term));
     if (!active) {
       return;
     }
 
+    shownThisPass.add(active.term);
     if (lastCueLogTerm !== active.term) {
       lastCueLogTerm = active.term;
       console.info('[Look it up] cue match → search/popup', {
         term: active.term,
         playbackMs: now,
-        window: [active.startMs, active.endMs]
+        window: [active.startMs, active.endMs],
+        durationMs: popupDurationMs
       });
     }
     showPopup(active);
@@ -521,7 +537,8 @@
         if (missingItemTicks > 8) {
           currentItemId = null;
           annotations = [];
-          hidePopup(true);
+          shownThisPass.clear();
+          hidePopup();
           missingItemTicks = 0;
         }
       }
@@ -533,7 +550,8 @@
     if (itemId !== currentItemId) {
       currentItemId = itemId;
       annotations = [];
-      hidePopup(true);
+      shownThisPass.clear();
+      hidePopup();
       loadAnnotations(itemId);
       return;
     }
