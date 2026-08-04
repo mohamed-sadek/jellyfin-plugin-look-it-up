@@ -18,5 +18,6 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton<IWikipediaLookupService, WikipediaLookupService>();
         serviceCollection.AddSingleton<IAnnotationStore, AnnotationStore>();
         serviceCollection.AddSingleton<ILookItUpService, LookItUpService>();
+        serviceCollection.AddSingleton<ILookItUpPrepareService, LookItUpPrepareService>();
     }
 }

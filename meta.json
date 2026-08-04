@@ -2,10 +2,10 @@
   "guid": "a8ab0fed-cac9-406d-b98b-58161bf970b8",
   "name": "Look it up",
   "description": "Timed Wikipedia popups from subtitle mentions",
-  "overview": "Show timed popups explaining names mentioned in subtitles",
+  "overview": "Precompute subtitle annotations, then show timed Wikipedia popups during playback",
   "owner": "lookitup",
   "category": "General",
-  "version": "1.0.7.0",
+  "version": "1.1.0.0",
   "targetAbi": "10.11.0.0",
   "framework": "net9.0",
   "autoUpdateEnabled": false

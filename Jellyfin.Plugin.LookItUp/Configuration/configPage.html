@@ -14,8 +14,8 @@
                     </div>
 
                     <p>
-                        Scans external subtitles for names (places, people, organizations), looks them up on Wikipedia,
-                        and shows a short popup at the moment they are mentioned during playback.
+                        Precomputes timed Wikipedia annotations from subtitles, then shows short popups during playback.
+                        Prefer <strong>Prepare library</strong> over scanning while watching.
                     </p>
 
                     <div class="checkboxContainer checkboxContainer-withDescription">
@@ -23,6 +23,61 @@
                             <input id="chkEnabled" type="checkbox" is="emby-checkbox" />
                             <span>Enable Look it up</span>
                         </label>
+                    </div>
+
+                    <div class="sectionTitleContainer flex align-items-center" style="margin-top:1.5em;">
+                        <h2 class="sectionTitle">Prepare library</h2>
+                    </div>
+                    <p>
+                        Scans movies/episodes offline, extracts text subtitles, looks up names, and stores JSON for playback.
+                        You can also run this from <em>Dashboard → Scheduled Tasks → Look it up — prepare library</em>.
+                    </p>
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label class="emby-checkbox-label">
+                            <input id="chkPrepareMovies" type="checkbox" is="emby-checkbox" />
+                            <span>Include movies</span>
+                        </label>
+                    </div>
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label class="emby-checkbox-label">
+                            <input id="chkPrepareEpisodes" type="checkbox" is="emby-checkbox" />
+                            <span>Include TV episodes</span>
+                        </label>
+                    </div>
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label class="emby-checkbox-label">
+                            <input id="chkSkipPrepared" type="checkbox" is="emby-checkbox" />
+                            <span>Skip items already prepared</span>
+                        </label>
+                    </div>
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label class="emby-checkbox-label">
+                            <input id="chkWriteSidecar" type="checkbox" is="emby-checkbox" />
+                            <span>Also write <code>*.lookitup.json</code> next to media (when writable)</span>
+                        </label>
+                    </div>
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label class="emby-checkbox-label">
+                            <input id="chkScanOnPlayback" type="checkbox" is="emby-checkbox" />
+                            <span>Allow on-demand prepare during playback (slower; not recommended)</span>
+                        </label>
+                    </div>
+
+                    <div style="display:flex;gap:12px;flex-wrap:wrap;margin:1em 0;">
+                        <button is="emby-button" type="button" id="btnPrepareLibrary" class="raised button-submit emby-button">
+                            <span>Prepare library</span>
+                        </button>
+                        <button is="emby-button" type="button" id="btnPrepareForce" class="raised emby-button">
+                            <span>Force re-prepare all</span>
+                        </button>
+                        <button is="emby-button" type="button" id="btnRefreshStatus" class="raised emby-button">
+                            <span>Refresh status</span>
+                        </button>
+                    </div>
+                    <pre id="prepareStatusBox" style="white-space:pre-wrap;word-break:break-word;background:rgba(0,0,0,.08);padding:12px;border-radius:8px;min-height:4em;">Status will appear here.</pre>
+
+                    <div class="sectionTitleContainer flex align-items-center" style="margin-top:1.5em;">
+                        <h2 class="sectionTitle">Lookup settings</h2>
                     </div>
 
                     <div class="inputContainer">
@@ -34,7 +89,7 @@
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="txtPreferredSubtitleLanguages">Preferred subtitle languages</label>
                         <input id="txtPreferredSubtitleLanguages" type="text" is="emby-input" />
-                        <div class="fieldDescription">Comma-separated language codes used when choosing a subtitle file (e.g. en,eng).</div>
+                        <div class="fieldDescription">Comma-separated language codes (e.g. en,eng).</div>
                     </div>
 
                     <div class="inputContainer">
@@ -52,13 +107,16 @@
                         <input id="txtPopupDuration" type="number" is="emby-input" min="1000" max="30000" step="500" />
                     </div>
 
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="txtAiProvider">AI provider</label>
+                        <input id="txtAiProvider" type="text" is="emby-input" />
+                        <div class="fieldDescription">Reserved for future offline AI enrichment. Use <code>None</code> for Wikipedia-only prepares.</div>
+                    </div>
+
                     <div class="sectionTitleContainer flex align-items-center" style="margin-top:1.5em;">
                         <h2 class="sectionTitle">Web client overlay</h2>
                     </div>
-                    <p>
-                        Jellyfin server plugins cannot inject playback UI by themselves. Load the overlay script in your
-                        web client (Custom JavaScript plugin, userscript, or a small web client patch):
-                    </p>
+                    <p>Load the overlay with JavaScript Injector (or similar):</p>
                     <pre style="white-space:pre-wrap;word-break:break-all;background:rgba(0,0,0,.08);padding:12px;border-radius:8px;">&lt;script src="/LookItUp/script.js"&gt;&lt;/script&gt;</pre>
 
                     <div>
@@ -72,22 +130,119 @@
 
         <script type="text/javascript">
             var LookItUpConfig = {
-                pluginUniqueId: 'a8ab0fed-cac9-406d-b98b-58161bf970b8'
+                pluginUniqueId: 'a8ab0fed-cac9-406d-b98b-58161bf970b8',
+                statusTimer: null
             };
+
+            function renderPrepareStatus(s) {
+                var box = document.querySelector('#prepareStatusBox');
+                if (!s) {
+                    box.textContent = 'No status.';
+                    return;
+                }
+                box.textContent = [
+                    'Running: ' + !!s.IsRunning,
+                    'Progress: ' + (s.Completed || 0) + ' / ' + (s.Total || 0) + ' (' + (s.Percent || 0) + '%)',
+                    'With annotations: ' + (s.WithAnnotations || 0),
+                    'Skipped: ' + (s.Skipped || 0),
+                    'Failed: ' + (s.Failed || 0),
+                    'Current: ' + (s.CurrentItem || '-'),
+                    'Last error: ' + (s.LastError || '-'),
+                    'Started: ' + (s.StartedAtUtc || '-'),
+                    'Finished: ' + (s.FinishedAtUtc || '-')
+                ].join('\n');
+            }
+
+            function refreshPrepareStatus() {
+                return ApiClient.ajax({
+                    url: ApiClient.getUrl('LookItUp/prepare/status'),
+                    type: 'GET',
+                    dataType: 'json'
+                }).then(function (s) {
+                    // Support camelCase too
+                    renderPrepareStatus({
+                        IsRunning: s.IsRunning ?? s.isRunning,
+                        Completed: s.Completed ?? s.completed,
+                        Total: s.Total ?? s.total,
+                        Percent: s.Percent ?? s.percent,
+                        WithAnnotations: s.WithAnnotations ?? s.withAnnotations,
+                        Skipped: s.Skipped ?? s.skipped,
+                        Failed: s.Failed ?? s.failed,
+                        CurrentItem: s.CurrentItem ?? s.currentItem,
+                        LastError: s.LastError ?? s.lastError,
+                        StartedAtUtc: s.StartedAtUtc ?? s.startedAtUtc,
+                        FinishedAtUtc: s.FinishedAtUtc ?? s.finishedAtUtc
+                    });
+                    if ((s.IsRunning ?? s.isRunning) && !LookItUpConfig.statusTimer) {
+                        LookItUpConfig.statusTimer = setInterval(refreshPrepareStatus, 2000);
+                    }
+                    if (!(s.IsRunning ?? s.isRunning) && LookItUpConfig.statusTimer) {
+                        clearInterval(LookItUpConfig.statusTimer);
+                        LookItUpConfig.statusTimer = null;
+                    }
+                }).catch(function (err) {
+                    document.querySelector('#prepareStatusBox').textContent = 'Could not load prepare status: ' + err;
+                });
+            }
+
+            function startPrepare(force) {
+                Dashboard.showLoadingMsg();
+                ApiClient.ajax({
+                    url: ApiClient.getUrl('LookItUp/prepare') + (force ? '?force=true' : ''),
+                    type: 'POST',
+                    dataType: 'json'
+                }).then(function (result) {
+                    Dashboard.hideLoadingMsg();
+                    var status = result.status || result.Status || result;
+                    renderPrepareStatus({
+                        IsRunning: status.IsRunning ?? status.isRunning ?? result.started,
+                        Completed: status.Completed ?? status.completed,
+                        Total: status.Total ?? status.total,
+                        Percent: status.Percent ?? status.percent,
+                        WithAnnotations: status.WithAnnotations ?? status.withAnnotations,
+                        Skipped: status.Skipped ?? status.skipped,
+                        Failed: status.Failed ?? status.failed,
+                        CurrentItem: status.CurrentItem ?? status.currentItem,
+                        LastError: status.LastError ?? status.lastError,
+                        StartedAtUtc: status.StartedAtUtc ?? status.startedAtUtc,
+                        FinishedAtUtc: status.FinishedAtUtc ?? status.finishedAtUtc
+                    });
+                    if (!LookItUpConfig.statusTimer) {
+                        LookItUpConfig.statusTimer = setInterval(refreshPrepareStatus, 2000);
+                    }
+                    Dashboard.alert(result.started === false
+                        ? 'A prepare job is already running.'
+                        : 'Library prepare started. This can take a while on large libraries.');
+                }).catch(function (err) {
+                    Dashboard.hideLoadingMsg();
+                    Dashboard.alert('Failed to start prepare: ' + err);
+                });
+            }
 
             document.querySelector('#lookItUpConfigPage')
                 .addEventListener('pageshow', function () {
                     Dashboard.showLoadingMsg();
                     ApiClient.getPluginConfiguration(LookItUpConfig.pluginUniqueId).then(function (config) {
                         document.querySelector('#chkEnabled').checked = config.Enabled;
+                        document.querySelector('#chkPrepareMovies').checked = config.PrepareMovies !== false;
+                        document.querySelector('#chkPrepareEpisodes').checked = config.PrepareEpisodes !== false;
+                        document.querySelector('#chkSkipPrepared').checked = config.SkipAlreadyPrepared !== false;
+                        document.querySelector('#chkWriteSidecar').checked = !!config.WriteSidecarFiles;
+                        document.querySelector('#chkScanOnPlayback').checked = !!config.ScanOnPlayback;
                         document.querySelector('#txtWikipediaLanguage').value = config.WikipediaLanguage || 'en';
                         document.querySelector('#txtPreferredSubtitleLanguages').value = config.PreferredSubtitleLanguages || 'en';
                         document.querySelector('#txtMaxAnnotations').value = config.MaxAnnotationsPerItem;
                         document.querySelector('#txtMinEntityLength').value = config.MinEntityLength;
                         document.querySelector('#txtPopupDuration').value = config.PopupDurationMs;
+                        document.querySelector('#txtAiProvider').value = config.AiProvider || 'None';
                         Dashboard.hideLoadingMsg();
+                        refreshPrepareStatus();
                     });
                 });
+
+            document.querySelector('#btnPrepareLibrary').addEventListener('click', function () { startPrepare(false); });
+            document.querySelector('#btnPrepareForce').addEventListener('click', function () { startPrepare(true); });
+            document.querySelector('#btnRefreshStatus').addEventListener('click', refreshPrepareStatus);
 
             document.querySelector('#lookItUpConfigForm')
                 .addEventListener('submit', function (e) {
@@ -95,11 +250,17 @@
                     Dashboard.showLoadingMsg();
                     ApiClient.getPluginConfiguration(LookItUpConfig.pluginUniqueId).then(function (config) {
                         config.Enabled = document.querySelector('#chkEnabled').checked;
+                        config.PrepareMovies = document.querySelector('#chkPrepareMovies').checked;
+                        config.PrepareEpisodes = document.querySelector('#chkPrepareEpisodes').checked;
+                        config.SkipAlreadyPrepared = document.querySelector('#chkSkipPrepared').checked;
+                        config.WriteSidecarFiles = document.querySelector('#chkWriteSidecar').checked;
+                        config.ScanOnPlayback = document.querySelector('#chkScanOnPlayback').checked;
                         config.WikipediaLanguage = document.querySelector('#txtWikipediaLanguage').value;
                         config.PreferredSubtitleLanguages = document.querySelector('#txtPreferredSubtitleLanguages').value;
                         config.MaxAnnotationsPerItem = parseInt(document.querySelector('#txtMaxAnnotations').value, 10);
                         config.MinEntityLength = parseInt(document.querySelector('#txtMinEntityLength').value, 10);
                         config.PopupDurationMs = parseInt(document.querySelector('#txtPopupDuration').value, 10);
+                        config.AiProvider = document.querySelector('#txtAiProvider').value || 'None';
                         ApiClient.updatePluginConfiguration(LookItUpConfig.pluginUniqueId, config).then(function (result) {
                             Dashboard.processPluginConfigurationUpdateResult(result);
                         });

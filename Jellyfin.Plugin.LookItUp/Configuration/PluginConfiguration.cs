@@ -18,6 +18,12 @@ public class PluginConfiguration : BasePluginConfiguration
         MinEntityLength = 3;
         PopupDurationMs = 2000;
         PreferredSubtitleLanguages = "en";
+        ScanOnPlayback = false;
+        WriteSidecarFiles = true;
+        PrepareMovies = true;
+        PrepareEpisodes = true;
+        SkipAlreadyPrepared = true;
+        AiProvider = "None";
     }
 
     /// <summary>
@@ -49,4 +55,38 @@ public class PluginConfiguration : BasePluginConfiguration
     /// Gets or sets a comma-separated list of preferred subtitle language codes.
     /// </summary>
     public string PreferredSubtitleLanguages { get; set; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether playback may trigger an on-demand prepare
+    /// when no precomputed annotations exist. Prefer library prepare instead.
+    /// </summary>
+    public bool ScanOnPlayback { get; set; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether to also write <c>*.lookitup.json</c>
+    /// sidecars next to media files when the folder is writable.
+    /// </summary>
+    public bool WriteSidecarFiles { get; set; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether library prepare includes movies.
+    /// </summary>
+    public bool PrepareMovies { get; set; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether library prepare includes episodes.
+    /// </summary>
+    public bool PrepareEpisodes { get; set; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether library prepare skips items that already
+    /// have a current cache entry.
+    /// </summary>
+    public bool SkipAlreadyPrepared { get; set; }
+
+    /// <summary>
+    /// Gets or sets the AI provider used during prepare (<c>None</c> for Wikipedia-only).
+    /// Reserved for future enrichment (OpenAI, etc.).
+    /// </summary>
+    public string AiProvider { get; set; }
 }

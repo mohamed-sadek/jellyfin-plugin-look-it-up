@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  const CLIENT_VERSION = '1.0.6.4';
+  const CLIENT_VERSION = '1.1.0.0';
   const STYLE_ID = 'lookitup-styles';
   const POPUP_ID = 'lookitup-popup';
   const POLL_MS = 200;
@@ -499,7 +499,18 @@
       popupDurationMs = Math.min(DEFAULT_POPUP_MS, Math.max(1000, rawDuration || DEFAULT_POPUP_MS));
       const rawList = data.annotations || data.Annotations || [];
       annotations = normalizeAnnotations(rawList);
-      console.info('[Look it up] loaded', annotations.length, 'annotations for', itemId, '(from', rawList.length, 'raw, durationMs', popupDurationMs + ')');
+      if (data.prepared === false && annotations.length === 0) {
+        console.warn(
+          '[Look it up] no prepared annotations for this item. Run Prepare library on the plugin page (or Scheduled Tasks).',
+          data.hint || ''
+        );
+      }
+      console.info('[Look it up] loaded', annotations.length, 'annotations for', itemId, {
+        raw: rawList.length,
+        durationMs: popupDurationMs,
+        prepared: data.prepared,
+        preparedAtUtc: data.preparedAtUtc || data.PreparedAtUtc || null
+      });
       console.info(
         '[Look it up] names ready',
         annotations.map((a) => ({

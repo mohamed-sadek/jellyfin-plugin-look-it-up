@@ -9,13 +9,14 @@ using Microsoft.Extensions.Logging;
 namespace Jellyfin.Plugin.LookItUp.Controllers;
 
 /// <summary>
-/// API endpoints for Look it up annotations and the web overlay script.
+/// API endpoints for Look it up annotations, prepare jobs, and the web overlay script.
 /// </summary>
 [ApiController]
 [Route("LookItUp")]
 public class LookItUpController : ControllerBase
 {
     private readonly ILookItUpService _lookItUpService;
+    private readonly ILookItUpPrepareService _prepareService;
     private readonly ILibraryManager _libraryManager;
     private readonly ILogger<LookItUpController> _logger;
 
@@ -24,22 +25,23 @@ public class LookItUpController : ControllerBase
     /// </summary>
     public LookItUpController(
         ILookItUpService lookItUpService,
+        ILookItUpPrepareService prepareService,
         ILibraryManager libraryManager,
         ILogger<LookItUpController> logger)
     {
         _lookItUpService = lookItUpService;
+        _prepareService = prepareService;
         _libraryManager = libraryManager;
         _logger = logger;
     }
 
     /// <summary>
-    /// Gets timed annotations for a media item.
+    /// Gets timed annotations for a media item (precomputed cache).
     /// </summary>
     [HttpGet("{itemId}")]
     [Authorize]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
-    [ProducesResponseType(StatusCodes.Status500InternalServerError)]
     public async Task<ActionResult> GetAnnotations(
         [FromRoute] Guid itemId,
         [FromQuery] bool force = false,
@@ -53,6 +55,7 @@ public class LookItUpController : ControllerBase
                 return NotFound(new { error = "Item not found", itemId });
             }
 
+            var prepared = _lookItUpService.TryGetPrepared(itemId, out var cache);
             var annotations = await _lookItUpService
                 .GetAnnotationsAsync(itemId, force, cancellationToken)
                 .ConfigureAwait(false);
@@ -63,9 +66,15 @@ public class LookItUpController : ControllerBase
                 itemId,
                 itemName = item.Name,
                 enabled = config?.Enabled ?? false,
+                prepared = prepared || annotations.Count > 0,
+                preparedAtUtc = cache?.ScannedAtUtc,
+                cacheVersion = cache?.Version ?? 0,
                 popupDurationMs = config?.PopupDurationMs ?? 2000,
                 count = annotations.Count,
-                annotations
+                annotations,
+                hint = prepared || annotations.Count > 0
+                    ? null
+                    : "No prepared annotations. Run Look it up library prepare (Dashboard → Scheduled Tasks or plugin page)."
             });
         }
         catch (Exception ex)
@@ -81,13 +90,13 @@ public class LookItUpController : ControllerBase
     }
 
     /// <summary>
-    /// Forces a subtitle rescan for a media item.
+    /// Forces prepare/rescan for a single media item.
     /// </summary>
-    [HttpPost("{itemId}/scan")]
+    [HttpPost("{itemId}/prepare")]
     [Authorize]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
-    public async Task<ActionResult> Rescan(
+    public async Task<ActionResult> PrepareItem(
         [FromRoute] Guid itemId,
         CancellationToken cancellationToken = default)
     {
@@ -98,15 +107,22 @@ public class LookItUpController : ControllerBase
                 return NotFound();
             }
 
-            var annotations = await _lookItUpService
-                .GetAnnotationsAsync(itemId, forceRescan: true, cancellationToken)
+            var cache = await _prepareService
+                .PrepareItemAsync(itemId, force: true, cancellationToken)
                 .ConfigureAwait(false);
 
-            return Ok(new { itemId, count = annotations.Count, annotations });
+            return Ok(new
+            {
+                itemId,
+                count = cache?.Annotations.Count ?? 0,
+                preparedAtUtc = cache?.ScannedAtUtc,
+                subtitle = cache?.SubtitlePath,
+                annotations = cache?.Annotations ?? []
+            });
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "LookItUp scan failed for {ItemId}", itemId);
+            _logger.LogError(ex, "LookItUp prepare failed for {ItemId}", itemId);
             return StatusCode(StatusCodes.Status500InternalServerError, new
             {
                 error = ex.Message,
@@ -115,6 +131,39 @@ public class LookItUpController : ControllerBase
             });
         }
     }
+
+    /// <summary>
+    /// Legacy alias for single-item prepare.
+    /// </summary>
+    [HttpPost("{itemId}/scan")]
+    [Authorize]
+    public Task<ActionResult> Rescan(
+        [FromRoute] Guid itemId,
+        CancellationToken cancellationToken = default)
+        => PrepareItem(itemId, cancellationToken);
+
+    /// <summary>
+    /// Starts a background library prepare job.
+    /// </summary>
+    [HttpPost("prepare")]
+    [Authorize]
+    public ActionResult StartLibraryPrepare([FromQuery] bool force = false)
+    {
+        var started = _prepareService.TryStartLibraryPrepare(force);
+        return Ok(new
+        {
+            started,
+            status = _prepareService.GetStatus()
+        });
+    }
+
+    /// <summary>
+    /// Gets library prepare job progress.
+    /// </summary>
+    [HttpGet("prepare/status")]
+    [Authorize]
+    public ActionResult GetPrepareStatus()
+        => Ok(_prepareService.GetStatus());
 
     /// <summary>
     /// Health/debug endpoint (no auth — safe to open in a browser tab).
@@ -130,6 +179,11 @@ public class LookItUpController : ControllerBase
             version = Plugin.Instance?.Version?.ToString(),
             enabled = config?.Enabled ?? false,
             wikipediaLanguage = config?.WikipediaLanguage,
+            scanOnPlayback = config?.ScanOnPlayback ?? false,
+            writeSidecarFiles = config?.WriteSidecarFiles ?? false,
+            aiProvider = config?.AiProvider ?? "None",
+            cacheVersion = _lookItUpService.CacheVersion,
+            prepare = _prepareService.GetStatus(),
             instanceLoaded = Plugin.Instance is not null,
             targetServer = "10.11.x"
         });

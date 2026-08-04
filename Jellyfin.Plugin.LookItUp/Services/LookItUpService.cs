@@ -14,12 +14,30 @@ namespace Jellyfin.Plugin.LookItUp.Services;
 public interface ILookItUpService
 {
     /// <summary>
-    /// Gets annotations for an item, scanning when needed.
+    /// Current prepare/cache schema version.
+    /// </summary>
+    int CacheVersion { get; }
+
+    /// <summary>
+    /// Gets annotations for playback (cache-first; optional on-demand prepare).
     /// </summary>
     Task<IReadOnlyList<ContextAnnotation>> GetAnnotationsAsync(
         Guid itemId,
         bool forceRescan,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Precomputes and stores annotations for an item.
+    /// </summary>
+    Task<ItemAnnotationCache?> PrepareItemAsync(
+        Guid itemId,
+        bool force,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Returns a prepared cache entry when present and current.
+    /// </summary>
+    bool TryGetPrepared(Guid itemId, out ItemAnnotationCache? cache);
 }
 
 /// <summary>
@@ -31,7 +49,7 @@ public class LookItUpService : ILookItUpService
     /// <summary>
     /// Bump when scan logic changes so stale caches are ignored.
     /// </summary>
-    private const int CacheVersion = 4;
+    public const int CurrentCacheVersion = 5;
 
     private static readonly HashSet<string> TextSubtitleCodecs = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -71,9 +89,54 @@ public class LookItUpService : ILookItUpService
     }
 
     /// <inheritdoc />
+    public int CacheVersion => CurrentCacheVersion;
+
+    /// <inheritdoc />
+    public bool TryGetPrepared(Guid itemId, out ItemAnnotationCache? cache)
+    {
+        cache = _store.Get(itemId);
+        if (cache is null || cache.Version < CurrentCacheVersion)
+        {
+            cache = null;
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <inheritdoc />
     public async Task<IReadOnlyList<ContextAnnotation>> GetAnnotationsAsync(
         Guid itemId,
         bool forceRescan,
+        CancellationToken cancellationToken)
+    {
+        var config = Plugin.Instance?.Configuration;
+        if (config is null || !config.Enabled)
+        {
+            return Array.Empty<ContextAnnotation>();
+        }
+
+        if (!forceRescan && TryGetPrepared(itemId, out var cached) && cached is not null)
+        {
+            return cached.Annotations;
+        }
+
+        // Playback should usually hit precomputed data. On-demand prepare is opt-in.
+        if (!forceRescan && !config.ScanOnPlayback)
+        {
+            _logger.LogDebug("No prepared annotations for {ItemId}; run library prepare", itemId);
+            return Array.Empty<ContextAnnotation>();
+        }
+
+        var prepared = await PrepareItemAsync(itemId, force: true, cancellationToken)
+            .ConfigureAwait(false);
+        return (IReadOnlyList<ContextAnnotation>)(prepared?.Annotations ?? []);
+    }
+
+    /// <inheritdoc />
+    public async Task<ItemAnnotationCache?> PrepareItemAsync(
+        Guid itemId,
+        bool force,
         CancellationToken cancellationToken)
     {
         try
@@ -81,23 +144,19 @@ public class LookItUpService : ILookItUpService
             var config = Plugin.Instance?.Configuration;
             if (config is null || !config.Enabled)
             {
-                return Array.Empty<ContextAnnotation>();
+                return null;
             }
 
-            if (!forceRescan)
+            if (!force && TryGetPrepared(itemId, out var existing) && existing is not null)
             {
-                var cached = _store.Get(itemId);
-                if (cached is not null && cached.Version >= CacheVersion)
-                {
-                    return cached.Annotations;
-                }
+                return existing;
             }
 
             var item = _libraryManager.GetItemById(itemId);
             if (item is null)
             {
-                _logger.LogWarning("Look it up: item {ItemId} not found", itemId);
-                return Array.Empty<ContextAnnotation>();
+                _logger.LogWarning("Look it up prepare: item {ItemId} not found", itemId);
+                return null;
             }
 
             var subtitle = await ResolveSubtitleContentAsync(item, config.PreferredSubtitleLanguages, cancellationToken)
@@ -105,8 +164,9 @@ public class LookItUpService : ILookItUpService
             if (subtitle is null)
             {
                 _logger.LogInformation("No readable text subtitles found for {Item}", item.Name);
-                SaveEmpty(itemId, null);
-                return Array.Empty<ContextAnnotation>();
+                var empty = SaveCache(itemId, null, []);
+                MaybeWriteSidecar(item, empty, config.WriteSidecarFiles);
+                return empty;
             }
 
             var cues = _subtitleParser.Parse(subtitle.Content, subtitle.Label);
@@ -116,6 +176,8 @@ public class LookItUpService : ILookItUpService
 
             foreach (var cue in cues)
             {
+                cancellationToken.ThrowIfCancellationRequested();
+
                 IReadOnlyList<string> entities;
                 try
                 {
@@ -153,7 +215,6 @@ public class LookItUpService : ILookItUpService
                     }
 
                     var score = ScoreEntity(entity, lookup.Title);
-                    // Match window for playback sync (display duration is client-controlled).
                     var matchWindowMs = Math.Max(config.PopupDurationMs, score >= 30 ? 6000 : 4000);
                     var annotation = new ContextAnnotation
                     {
@@ -165,16 +226,9 @@ public class LookItUpService : ILookItUpService
                     };
 
                     candidates.Add((annotation, score));
-                    _logger.LogInformation(
-                        "Look it up matched {Term} at {StartMs}ms (score {Score}) in {Item}",
-                        lookup.Title,
-                        cue.StartMs,
-                        score,
-                        item.Name);
                 }
             }
 
-            // Keep the best names overall, then play them in timeline order.
             var annotations = candidates
                 .OrderByDescending(c => c.Score)
                 .ThenBy(c => c.Annotation.StartMs)
@@ -183,40 +237,65 @@ public class LookItUpService : ILookItUpService
                 .OrderBy(a => a.StartMs)
                 .ToList();
 
-            _store.Save(new ItemAnnotationCache
-            {
-                ItemId = itemId,
-                Version = CacheVersion,
-                ScannedAtUtc = DateTime.UtcNow,
-                SubtitlePath = subtitle.Label,
-                Annotations = annotations
-            });
+            var cache = SaveCache(itemId, subtitle.Label, annotations);
+            MaybeWriteSidecar(item, cache, config.WriteSidecarFiles);
 
             _logger.LogInformation(
-                "Look it up scanned {Item}: {Count} annotations from {Subtitle}",
+                "Look it up prepared {Item}: {Count} annotations from {Subtitle}",
                 item.Name,
                 annotations.Count,
                 subtitle.Label);
 
-            return annotations;
+            return cache;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Look it up failed for item {ItemId}: {Message}", itemId, ex.Message);
-            return Array.Empty<ContextAnnotation>();
+            _logger.LogError(ex, "Look it up prepare failed for item {ItemId}: {Message}", itemId, ex.Message);
+            return null;
         }
     }
 
-    private void SaveEmpty(Guid itemId, string? label)
+    private ItemAnnotationCache SaveCache(Guid itemId, string? label, List<ContextAnnotation> annotations)
     {
-        _store.Save(new ItemAnnotationCache
+        var cache = new ItemAnnotationCache
         {
             ItemId = itemId,
-            Version = CacheVersion,
+            Version = CurrentCacheVersion,
             ScannedAtUtc = DateTime.UtcNow,
             SubtitlePath = label,
-            Annotations = []
-        });
+            Annotations = annotations
+        };
+        _store.Save(cache);
+        return cache;
+    }
+
+    private void MaybeWriteSidecar(BaseItem item, ItemAnnotationCache cache, bool enabled)
+    {
+        if (!enabled || string.IsNullOrWhiteSpace(item.Path))
+        {
+            return;
+        }
+
+        try
+        {
+            var dir = Path.GetDirectoryName(item.Path);
+            var stem = Path.GetFileNameWithoutExtension(item.Path);
+            if (string.IsNullOrWhiteSpace(dir) || string.IsNullOrWhiteSpace(stem))
+            {
+                return;
+            }
+
+            var sidecar = Path.Combine(dir, stem + ".lookitup.json");
+            var json = System.Text.Json.JsonSerializer.Serialize(
+                cache,
+                new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(sidecar, json);
+            _logger.LogDebug("Wrote Look it up sidecar {Path}", sidecar);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Could not write Look it up sidecar for {Item}", item.Name);
+        }
     }
 
     private static int ScoreEntity(string query, string title)
