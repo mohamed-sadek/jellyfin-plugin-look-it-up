@@ -143,23 +143,6 @@ public class LookItUpPrepareService : ILookItUpPrepareService
                 return false;
             }
 
-            _cts.Cancel();
-            _status.LastError = "Cancelled by user";
-            _logger.LogInformation("Look it up library prepare cancel requested");
-            return true;
-        }
-    }
-
-    /// <inheritdoc />
-    public bool TryCancelLibraryPrepare()
-    {
-        lock (_gate)
-        {
-            if (!_status.IsRunning || _cts is null)
-            {
-                return false;
-            }
-
             _logger.LogInformation("Look it up library prepare cancel requested");
             _cts.Cancel();
             _status.LastError = "Cancelled by user";
