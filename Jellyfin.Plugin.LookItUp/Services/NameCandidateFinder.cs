@@ -49,6 +49,12 @@ public partial class NameCandidateFinder : INameCandidateFinder
         "will", "would", "could", "should", "may", "might", "must", "can", "shall",
         "not", "don", "didn", "isn", "aren", "wasn", "weren", "hasn", "haven", "hadn", "won", "wouldn",
         "mr", "mrs", "ms", "dr",
+        // Contractionsictions / dialogue false positives (I'm often looks title-case).
+        "i'm", "im", "i've", "ive", "i'd", "i'll",
+        "you're", "youre", "you've", "youve", "you'd", "youd", "you'll", "youll",
+        "he's", "hes", "she's", "shes", "we're", "they're", "theyre",
+        "it's", "that's", "thats", "what's", "whats", "who's", "whos", "there's", "theres",
+        "here's", "heres", "let's", "lets", "don't", "dont", "can't", "cant", "won't", "wont",
         "all", "any", "some", "every", "each", "both", "few", "more", "most", "other", "such",
         "just", "also", "only", "even", "still", "already", "yet", "very", "too", "quite",
         "up", "down", "out", "off", "back", "away", "here", "now", "then", "once",
@@ -353,6 +359,20 @@ public partial class NameCandidateFinder : INameCandidateFinder
             return;
         }
 
+        // Never keep multi-clause dialogue fragments ("Wonderful, Hank …").
+        if (term.Contains(',', StringComparison.Ordinal)
+            || term.Contains(';', StringComparison.Ordinal)
+            || term.Contains('?', StringComparison.Ordinal)
+            || term.Contains('!', StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        if (IsContractionOrDialogueParticle(term))
+        {
+            return;
+        }
+
         if (IsAllCapsTerm(term))
         {
             return;
@@ -535,21 +555,25 @@ public partial class NameCandidateFinder : INameCandidateFinder
                                || surface.EndsWith('.')
                                || surface.EndsWith('!')
                                || surface.EndsWith('?');
-            var breaksPhrase = surface is ":" or "-" or "—" or "–"
-                               || surface.EndsWith(':');
+            // Commas / semicolons break Cap+Cap phrases ("Wonderful, Hank" must not become one name).
+            var breaksPhrase = surface is ":" or "-" or "—" or "–" or "," or ";"
+                               || surface.EndsWith(':')
+                               || surface.EndsWith(',')
+                               || surface.EndsWith(';');
 
             // Strip trailing sentence punctuation from word surface for matching.
             var word = surface.TrimEnd('.', ',', ';', ':', '!', '?', '"', '\'', ')', ']');
             word = word.TrimStart('"', '\'', '(', '[');
 
-            if (word.Length == 0)
+            if (word.Length == 0
+                || surface is "," or ";" or ":" or "-" or "—" or "–" or "." or "!" or "?" or "…")
             {
                 tokens.Add(new Token
                 {
                     Surface = surface,
                     IsPunctuationOnly = true,
                     EndsSentence = endsSentence,
-                    BreaksPhrase = breaksPhrase || endsSentence
+                    BreaksPhrase = breaksPhrase || endsSentence || surface is "," or ";"
                 });
                 continue;
             }
@@ -577,7 +601,7 @@ public partial class NameCandidateFinder : INameCandidateFinder
         return tokens;
     }
 
-    [GeneratedRegex(@"\b[\p{L}][\p{L}\p{Mn}']*\b|[.!?:…]", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"\b[\p{L}][\p{L}\p{Mn}']*\b|[,;:!?.…\-—–]", RegexOptions.CultureInvariant)]
     private static partial Regex TokenRegex();
 
     [GeneratedRegex(@"\.{2,}|…", RegexOptions.CultureInvariant)]
@@ -588,6 +612,12 @@ public partial class NameCandidateFinder : INameCandidateFinder
 
     [GeneratedRegex(@"\s+", RegexOptions.CultureInvariant)]
     private static partial Regex WhitespaceRegex();
+
+    private static bool IsContractionOrDialogueParticle(string term)
+    {
+        var t = term.Trim().TrimEnd('.', ',', '!', '?', ';', ':');
+        return FunctionWords.Contains(t);
+    }
 
     private sealed class TokenStats
     {

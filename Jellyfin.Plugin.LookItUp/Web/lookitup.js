@@ -1,7 +1,7 @@
 ﻿(function () {
   'use strict';
 
-  const CLIENT_VERSION = '1.2.24.0';
+  const CLIENT_VERSION = '1.2.25.0';
   const STYLE_ID = 'lookitup-styles';
   const POPUP_ID = 'lookitup-popup';
   const SERIES_BTN_ID = 'lookitup-prepare-series-btn';
@@ -21,7 +21,8 @@
     'heh', 'huh', 'whoa', 'wow', 'okay', 'right', 'sure', 'really', 'maybe',
     'nothing', 'everything', 'anything', 'something', 'someone', 'everyone',
     'ownership', 'apparently', 'excuse', 'dentist', 'watch', 'eve', 'jon',
-    'taxi', 'dallas', 'ford', 'ltd', 'integra', 'supra', 'volvo'
+    'taxi', 'dallas', 'ford', 'ltd', 'integra', 'supra', 'volvo',
+    "i'm", 'im', "i've", 'ive', "i'd", "i'll", "you're", 'youre'
   ]);
 
   let annotations = [];

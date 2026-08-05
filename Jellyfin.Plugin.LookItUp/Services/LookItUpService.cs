@@ -762,14 +762,23 @@ public class LookItUpService : ILookItUpService
                 var minLen = Math.Max(2, config.MinEntityLength);
                 var excludedCast = BuildCastExcludeNames(item, minLen);
                 var nameLimit = Math.Clamp(config.AiNamesPerPrepare, 1, 20);
+                // Pull enough local candidates so user selections are still findable in the ranked list.
+                var rankedLimit = selectedTerms is { Count: > 0 }
+                    ? Math.Max(max, Math.Max(selectedTerms.Count, 40))
+                    : Math.Max(max, nameLimit * 4);
                 var ranked = _nameCandidateFinder
-                    .Find(cues, item.Name, excludedCast, minLen, Math.Max(max, nameLimit * 4))
+                    .Find(cues, item.Name, excludedCast, minLen, rankedLimit)
                     .ToList();
 
                 List<NameCandidate> nameCandidates;
                 if (selectedTerms is { Count: > 0 })
                 {
                     nameCandidates = FilterCandidatesBySelectedTerms(ranked, selectedTerms, cues);
+                    // Never re-apply AiNamesPerPrepare on an explicit user selection.
+                    if (nameCandidates.Count > max)
+                    {
+                        nameCandidates = nameCandidates.Take(max).ToList();
+                    }
                     if (nameCandidates.Count == 0)
                     {
                         return new PrepareItemResult

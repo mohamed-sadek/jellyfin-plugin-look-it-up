@@ -203,7 +203,7 @@
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="txtAiNamesPerPrepare">AI names per prepare</label>
                         <input id="txtAiNamesPerPrepare" type="number" is="emby-input" min="1" max="20" />
-                        <div class="fieldDescription">How many top local candidates get one verify+define request each (start with 5).</div>
+                        <div class="fieldDescription">Auto-prepare only: how many top local candidates to verify with AI (1–20). Manual selections on the prepare page are not limited by this.</div>
                     </div>
 
                     <div class="sectionTitleContainer flex align-items-center" style="margin-top:1.5em;">
@@ -215,7 +215,7 @@
                     </p>
                     <pre style="white-space:pre-wrap;word-break:break-all;background:rgba(0,0,0,.08);padding:12px;border-radius:8px;">(function () {
   var s = document.createElement('script');
-  s.src = '/LookItUp/script.js?v=1.2.24';
+  s.src = '/LookItUp/script.js?v=1.2.25';
   s.async = true;
   document.head.appendChild(s);
 })();</pre>
