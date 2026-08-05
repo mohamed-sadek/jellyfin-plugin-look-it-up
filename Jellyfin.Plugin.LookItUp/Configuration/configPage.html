@@ -146,7 +146,7 @@
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="txtAiModel">AI model</label>
                         <input id="txtAiModel" type="text" is="emby-input" />
-                        <div class="fieldDescription">Recommended Groq: <code>llama-3.1-8b-instant</code> (fast). Optional: <code>llama-3.3-70b-versatile</code>. OpenAI: <code>gpt-4o-mini</code>.</div>
+                        <div class="fieldDescription">Recommended Groq: <code>openai/gpt-oss-20b</code> (replacement for deprecated <code>llama-3.1-8b-instant</code>). OpenAI: <code>gpt-4o-mini</code>.</div>
                     </div>
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="txtAiBaseUrl">AI base URL</label>
@@ -399,7 +399,7 @@
                         document.querySelector('#txtAiProvider').value = config.AiProvider || 'Groq';
                         document.querySelector('#txtAiApiKey').value = '';
                         document.querySelector('#txtAiApiKey').placeholder = config.AiApiKey ? '(saved — enter new key to replace)' : '(not set)';
-                        document.querySelector('#txtAiModel').value = config.AiModel || 'llama-3.1-8b-instant';
+                        document.querySelector('#txtAiModel').value = config.AiModel || 'openai/gpt-oss-20b';
                         document.querySelector('#txtAiBaseUrl').value = config.AiBaseUrl || 'https://api.groq.com/openai/v1';
                         document.querySelector('#txtAiNamesPerPrepare').value = config.AiNamesPerPrepare || 5;
                         Dashboard.hideLoadingMsg();
@@ -431,7 +431,7 @@
                         config.MinEntityLength = parseInt(document.querySelector('#txtMinEntityLength').value, 10);
                         config.PopupDurationMs = parseInt(document.querySelector('#txtPopupDuration').value, 10);
                         config.AiProvider = document.querySelector('#txtAiProvider').value || 'Groq';
-                        config.AiModel = document.querySelector('#txtAiModel').value || 'llama-3.1-8b-instant';
+                        config.AiModel = document.querySelector('#txtAiModel').value || 'openai/gpt-oss-20b';
                         config.AiBaseUrl = document.querySelector('#txtAiBaseUrl').value || 'https://api.groq.com/openai/v1';
                         config.AiNamesPerPrepare = parseInt(document.querySelector('#txtAiNamesPerPrepare').value, 10) || 5;
                         var newKey = document.querySelector('#txtAiApiKey').value;

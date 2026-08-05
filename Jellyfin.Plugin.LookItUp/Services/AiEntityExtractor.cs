@@ -47,6 +47,7 @@ public interface IAiEntityExtractor
 /// </summary>
 public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
 {
+    private const string DefaultGroqModel = "openai/gpt-oss-20b";
     private static readonly HttpClient Http = CreateClient();
     private readonly ILogger<OpenAiCompatibleEntityExtractor> _logger;
 
@@ -94,7 +95,17 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             return new AiExtractionResult { Warning = "No local name candidates to verify." };
         }
 
+        var configuredModel = string.IsNullOrWhiteSpace(config.AiModel) ? "(default)" : config.AiModel.Trim();
         var model = ResolveModel(config);
+        if (!string.Equals(configuredModel, model, StringComparison.OrdinalIgnoreCase)
+            && configuredModel != "(default)")
+        {
+            _logger.LogWarning(
+                "Look it up remapped deprecated AI model {Configured} → {Model}",
+                configuredModel,
+                model);
+        }
+
         var baseUrl = ResolveBaseUrl(config, model);
         var limit = Math.Clamp(config.AiNamesPerPrepare, 1, 20);
         var batch = candidates.Take(limit).ToList();
@@ -127,7 +138,6 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 candidate.StartMs,
                 Truncate(candidate.CueText, 120));
 
-            // One candidate must never abort the rest of the batch.
             AiEntityMention? mention = null;
             string? error = null;
             string? rejectReason = null;
@@ -209,24 +219,6 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         CancellationToken cancellationToken)
     {
         var url = baseUrl + "/chat/completions";
-        var system = """
-            You verify possible names from TV/movie subtitles for short on-screen explainer popups.
-            First decide if the candidate is a real person, place, film, song, brand, or cultural reference worth explaining.
-            Reject ordinary dialogue words, speaker labels, greetings, and vague fragments.
-            If keep=true, return a canonical term and a one-sentence summary (max 120 chars) using the subtitle line for context.
-            Reply with ONLY one JSON object, no markdown:
-            {"keep":true,"term":"Jon Voight","summary":"American actor (Midnight Cowboy)."}
-            or
-            {"keep":false,"reason":"not a notable name"}
-            """;
-
-        var user =
-            "Show/episode: " + itemName + "\n" +
-            "Candidate: " + candidate.Term + "\n" +
-            "Subtitle line: " + candidate.CueText + "\n" +
-            "TimestampMs: " + candidate.StartMs + "\n" +
-            "Does this candidate contain a real name/reference worth explaining? JSON only.";
-
         const int maxAttempts = 3;
         string? lastError = null;
 
@@ -234,18 +226,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var payload = new Dictionary<string, object?>
-            {
-                ["model"] = model,
-                ["temperature"] = 0.1,
-                ["max_tokens"] = 400,
-                ["messages"] = new object[]
-                {
-                    new { role = "system", content = system },
-                    new { role = "user", content = user }
-                }
-            };
-
+            var payload = BuildChatPayload(itemName, candidate, model, attempt);
             using var request = new HttpRequestMessage(HttpMethod.Post, url);
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", config.AiApiKey.Trim());
             request.Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
@@ -274,10 +255,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 {
                     var delay = ParseRetryDelay(body) ?? TimeSpan.FromSeconds(2 * attempt);
                     lastError = $"HTTP 429 (retry in {delay.TotalSeconds:0.0}s)";
-                    _logger.LogWarning(
-                        "Look it up AI rate-limited for {Term}: {Error}",
-                        candidate.Term,
-                        lastError);
+                    _logger.LogWarning("Look it up AI rate-limited for {Term}: {Error}", candidate.Term, lastError);
                     await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
@@ -285,7 +263,6 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 if (!response.IsSuccessStatusCode)
                 {
                     lastError = $"HTTP {(int)response.StatusCode}: {Truncate(body, 200)}";
-                    // Non-retryable HTTP errors stop this candidate only.
                     return (null, lastError, null);
                 }
 
@@ -307,10 +284,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 if (!parsed.Keep)
                 {
                     var reason = parsed.Reason ?? "keep=false";
-                    _logger.LogInformation(
-                        "Look it up AI rejected {Term}: {Reason}",
-                        candidate.Term,
-                        reason);
+                    _logger.LogInformation("Look it up AI rejected {Term}: {Reason}", candidate.Term, reason);
                     return (null, null, reason);
                 }
 
@@ -361,6 +335,59 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         return (null, lastError ?? "verify failed", null);
     }
 
+    private static Dictionary<string, object?> BuildChatPayload(
+        string itemName,
+        NameCandidate candidate,
+        string model,
+        int attempt)
+    {
+        // Short user-only prompts: llama-3.1-8b-instant often returned finish_reason=stop with empty content.
+        string user;
+        if (attempt == 1)
+        {
+            user =
+                "Return a JSON object about this subtitle name candidate.\n" +
+                "keep=true only for a real person/place/film/brand/cultural reference worth a short popup.\n" +
+                "Otherwise keep=false.\n" +
+                "Schema: {\"keep\":true,\"term\":\"Jon Voight\",\"summary\":\"American actor.\"}\n" +
+                "or {\"keep\":false,\"reason\":\"not a notable name\"}\n" +
+                "Show: " + itemName + "\n" +
+                "Candidate: " + candidate.Term + "\n" +
+                "Line: " + candidate.CueText;
+        }
+        else
+        {
+            user =
+                "JSON only. Is \"" + candidate.Term + "\" a real name/reference in \"" +
+                candidate.CueText + "\"?\n" +
+                "{\"keep\":true,\"term\":\"...\",\"summary\":\"...\"} or {\"keep\":false,\"reason\":\"...\"}";
+        }
+
+        var payload = new Dictionary<string, object?>
+        {
+            ["model"] = model,
+            ["temperature"] = 0.1,
+            ["messages"] = new object[]
+            {
+                new { role = "user", content = user }
+            },
+            ["response_format"] = new { type = "json_object" }
+        };
+
+        if (IsGptOssModel(model))
+        {
+            payload["max_completion_tokens"] = 1024;
+            payload["reasoning_effort"] = "low";
+            payload["include_reasoning"] = false;
+        }
+        else
+        {
+            payload["max_tokens"] = 400;
+        }
+
+        return payload;
+    }
+
     private static VerifyParseResult TryParseVerifyResponse(string completionBody)
     {
         try
@@ -389,8 +416,6 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
 
             var rawMessage = message.GetRawText();
             var content = ReadMessageContent(message);
-
-            // Reasoning models may put JSON only in reasoning / leave content blank when max_tokens is tight.
             if (string.IsNullOrWhiteSpace(content))
             {
                 content = ReadAlternateText(message, "reasoning")
@@ -488,23 +513,44 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         };
     }
 
-    private static string ResolveModel(PluginConfiguration config)
+    /// <summary>
+    /// Resolves the chat model, remapping deprecated Groq IDs that return empty content.
+    /// </summary>
+    public static string ResolveModel(PluginConfiguration config)
     {
-        if (!string.IsNullOrWhiteSpace(config.AiModel))
+        var configured = string.IsNullOrWhiteSpace(config.AiModel)
+            ? string.Empty
+            : config.AiModel.Trim();
+
+        var isGroq = IsGroq(config);
+
+        if (string.IsNullOrWhiteSpace(configured))
         {
-            return config.AiModel.Trim();
+            return isGroq ? DefaultGroqModel : "gpt-4o-mini";
         }
 
+        if (isGroq && IsDeprecatedGroqModel(configured))
+        {
+            return DefaultGroqModel;
+        }
+
+        return configured;
+    }
+
+    private static bool IsGroq(PluginConfiguration config)
+    {
         var baseUrl = (config.AiBaseUrl ?? string.Empty).Trim();
         var provider = (config.AiProvider ?? string.Empty).Trim();
-        if (provider.Equals("Groq", StringComparison.OrdinalIgnoreCase)
-            || baseUrl.Contains("groq.com", StringComparison.OrdinalIgnoreCase))
-        {
-            return "llama-3.1-8b-instant";
-        }
-
-        return "gpt-4o-mini";
+        return provider.Equals("Groq", StringComparison.OrdinalIgnoreCase)
+               || baseUrl.Contains("groq.com", StringComparison.OrdinalIgnoreCase);
     }
+
+    private static bool IsDeprecatedGroqModel(string model) =>
+        model.Equals("llama-3.1-8b-instant", StringComparison.OrdinalIgnoreCase)
+        || model.Equals("llama-3.3-70b-versatile", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsGptOssModel(string model) =>
+        model.Contains("gpt-oss", StringComparison.OrdinalIgnoreCase);
 
     private static TimeSpan? ParseRetryDelay(string body)
     {
@@ -562,7 +608,20 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
 
     private static bool LooksLikeGroqModel(string model)
     {
-        if (string.IsNullOrWhiteSpace(model) || model.Contains('/', StringComparison.Ordinal))
+        if (string.IsNullOrWhiteSpace(model))
+        {
+            return false;
+        }
+
+        if (model.Contains("gpt-oss", StringComparison.OrdinalIgnoreCase)
+            || model.StartsWith("qwen/", StringComparison.OrdinalIgnoreCase)
+            || model.StartsWith("meta-llama/", StringComparison.OrdinalIgnoreCase)
+            || model.StartsWith("moonshotai/", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (model.Contains('/', StringComparison.Ordinal))
         {
             return false;
         }
@@ -612,7 +671,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
     {
         var client = new HttpClient
         {
-            Timeout = TimeSpan.FromSeconds(60)
+            Timeout = TimeSpan.FromSeconds(90)
         };
         client.DefaultRequestHeaders.UserAgent.Add(
             new ProductInfoHeaderValue("Jellyfin.Plugin.LookItUp", "1.3"));

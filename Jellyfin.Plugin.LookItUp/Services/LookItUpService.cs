@@ -313,12 +313,7 @@ public class LookItUpService : ILookItUpService
             if (_aiExtractor.IsConfigured(config))
             {
                 mode = "ai";
-                aiModel = string.IsNullOrWhiteSpace(config.AiModel)
-                    ? (string.Equals(config.AiProvider, "Groq", StringComparison.OrdinalIgnoreCase)
-                       || (config.AiBaseUrl ?? string.Empty).Contains("groq.com", StringComparison.OrdinalIgnoreCase)
-                        ? "llama-3.1-8b-instant"
-                        : "gpt-4o-mini")
-                    : config.AiModel.Trim();
+                aiModel = OpenAiCompatibleEntityExtractor.ResolveModel(config);
                 aiBaseUrl = OpenAiCompatibleEntityExtractor.ResolveBaseUrl(config, aiModel);
 
                 var minLen = Math.Max(2, config.MinEntityLength);

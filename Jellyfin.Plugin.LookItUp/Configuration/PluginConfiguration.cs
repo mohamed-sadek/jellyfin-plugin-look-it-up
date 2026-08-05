@@ -25,7 +25,7 @@ public class PluginConfiguration : BasePluginConfiguration
         SkipAlreadyPrepared = true;
         AiProvider = "Groq";
         AiApiKey = string.Empty;
-        AiModel = "llama-3.1-8b-instant";
+        AiModel = "openai/gpt-oss-20b";
         AiBaseUrl = "https://api.groq.com/openai/v1";
         AiNamesPerPrepare = 5;
     }
@@ -71,7 +71,7 @@ public class PluginConfiguration : BasePluginConfiguration
     /// <summary>Gets or sets the AI API key (stored in plugin config).</summary>
     public string AiApiKey { get; set; }
 
-    /// <summary>Gets or sets the chat model id (e.g. llama-3.1-8b-instant, gpt-4o-mini).</summary>
+    /// <summary>Gets or sets the chat model id (e.g. openai/gpt-oss-20b, gpt-4o-mini).</summary>
     public string AiModel { get; set; }
 
     /// <summary>Gets or sets the OpenAI-compatible base URL (e.g. https://api.groq.com/openai/v1).</summary>

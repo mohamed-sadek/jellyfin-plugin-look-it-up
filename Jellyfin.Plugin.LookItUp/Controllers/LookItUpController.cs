@@ -260,18 +260,19 @@ public class LookItUpController : ControllerBase
             writeSidecarFiles = config?.WriteSidecarFiles ?? false,
             aiProvider = config?.AiProvider ?? "None",
             aiModel = config?.AiModel,
+            aiResolvedModel = string.IsNullOrWhiteSpace(config?.AiApiKey)
+                || string.Equals(config?.AiProvider, "None", StringComparison.OrdinalIgnoreCase)
+                || config is null
+                ? null
+                : OpenAiCompatibleEntityExtractor.ResolveModel(config),
             aiBaseUrl = config?.AiBaseUrl,
             aiResolvedBaseUrl = string.IsNullOrWhiteSpace(config?.AiApiKey)
                 || string.Equals(config?.AiProvider, "None", StringComparison.OrdinalIgnoreCase)
+                || config is null
                 ? null
                 : OpenAiCompatibleEntityExtractor.ResolveBaseUrl(
-                    config!,
-                    string.IsNullOrWhiteSpace(config?.AiModel)
-                        ? (string.Equals(config?.AiProvider, "Groq", StringComparison.OrdinalIgnoreCase)
-                           || (config?.AiBaseUrl ?? string.Empty).Contains("groq.com", StringComparison.OrdinalIgnoreCase)
-                            ? "llama-3.1-8b-instant"
-                            : "gpt-4o-mini")
-                        : config!.AiModel),
+                    config,
+                    OpenAiCompatibleEntityExtractor.ResolveModel(config)),
             aiConfigured = !string.IsNullOrWhiteSpace(config?.AiApiKey)
                            && !string.Equals(config?.AiProvider, "None", StringComparison.OrdinalIgnoreCase),
             cacheVersion = _lookItUpService.CacheVersion,
