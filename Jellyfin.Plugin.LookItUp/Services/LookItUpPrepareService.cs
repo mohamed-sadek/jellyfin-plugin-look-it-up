@@ -1,6 +1,8 @@
 using Jellyfin.Data.Enums;
 using Jellyfin.Plugin.LookItUp.Models;
 using MediaBrowser.Controller.Entities;
+using MediaBrowser.Controller.Entities.Movies;
+using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Querying;
 using Microsoft.Extensions.Logging;
@@ -23,6 +25,15 @@ public interface ILookItUpPrepareService
     /// <param name="force">When true, re-prepare items that already have cache.</param>
     /// <returns>True if a new job was started.</returns>
     bool TryStartLibraryPrepare(bool force);
+
+    /// <summary>
+    /// Starts a background prepare for a Series, Season, Episode, or Movie.
+    /// </summary>
+    /// <param name="rootItemId">Library item id (series preferred).</param>
+    /// <param name="force">When true, re-prepare items that already have cache.</param>
+    /// <param name="error">Human-readable error when start fails.</param>
+    /// <returns>True if a new job was started.</returns>
+    bool TryStartScopedPrepare(Guid rootItemId, bool force, out string? error);
 
     /// <summary>
     /// Cancels a running library prepare job, if any.
@@ -134,6 +145,79 @@ public class LookItUpPrepareService : ILookItUpPrepareService
     }
 
     /// <inheritdoc />
+    public bool TryStartScopedPrepare(Guid rootItemId, bool force, out string? error)
+    {
+        error = null;
+        var root = _libraryManager.GetItemById(rootItemId);
+        if (root is null)
+        {
+            error = "Item not found.";
+            return false;
+        }
+
+        List<BaseItem> items;
+        try
+        {
+            items = ResolvePrepareTargets(root);
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return false;
+        }
+
+        if (items.Count == 0)
+        {
+            error = "No episodes/movies found under this item.";
+            return false;
+        }
+
+        lock (_gate)
+        {
+            if (_status.IsRunning)
+            {
+                error = "A prepare job is already running.";
+                return false;
+            }
+
+            var scopeLabel = root.Name ?? rootItemId.ToString("N");
+            _cts = new CancellationTokenSource();
+            var token = _cts.Token;
+            _running = Task.Run(async () =>
+            {
+                try
+                {
+                    await RunPrepareForItemsAsync(items, force, scopeLabel, progress: null, token)
+                        .ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    _logger.LogInformation("Look it up scoped prepare cancelled ({Scope})", scopeLabel);
+                    lock (_gate)
+                    {
+                        _status.IsRunning = false;
+                        _status.CurrentItem = null;
+                        _status.FinishedAtUtc = DateTime.UtcNow;
+                        _status.LastError = "Cancelled by user";
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Look it up scoped prepare failed ({Scope})", scopeLabel);
+                    lock (_gate)
+                    {
+                        _status.LastError = ex.Message;
+                        _status.IsRunning = false;
+                        _status.FinishedAtUtc = DateTime.UtcNow;
+                    }
+                }
+            }, token);
+
+            return true;
+        }
+    }
+
+    /// <inheritdoc />
     public bool TryCancelLibraryPrepare()
     {
         lock (_gate)
@@ -191,17 +275,40 @@ public class LookItUpPrepareService : ILookItUpPrepareService
         .Where(i => !string.IsNullOrWhiteSpace(i.Path))
         .ToList();
 
+        await RunPrepareForItemsAsync(items, force, "library", progress, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async Task RunPrepareForItemsAsync(
+        IReadOnlyList<BaseItem> items,
+        bool force,
+        string scopeLabel,
+        IProgress<double>? progress,
+        CancellationToken cancellationToken)
+    {
+        var config = Plugin.Instance?.Configuration;
+        if (config is null || !config.Enabled)
+        {
+            _logger.LogInformation("Look it up prepare skipped — plugin disabled");
+            return;
+        }
+
         lock (_gate)
         {
             _status = new PrepareStatus
             {
                 IsRunning = true,
                 Total = items.Count,
-                StartedAtUtc = DateTime.UtcNow
+                StartedAtUtc = DateTime.UtcNow,
+                CurrentItem = scopeLabel
             };
         }
 
-        _logger.LogInformation("Look it up prepare starting for {Count} items (force={Force})", items.Count, force);
+        _logger.LogInformation(
+            "Look it up prepare starting for {Count} items in scope {Scope} (force={Force})",
+            items.Count,
+            scopeLabel,
+            force);
 
         for (var i = 0; i < items.Count; i++)
         {
@@ -292,10 +399,39 @@ public class LookItUpPrepareService : ILookItUpPrepareService
         }
 
         _logger.LogInformation(
-            "Look it up prepare finished: {With} with annotations, {Skipped} skipped, {Failed} failed of {Total}",
+            "Look it up prepare finished ({Scope}): {With} with annotations, {Skipped} skipped, {Failed} failed of {Total}",
+            scopeLabel,
             _status.WithAnnotations,
             _status.Skipped,
             _status.Failed,
             items.Count);
+    }
+
+    private List<BaseItem> ResolvePrepareTargets(BaseItem root)
+    {
+        if (root is Movie or Episode)
+        {
+            return string.IsNullOrWhiteSpace(root.Path) ? [] : [root];
+        }
+
+        if (root is not Series and not Season)
+        {
+            throw new InvalidOperationException(
+                "Look it up can prepare a Series, Season, Episode, or Movie from this endpoint.");
+        }
+
+        return _libraryManager.GetItemList(new InternalItemsQuery
+            {
+                AncestorIds = [root.Id],
+                IncludeItemTypes = [BaseItemKind.Episode],
+                Recursive = true,
+                IsVirtualItem = false,
+                MediaTypes = [MediaType.Video]
+            })
+            .Where(i => !string.IsNullOrWhiteSpace(i.Path))
+            .OrderBy(i => i.ParentIndexNumber ?? 0)
+            .ThenBy(i => i.IndexNumber ?? 0)
+            .ThenBy(i => i.SortName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 }

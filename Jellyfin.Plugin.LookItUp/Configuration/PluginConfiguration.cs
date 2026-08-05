@@ -17,6 +17,7 @@ public class PluginConfiguration : BasePluginConfiguration
         MaxAnnotationsPerItem = 40;
         MinEntityLength = 3;
         PopupDurationMs = 3000;
+        PopupDelayMs = 1000;
         PopupFontSizePx = 16;
         PopupTextColor = "#f7fafc";
         PopupBackgroundColor = "rgba(8, 12, 20, 0.96)";
@@ -49,6 +50,9 @@ public class PluginConfiguration : BasePluginConfiguration
 
     /// <summary>Gets or sets popup duration in ms.</summary>
     public int PopupDurationMs { get; set; }
+
+    /// <summary>Gets or sets delay in ms after a cue match before the popup appears. Default 1000.</summary>
+    public int PopupDelayMs { get; set; }
 
     /// <summary>Gets or sets popup body font size in pixels.</summary>
     public int PopupFontSizePx { get; set; }

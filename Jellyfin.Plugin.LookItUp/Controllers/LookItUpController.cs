@@ -100,6 +100,7 @@ public class LookItUpController : ControllerBase
         return new
         {
             durationMs = Math.Clamp(config?.PopupDurationMs ?? 3000, 1000, 30000),
+            delayMs = Math.Clamp(config?.PopupDelayMs ?? 1000, 0, 10000),
             fontSizePx = Math.Clamp(config?.PopupFontSizePx ?? 16, 10, 48),
             textColor = string.IsNullOrWhiteSpace(config?.PopupTextColor) ? "#f7fafc" : config!.PopupTextColor.Trim(),
             backgroundColor = string.IsNullOrWhiteSpace(config?.PopupBackgroundColor)
@@ -224,6 +225,40 @@ public class LookItUpController : ControllerBase
         [FromRoute] Guid itemId,
         CancellationToken cancellationToken = default)
         => PrepareItem(itemId, cancellationToken);
+
+    /// <summary>
+    /// Starts a background prepare for a Series (all episodes), Season, Episode, or Movie.
+    /// </summary>
+    [HttpPost("{itemId}/prepare-series")]
+    [Authorize]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public ActionResult PrepareSeriesOrSeason(
+        [FromRoute] Guid itemId,
+        [FromQuery] bool force = false)
+    {
+        if (_libraryManager.GetItemById(itemId) is null)
+        {
+            return NotFound(new { error = "Item not found", itemId });
+        }
+
+        if (!_prepareService.TryStartScopedPrepare(itemId, force, out var error))
+        {
+            var conflict = string.Equals(error, "A prepare job is already running.", StringComparison.Ordinal);
+            return conflict
+                ? Conflict(new { started = false, error, status = _prepareService.GetStatus() })
+                : BadRequest(new { started = false, error, status = _prepareService.GetStatus() });
+        }
+
+        return Ok(new
+        {
+            started = true,
+            itemId,
+            force,
+            status = _prepareService.GetStatus()
+        });
+    }
 
     /// <summary>
     /// Starts a background library prepare job.
