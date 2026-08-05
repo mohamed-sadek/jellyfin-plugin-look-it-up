@@ -128,21 +128,20 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         }
 
         var baseUrl = ResolveBaseUrl(config, model);
-        // AiNamesPerPrepare only sizes the *auto* batch in PrepareItemAsync.
-        // When the UI passes an explicit selection, verify all of them (hard-capped by MaxAnnotations).
-        var hardMax = Math.Clamp(config.MaxAnnotationsPerItem, 1, 40);
-        var batch = candidates.Take(hardMax).ToList();
+        // Caller controls batch size (auto top-N or full UI selection). Safety cap only.
+        const int absoluteMax = 200;
+        var batch = candidates.Take(absoluteMax).ToList();
         var mentions = new List<AiEntityMention>();
         var outcomes = new List<string>(batch.Count);
         var failed = 0;
         var rejected = 0;
 
-        if (candidates.Count > hardMax)
+        if (candidates.Count > absoluteMax)
         {
             _logger.LogWarning(
-                "Look it up AI verify truncating {Total} candidates to MaxAnnotationsPerItem={Max}",
+                "Look it up AI verify truncating {Total} candidates to safety cap {Max}",
                 candidates.Count,
-                hardMax);
+                absoluteMax);
         }
 
         var itemLabel = string.IsNullOrWhiteSpace(media.ShowName)

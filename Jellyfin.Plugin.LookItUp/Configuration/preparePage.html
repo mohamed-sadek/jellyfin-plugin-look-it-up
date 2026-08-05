@@ -13,9 +13,9 @@
                 <p id="prepareRootLabel" style="opacity:.85;">Waiting for Look it up script… If this stays, check that /LookItUp/script.js is injected.</p>
 
                 <div class="inputContainer" style="max-width:20em;">
-                    <label class="inputLabel inputLabelUnfocused" for="txtNamesPerItem">Suggested names per episode</label>
-                    <input id="txtNamesPerItem" type="number" is="emby-input" min="1" max="40" value="5" />
-                    <div class="fieldDescription">Pre-checks the top N candidates per episode. You can still check/uncheck freely after loading.</div>
+                    <label class="inputLabel inputLabelUnfocused" for="txtNamesPerItem">Pre-select top N</label>
+                    <input id="txtNamesPerItem" type="number" is="emby-input" min="1" max="200" value="5" />
+                    <div class="fieldDescription">Load candidates shows every name found. This number only pre-checks the top N. Toggle all / manual checks override it when preparing.</div>
                 </div>
 
                 <div style="display:flex;flex-wrap:wrap;gap:8px;margin:1em 0;">

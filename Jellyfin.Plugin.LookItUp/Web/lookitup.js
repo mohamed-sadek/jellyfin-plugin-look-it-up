@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  const CLIENT_VERSION = '1.2.26.0';
+  const CLIENT_VERSION = '1.2.27.0';
   const STYLE_ID = 'lookitup-styles';
   const POPUP_ID = 'lookitup-popup';
   const SERIES_BTN_ID = 'lookitup-prepare-series-btn';
@@ -74,7 +74,7 @@
     if (!raw || raw.length > 64) {
       return fallback;
     }
-    // Allow hex, rgb/rgba, hsl/hsla, and simple named colors â€” block url() / expressions.
+    // Allow hex, rgb/rgba, hsl/hsla, and simple named colors ? block url() / expressions.
     if (/[;{}]|url\s*\(|expression\s*\(|javascript:/i.test(raw)) {
       return fallback;
     }
@@ -153,7 +153,7 @@
       if (popupCfg) {
         applyPopupSettings(popupCfg);
       } else {
-        console.warn('[Look it up] /LookItUp/status has no popup settings â€” is the plugin updated to 1.2.15+?');
+        console.warn('[Look it up] /LookItUp/status has no popup settings ? is the plugin updated to 1.2.15+?');
       }
     } catch (err) {
       console.debug('[Look it up] settings refresh failed', err);
@@ -357,7 +357,7 @@
     if (!/^https?:\/\//i.test(raw)) {
       return null;
     }
-    // Same-origin proxy â€” Jellyfin / reverse-proxy CSP often blocks upload.wikimedia.org.
+    // Same-origin proxy ? Jellyfin / reverse-proxy CSP often blocks upload.wikimedia.org.
     return '/LookItUp/image?url=' + encodeURIComponent(raw);
   }
 
@@ -373,7 +373,7 @@
       return;
     }
 
-    // Already on screen for this term â€” do not refresh the hide timer.
+    // Already on screen for this term ? do not refresh the hide timer.
     if (lastShownTerm === term && popup.classList.contains('visible')) {
       return;
     }
@@ -705,7 +705,7 @@
     console.info('[Look it up] fetching annotations for', itemId);
 
     try {
-      // Never force-rescan during playback â€” that re-runs AI and often misses cue windows.
+      // Never force-rescan during playback ? that re-runs AI and often misses cue windows.
       const url = api.getUrl(`LookItUp/${itemId}`);
       const data = await api.ajax({
         url,
@@ -829,7 +829,7 @@
     shownThisPass.add(active.term);
     if (lastCueLogTerm !== active.term) {
       lastCueLogTerm = active.term;
-      console.info('[Look it up] cue match â†’ search/popup', {
+      console.info('[Look it up] cue match ? search/popup', {
         term: active.term,
         playbackMs: now,
         at: formatClock(now),
@@ -945,7 +945,7 @@
         if (n < 10) {
           setTimeout(() => logServerVersion(n + 1), 500);
           if (n === 0) {
-            console.info('[Look it up] client', CLIENT_VERSION, '(waiting for ApiClientâ€¦)');
+            console.info('[Look it up] client', CLIENT_VERSION, '(waiting for ApiClient?)');
           }
           return;
         }
@@ -972,7 +972,7 @@
         setTimeout(() => logServerVersion(n + 1), 500);
         return;
       }
-      console.warn('[Look it up] client', CLIENT_VERSION, 'â€” could not read server /LookItUp/status', err);
+      console.warn('[Look it up] client', CLIENT_VERSION, '? could not read server /LookItUp/status', err);
     }
   }
 
@@ -1013,7 +1013,7 @@
       btn.id = SERIES_BTN_ID;
       btn.type = 'button';
       btn.style.display = 'none';
-      btn.textContent = 'Look it up — prepare this show';
+      btn.textContent = 'Look it up ? prepare this show';
       document.body.appendChild(btn);
     }
     let status = document.getElementById(SERIES_STATUS_ID);
@@ -1072,10 +1072,10 @@
       const { btn } = ensureSeriesUi();
       if (running) {
         btn.disabled = true;
-        btn.textContent = 'Preparing… ' + completed + '/' + total;
+        btn.textContent = 'Preparing? ' + completed + '/' + total;
         setSeriesStatus(
           'Preparing: ' + current + '\nDone ' + completed + '/' + total +
-            ' · with names ' + withAnn + ' · failed ' + failed,
+            ' ? with names ' + withAnn + ' ? failed ' + failed,
           true
         );
       } else {
@@ -1113,7 +1113,7 @@
     window.location.hash = '#!/' + target;
   }
 
-  // ---- Prepare page UI (driven from injected script.js — config-page inline JS is unreliable) ----
+  // ---- Prepare page UI (driven from injected script.js ? config-page inline JS is unreliable) ----
   const PrepareUI = {
     pluginUniqueId: 'a8ab0fed-cac9-406d-b98b-58161bf970b8',
     rootItemId: null,
@@ -1160,7 +1160,7 @@
     const en = item.episodeNumber ?? item.EpisodeNumber;
     const name = item.name || item.Name || 'Item';
     if (sn != null && en != null) {
-      return 'S' + String(sn).padStart(2, '0') + 'E' + String(en).padStart(2, '0') + ' — ' + name;
+      return 'S' + String(sn).padStart(2, '0') + 'E' + String(en).padStart(2, '0') + ' ? ' + name;
     }
     return name;
   }
@@ -1288,10 +1288,10 @@
         line1.querySelector('span').textContent =
           '@' +
           formatPrepareClock(c.startMs ?? c.StartMs) +
-          ' · score ' +
+          ' ? score ' +
           (c.score ?? c.Score ?? 0) +
-          (suggested ? ' · suggested' : '') +
-          ' · ' +
+          (suggested ? ' ? suggested' : '') +
+          ' ? ' +
           (c.reason || c.Reason || '');
         const cue = document.createElement('div');
         cue.style.cssText = 'opacity:.75;font-size:0.92em;margin-top:2px;';
@@ -1383,7 +1383,7 @@
     const gen = PrepareUI.previewGen;
     const input = pq(page, '#txtNamesPerItem');
     const n = parseInt(input && input.value, 10) || 5;
-    prepareSetBusy(page, true, 'Loading candidates…');
+    prepareSetBusy(page, true, 'Loading candidates?');
     const host = pq(page, '#prepareItemsHost');
     const summary = pq(page, '#prepareSummary');
     if (host) host.innerHTML = '';
@@ -1423,7 +1423,7 @@
       return;
     }
     const status = pq(page, '#prepareJobStatus');
-    if (status) status.textContent = 'Starting prepare…';
+    if (status) status.textContent = 'Starting prepare?';
     try {
       const result = await api.ajax({
         url: api.getUrl('LookItUp/' + id + '/prepare-selected'),
@@ -1456,7 +1456,7 @@
     const status = pq(page, '#prepareJobStatus');
     if (host) host.innerHTML = '';
     if (summary) summary.textContent = '';
-    if (status) status.textContent = 'Stop requested…';
+    if (status) status.textContent = 'Stop requested?';
     if (!api) return;
     try {
       const result = await api.ajax({
@@ -1479,8 +1479,17 @@
   }
 
   function prepareSelectSuggested(page) {
-    page.querySelectorAll('#prepareItemsHost input.lookitup-term').forEach((cb) => {
-      cb.checked = cb.dataset.suggested === '1';
+    const input = pq(page, '#txtNamesPerItem');
+    const n = Math.max(1, parseInt(input && input.value, 10) || 5);
+    const boxes = Array.from(page.querySelectorAll('#prepareItemsHost input.lookitup-term'));
+    // Prefer server "suggested" flags; fall back to list order (already score-ranked).
+    const suggested = boxes.filter((cb) => cb.dataset.suggested === '1');
+    const ordered = suggested.length ? suggested : boxes;
+    boxes.forEach((cb) => {
+      cb.checked = false;
+    });
+    ordered.slice(0, n).forEach((cb) => {
+      cb.checked = true;
     });
     prepareUpdateSummary(page);
   }
@@ -1502,7 +1511,7 @@
     const label = pq(page, '#prepareRootLabel');
     if (label && !PrepareUI.loading && !PrepareUI.preview) {
       label.textContent = PrepareUI.rootItemId
-        ? 'Set the number below, then click Load candidates.'
+        ? 'Set pre-select N if you want, then click Load candidates (loads all; N only pre-checks).'
         : 'Missing item id. Open this page from the Look it up button on a show or episode.';
     }
     const api = getApiClient();
@@ -1668,13 +1677,13 @@
       btn.title = 'Open Look it up prepare for ' + name;
       btn.disabled = false;
       if (type === 'Series') {
-        btn.textContent = 'Look it up — prepare this show';
+        btn.textContent = 'Look it up ? prepare this show';
       } else if (type === 'Season') {
-        btn.textContent = 'Look it up — prepare this season';
+        btn.textContent = 'Look it up ? prepare this season';
       } else if (type === 'Movie') {
-        btn.textContent = 'Look it up — prepare this movie';
+        btn.textContent = 'Look it up ? prepare this movie';
       } else {
-        btn.textContent = 'Look it up — prepare this episode';
+        btn.textContent = 'Look it up ? prepare this episode';
       }
       btn.onclick = function () {
         openPreparePage(detailsId);

@@ -251,8 +251,8 @@ public class LookItUpService : ILookItUpService
         }
 
         var config = Plugin.Instance?.Configuration;
-        var defaultN = Math.Clamp(config?.AiNamesPerPrepare ?? 5, 1, 40);
-        var suggestedN = Math.Clamp(suggestedNamesPerItem ?? defaultN, 1, 40);
+        var defaultN = Math.Clamp(config?.AiNamesPerPrepare ?? 5, 1, 200);
+        var suggestedN = Math.Clamp(suggestedNamesPerItem ?? defaultN, 1, 200);
         List<BaseItem> targets;
         try
         {
@@ -330,11 +330,12 @@ public class LookItUpService : ILookItUpService
         }
 
         var cues = _subtitleParser.Parse(subtitle.Content, subtitle.Label);
-        var max = Math.Max(1, config?.MaxAnnotationsPerItem ?? 40);
         var minLen = Math.Max(2, config?.MinEntityLength ?? 3);
         var excludedCast = BuildCastExcludeNames(item, minLen);
+        // Load every local candidate; suggestedN only controls which boxes start checked.
+        const int previewCandidateCap = 500;
         var ranked = _nameCandidateFinder
-            .Find(cues, item.Name, excludedCast, minLen, Math.Max(max, suggestedN * 4))
+            .Find(cues, item.Name, excludedCast, minLen, previewCandidateCap)
             .ToList();
         var suggested = new HashSet<string>(
             SelectAiBatch(ranked, suggestedN).Select(c => c.Term),
@@ -828,9 +829,10 @@ public class LookItUpService : ILookItUpService
                 var minLen = Math.Max(2, config.MinEntityLength);
                 var excludedCast = BuildCastExcludeNames(item, minLen);
                 var nameLimit = Math.Clamp(config.AiNamesPerPrepare, 1, 20);
-                // Pull enough local candidates so user selections are still findable in the ranked list.
+                // Pull a wide local pool so user-selected terms are findable / reconstructable.
+                const int prepareCandidateCap = 500;
                 var rankedLimit = selectedTerms is { Count: > 0 }
-                    ? Math.Max(max, Math.Max(selectedTerms.Count, 40))
+                    ? Math.Max(prepareCandidateCap, selectedTerms.Count)
                     : Math.Max(max, nameLimit * 4);
                 var ranked = _nameCandidateFinder
                     .Find(cues, item.Name, excludedCast, minLen, rankedLimit)
@@ -839,12 +841,8 @@ public class LookItUpService : ILookItUpService
                 List<NameCandidate> nameCandidates;
                 if (selectedTerms is { Count: > 0 })
                 {
+                    // Explicit UI selection overrides AiNamesPerPrepare and MaxAnnotations for verification.
                     nameCandidates = FilterCandidatesBySelectedTerms(ranked, selectedTerms, cues);
-                    // Never re-apply AiNamesPerPrepare on an explicit user selection.
-                    if (nameCandidates.Count > max)
-                    {
-                        nameCandidates = nameCandidates.Take(max).ToList();
-                    }
                     if (nameCandidates.Count == 0)
                     {
                         return new PrepareItemResult
