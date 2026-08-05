@@ -69,7 +69,7 @@ public class LookItUpController : ControllerBase
                 prepared = prepared || annotations.Count > 0,
                 preparedAtUtc = cache?.ScannedAtUtc,
                 cacheVersion = cache?.Version ?? 0,
-                popupDurationMs = config?.PopupDurationMs ?? 2000,
+                popupDurationMs = config?.PopupDurationMs ?? 3000,
                 count = annotations.Count,
                 annotations,
                 hint = prepared || annotations.Count > 0

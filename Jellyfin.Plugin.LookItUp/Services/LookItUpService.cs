@@ -321,15 +321,28 @@ public class LookItUpService : ILookItUpService
                     : config.AiModel.Trim();
                 aiBaseUrl = OpenAiCompatibleEntityExtractor.ResolveBaseUrl(config, aiModel);
 
+                var minLen = Math.Max(2, config.MinEntityLength);
+                var excludedCast = BuildCastExcludeNames(item, minLen);
+                var nameLimit = Math.Clamp(config.AiNamesPerPrepare, 1, 20);
+                var nameCandidates = _nameCandidateFinder
+                    .Find(cues, item.Name, excludedCast, minLen, Math.Max(max, nameLimit))
+                    .Take(nameLimit)
+                    .ToList();
+
                 _logger.LogInformation(
-                    "Look it up preparing {Item} with AI ({Provider}/{Model}) via {BaseUrl}",
+                    "Look it up preparing {Item} with AI ({Provider}/{Model}) via {BaseUrl}: verifying top {Count} names",
                     item.Name,
                     config.AiProvider,
                     aiModel,
-                    aiBaseUrl);
+                    aiBaseUrl,
+                    nameCandidates.Count);
 
                 var aiResult = await _aiExtractor
-                    .ExtractAsync(item.Name ?? itemId.ToString("N"), cues, config, max, cancellationToken)
+                    .ResolveNamesAsync(
+                        item.Name ?? itemId.ToString("N"),
+                        nameCandidates,
+                        config,
+                        cancellationToken)
                     .ConfigureAwait(false);
 
                 warning = aiResult.Warning;
@@ -341,7 +354,7 @@ public class LookItUpService : ILookItUpService
                         warning);
                 }
 
-                var popupMs = Math.Max(config.PopupDurationMs, 2000);
+                var popupMs = Math.Max(config.PopupDurationMs, 3000);
                 annotations = aiResult.Mentions
                     .Select(m => new ContextAnnotation
                     {

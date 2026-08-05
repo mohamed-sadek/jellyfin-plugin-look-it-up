@@ -11,11 +11,11 @@ using Microsoft.Extensions.Logging;
 namespace Jellyfin.Plugin.LookItUp.Services;
 
 /// <summary>
-/// Result of an AI subtitle extraction pass.
+/// Result of an AI name verification pass.
 /// </summary>
 public sealed class AiExtractionResult
 {
-    /// <summary>Gets the extracted mentions.</summary>
+    /// <summary>Gets the verified mentions to show as popups.</summary>
     public IReadOnlyList<AiEntityMention> Mentions { get; init; } = [];
 
     /// <summary>Gets a short warning when AI failed or returned nothing useful.</summary>
@@ -23,7 +23,7 @@ public sealed class AiExtractionResult
 }
 
 /// <summary>
-/// Extracts timed named entities from subtitle cues using an LLM.
+/// Verifies local name candidates with an LLM (one request per name).
 /// </summary>
 public interface IAiEntityExtractor
 {
@@ -33,26 +33,21 @@ public interface IAiEntityExtractor
     bool IsConfigured(PluginConfiguration config);
 
     /// <summary>
-    /// Analyzes subtitle cues with surrounding context and returns mentions.
+    /// Verifies candidates one-by-one and returns kept mentions with short summaries.
     /// </summary>
-    Task<AiExtractionResult> ExtractAsync(
+    Task<AiExtractionResult> ResolveNamesAsync(
         string itemName,
-        IReadOnlyList<SubtitleCue> cues,
+        IReadOnlyList<NameCandidate> candidates,
         PluginConfiguration config,
-        int maxAnnotations,
         CancellationToken cancellationToken);
 }
 
 /// <summary>
-/// OpenAI-compatible extractor: local NER candidates, then one (or two) LLM resolve calls.
+/// OpenAI-compatible per-name verifier (Groq, OpenAI, OpenRouter, Ollama).
 /// </summary>
 public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
 {
-    private const int MaxCandidates = 24;
-    private const int CandidatesPerCall = 12;
-    private const int MentionsPerCall = 8;
     private static readonly HttpClient Http = CreateClient();
-    private readonly IEntityExtractor _entityExtractor;
     private readonly ILogger<OpenAiCompatibleEntityExtractor> _logger;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -64,11 +59,8 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
     /// <summary>
     /// Initializes a new instance of the <see cref="OpenAiCompatibleEntityExtractor"/> class.
     /// </summary>
-    public OpenAiCompatibleEntityExtractor(
-        IEntityExtractor entityExtractor,
-        ILogger<OpenAiCompatibleEntityExtractor> logger)
+    public OpenAiCompatibleEntityExtractor(ILogger<OpenAiCompatibleEntityExtractor> logger)
     {
-        _entityExtractor = entityExtractor;
         _logger = logger;
     }
 
@@ -86,208 +78,123 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
     }
 
     /// <inheritdoc />
-    public async Task<AiExtractionResult> ExtractAsync(
+    public async Task<AiExtractionResult> ResolveNamesAsync(
         string itemName,
-        IReadOnlyList<SubtitleCue> cues,
+        IReadOnlyList<NameCandidate> candidates,
         PluginConfiguration config,
-        int maxAnnotations,
         CancellationToken cancellationToken)
     {
-        if (!IsConfigured(config) || cues.Count == 0)
+        if (!IsConfigured(config))
         {
-            return new AiExtractionResult { Warning = "AI not configured or no subtitle cues." };
+            return new AiExtractionResult { Warning = "AI not configured." };
+        }
+
+        if (candidates.Count == 0)
+        {
+            return new AiExtractionResult { Warning = "No local name candidates to verify." };
         }
 
         var model = ResolveModel(config);
         var baseUrl = ResolveBaseUrl(config, model);
-        var candidates = BuildCandidates(cues, Math.Max(3, config.MinEntityLength), maxAnnotations);
-
-        if (candidates.Count == 0)
-        {
-            return new AiExtractionResult
-            {
-                Warning = "No local NER candidates found in subtitles to send to AI."
-            };
-        }
+        var limit = Math.Clamp(config.AiNamesPerPrepare, 1, 20);
+        var batch = candidates.Take(limit).ToList();
+        var mentions = new List<AiEntityMention>();
+        string? lastError = null;
+        var rejected = 0;
 
         _logger.LogInformation(
-            "Look it up AI resolve for {Item}: {CandidateCount} candidates → {BaseUrl} model={Model}",
+            "Look it up AI per-name verify for {Item}: {Count} candidates via {BaseUrl} model={Model}",
             itemName,
-            candidates.Count,
+            batch.Count,
             baseUrl,
             model);
 
-        // Two small calls beat one huge call (Groq JSON mode hits max_tokens on 40 candidates).
-        var chunks = ChunkList(candidates, CandidatesPerCall);
-        var results = new List<AiEntityMention>();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        string? lastError = null;
-
-        for (var i = 0; i < chunks.Count && results.Count < maxAnnotations; i++)
+        for (var i = 0; i < batch.Count; i++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (i > 0)
             {
-                await Task.Delay(400, cancellationToken).ConfigureAwait(false);
+                await Task.Delay(350, cancellationToken).ConfigureAwait(false);
             }
 
+            var candidate = batch[i];
             _logger.LogInformation(
-                "Look it up AI chunk {Index}/{Total} for {Item} ({Count} candidates)",
+                "Look it up AI verify {Index}/{Total}: {Term} @ {StartMs}ms",
                 i + 1,
-                chunks.Count,
-                itemName,
-                chunks[i].Count);
+                batch.Count,
+                candidate.Term,
+                candidate.StartMs);
 
-            var chunkResult = await ResolveCandidatesAsync(
+            var result = await VerifyOneAsync(
                     itemName,
-                    chunks[i],
+                    candidate,
                     config,
                     model,
                     baseUrl,
-                    Math.Min(MentionsPerCall, maxAnnotations - results.Count),
                     cancellationToken)
                 .ConfigureAwait(false);
 
-            if (!string.IsNullOrWhiteSpace(chunkResult.Error))
+            if (!string.IsNullOrWhiteSpace(result.Error))
             {
-                lastError = chunkResult.Error;
+                lastError = result.Error;
+                continue;
             }
 
-            foreach (var mention in chunkResult.Mentions)
+            if (result.Mention is null)
             {
-                if (string.IsNullOrWhiteSpace(mention.Term) || string.IsNullOrWhiteSpace(mention.Summary))
-                {
-                    continue;
-                }
-
-                if (!seen.Add(mention.Term.Trim()))
-                {
-                    continue;
-                }
-
-                results.Add(mention);
-                if (results.Count >= maxAnnotations)
-                {
-                    break;
-                }
+                rejected++;
+                continue;
             }
+
+            mentions.Add(result.Mention);
         }
 
-        var ordered = results
-            .OrderBy(m => m.StartMs)
-            .Take(maxAnnotations)
-            .ToList();
-
-        if (ordered.Count == 0)
+        if (mentions.Count == 0)
         {
-            var warning = lastError ?? "AI returned no mentions for the candidate list.";
+            var warning = lastError
+                          ?? $"AI kept 0/{batch.Count} names (rejected {rejected}).";
             _logger.LogWarning("Look it up AI produced 0 mentions for {Item}: {Warning}", itemName, warning);
             return new AiExtractionResult { Warning = warning };
         }
 
-        return new AiExtractionResult { Mentions = ordered };
-    }
-
-    private List<AiCandidate> BuildCandidates(
-        IReadOnlyList<SubtitleCue> cues,
-        int minLength,
-        int maxAnnotations)
-    {
-        var byTerm = new Dictionary<string, AiCandidate>(StringComparer.OrdinalIgnoreCase);
-
-        for (var i = 0; i < cues.Count; i++)
+        return new AiExtractionResult
         {
-            var cue = cues[i];
-            IReadOnlyList<string> entities;
-            try
-            {
-                entities = _entityExtractor.Extract(cue.Text, minLength);
-            }
-            catch
-            {
-                continue;
-            }
-
-            foreach (var term in entities)
-            {
-                if (byTerm.ContainsKey(term))
-                {
-                    continue;
-                }
-
-                var prev = i > 0 ? cues[i - 1].Text.Replace('\n', ' ').Trim() : string.Empty;
-                var curr = cue.Text.Replace('\n', ' ').Trim();
-                var next = i + 1 < cues.Count ? cues[i + 1].Text.Replace('\n', ' ').Trim() : string.Empty;
-                // Prefer the cue that contains the term; keep context short for free-tier models.
-                var context = curr.Length > 0 ? curr : string.Join(" / ", new[] { prev, next }.Where(s => s.Length > 0));
-                if (context.Length > 120)
-                {
-                    context = context[..120];
-                }
-
-                byTerm[term] = new AiCandidate
-                {
-                    Term = term,
-                    StartMs = cue.StartMs,
-                    EndMs = Math.Max(cue.EndMs, cue.StartMs + 3000),
-                    Context = context
-                };
-            }
-        }
-
-        // Prefer multi-word / longer names (Jon Voight before Car).
-        var ranked = byTerm.Values
-            .OrderByDescending(c => c.Term.Count(ch => ch == ' '))
-            .ThenByDescending(c => c.Term.Length)
-            .ThenBy(c => c.StartMs)
-            .Take(Math.Min(MaxCandidates, Math.Max(maxAnnotations, 20)))
-            .OrderBy(c => c.StartMs)
-            .ToList();
-
-        return ranked;
+            Mentions = mentions.OrderBy(m => m.StartMs).ToList(),
+            Warning = lastError is null
+                ? null
+                : $"Partial AI errors; kept {mentions.Count}/{batch.Count}. Last: {lastError}"
+        };
     }
 
-    private async Task<(IReadOnlyList<AiEntityMention> Mentions, string? Error, bool MayHaveMore)> ResolveCandidatesAsync(
+    private async Task<(AiEntityMention? Mention, string? Error)> VerifyOneAsync(
         string itemName,
-        IReadOnlyList<AiCandidate> candidates,
+        NameCandidate candidate,
         PluginConfiguration config,
         string model,
         string baseUrl,
-        int maxMentions,
         CancellationToken cancellationToken)
     {
         var url = baseUrl + "/chat/completions";
-        var mentionCap = Math.Clamp(maxMentions, 1, MentionsPerCall);
-        var isGroq = baseUrl.Contains("groq.com", StringComparison.OrdinalIgnoreCase);
-
-        var candidateBlock = new StringBuilder();
-        foreach (var c in candidates)
-        {
-            candidateBlock.Append("- ")
-                .Append(c.Term.Replace('"', '\''))
-                .Append(" @")
-                .Append(c.StartMs)
-                .Append(" | ")
-                .Append(c.Context.Replace('"', '\''))
-                .Append('\n');
-        }
-
         var system = """
-            Return ONE JSON object only. No markdown. No prose before or after.
-            Schema: {"mentions":[{"term":"Jon Voight","kind":"person","summary":"American actor.","startMs":59766,"endMs":62766}]}
-            Keep real people/places/films/brands; drop cast first-names and generic words.
-            Use context for meaning. summary <= 80 chars. kind=person|place|film|org|other.
-            startMs from the @ value. If none: {"mentions":[]}
+            You verify possible names from TV/movie subtitles for short on-screen explainer popups.
+            First decide if the candidate is a real person, place, film, song, brand, or cultural reference worth explaining.
+            Reject ordinary dialogue words, speaker labels, greetings, and vague fragments.
+            If keep=true, return a canonical term and a one-sentence summary (max 120 chars) using the subtitle line for context.
+            Reply with ONLY one JSON object, no markdown:
+            {"keep":true,"term":"Jon Voight","summary":"American actor (Midnight Cowboy)."}
+            or
+            {"keep":false,"reason":"not a notable name"}
             """;
 
         var user =
-            "Show: " + itemName + "\n" +
-            "Keep at most " + mentionCap + " items. JSON only, start with {\n" +
-            candidateBlock;
+            "Show/episode: " + itemName + "\n" +
+            "Candidate: " + candidate.Term + "\n" +
+            "Subtitle line: " + candidate.CueText + "\n" +
+            "TimestampMs: " + candidate.StartMs + "\n" +
+            "Does this candidate contain a real name/reference worth explaining? JSON only.";
 
-        const int maxAttempts = 4;
+        const int maxAttempts = 3;
         string? lastError = null;
-        // Groq json_object mode often fails with max_tokens on larger prompts; parse braces instead.
-        var useJsonObjectMode = !isGroq;
 
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
@@ -297,17 +204,13 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             {
                 ["model"] = model,
                 ["temperature"] = 0.1,
-                ["max_tokens"] = 1200,
+                ["max_tokens"] = 200,
                 ["messages"] = new object[]
                 {
                     new { role = "system", content = system },
                     new { role = "user", content = user }
                 }
             };
-            if (useJsonObjectMode)
-            {
-                payload["response_format"] = new { type = "json_object" };
-            }
 
             using var request = new HttpRequestMessage(HttpMethod.Post, url);
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", config.AiApiKey.Trim());
@@ -321,7 +224,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 if ((int)response.StatusCode == 429)
                 {
                     var delay = ParseRetryDelay(body) ?? TimeSpan.FromSeconds(2 * attempt);
-                    lastError = $"AI HTTP 429 rate limit (attempt {attempt}/{maxAttempts}): waiting {delay.TotalSeconds:0.0}s";
+                    lastError = $"AI HTTP 429 for {candidate.Term}: waiting {delay.TotalSeconds:0.0}s";
                     _logger.LogWarning("{Error}", lastError);
                     await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
                     continue;
@@ -329,50 +232,50 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
 
                 if (!response.IsSuccessStatusCode)
                 {
-                    var snippet = body.Length > 350 ? body[..350] : body;
-                    lastError = $"AI HTTP {(int)response.StatusCode} from {baseUrl} model={model}: {snippet}";
-
-                    if ((int)response.StatusCode == 400
-                        && body.Contains("json_validate_failed", StringComparison.OrdinalIgnoreCase)
-                        && useJsonObjectMode)
-                    {
-                        _logger.LogWarning(
-                            "AI JSON mode failed on attempt {Attempt}; disabling response_format. {Snippet}",
-                            attempt,
-                            snippet);
-                        useJsonObjectMode = false;
-                        await Task.Delay(400, cancellationToken).ConfigureAwait(false);
-                        continue;
-                    }
-
+                    lastError =
+                        $"AI HTTP {(int)response.StatusCode} for {candidate.Term}: {Truncate(body, 200)}";
                     _logger.LogWarning("{Error}", lastError);
-                    return ([], lastError, false);
+                    return (null, lastError);
                 }
 
-                var parsed = TryParseMentions(body);
+                var parsed = TryParseVerifyResponse(body);
                 if (!parsed.Ok)
                 {
-                    lastError = parsed.Error ?? "Failed to parse AI response.";
-                    _logger.LogWarning(
-                        "AI parse failed on attempt {Attempt}/{Max}: {Error}. Body starts: {Snippet}",
-                        attempt,
-                        maxAttempts,
-                        lastError,
-                        Truncate(body, 180));
-
-                    // Prose / broken JSON mode → retry without response_format, insist on raw JSON.
-                    if (useJsonObjectMode)
-                    {
-                        useJsonObjectMode = false;
-                    }
-
-                    await Task.Delay(500, cancellationToken).ConfigureAwait(false);
+                    lastError = $"AI parse failed for {candidate.Term}: {parsed.Error}";
+                    _logger.LogWarning("{Error}. Body: {Snippet}", lastError, Truncate(body, 180));
+                    await Task.Delay(400, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
 
-                var mayHaveMore = string.Equals(parsed.FinishReason, "length", StringComparison.OrdinalIgnoreCase)
-                                  || parsed.Mentions.Count < Math.Min(mentionCap, candidates.Count) / 2;
-                return (parsed.Mentions, null, mayHaveMore);
+                if (!parsed.Keep)
+                {
+                    _logger.LogInformation(
+                        "Look it up AI rejected {Term}: {Reason}",
+                        candidate.Term,
+                        parsed.Reason ?? "keep=false");
+                    return (null, null);
+                }
+
+                var term = string.IsNullOrWhiteSpace(parsed.Term) ? candidate.Term : parsed.Term!.Trim();
+                var summary = (parsed.Summary ?? string.Empty).Trim();
+                if (summary.Length == 0)
+                {
+                    return (null, $"AI kept {term} but returned empty summary.");
+                }
+
+                if (!summary.StartsWith(term, StringComparison.OrdinalIgnoreCase))
+                {
+                    summary = term + ": " + summary;
+                }
+
+                return (new AiEntityMention
+                {
+                    Term = term,
+                    Kind = "other",
+                    Summary = summary.Length > 160 ? summary[..160] : summary,
+                    StartMs = candidate.StartMs,
+                    EndMs = Math.Max(candidate.EndMs, candidate.StartMs + 3000)
+                }, null);
             }
             catch (OperationCanceledException)
             {
@@ -380,50 +283,25 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             }
             catch (Exception ex)
             {
-                lastError = $"AI request failed ({baseUrl}, model={model}): {ex.Message}";
+                lastError = $"AI request failed for {candidate.Term}: {ex.Message}";
                 _logger.LogWarning(ex, "{Error}", lastError);
                 if (attempt == maxAttempts)
                 {
-                    return ([], lastError, false);
+                    return (null, lastError);
                 }
 
-                await Task.Delay(800 * attempt, cancellationToken).ConfigureAwait(false);
+                await Task.Delay(600 * attempt, cancellationToken).ConfigureAwait(false);
             }
         }
 
-        return ([], lastError ?? "AI request failed after retries.", false);
+        return (null, lastError ?? $"AI verify failed for {candidate.Term}.");
     }
 
-    private static string ResolveModel(PluginConfiguration config)
+    private static VerifyParseResult TryParseVerifyResponse(string completionBody)
     {
-        if (!string.IsNullOrWhiteSpace(config.AiModel))
+        if (string.IsNullOrWhiteSpace(completionBody) || completionBody.TrimStart()[0] != '{')
         {
-            return config.AiModel.Trim();
-        }
-
-        var baseUrl = (config.AiBaseUrl ?? string.Empty).Trim();
-        var provider = (config.AiProvider ?? string.Empty).Trim();
-        if (provider.Equals("Groq", StringComparison.OrdinalIgnoreCase)
-            || baseUrl.Contains("groq.com", StringComparison.OrdinalIgnoreCase))
-        {
-            return "llama-3.1-8b-instant";
-        }
-
-        return "gpt-4o-mini";
-    }
-
-    private static ParseMentionsResult TryParseMentions(string completionBody)
-    {
-        if (string.IsNullOrWhiteSpace(completionBody))
-        {
-            return ParseMentionsResult.Fail("Empty AI HTTP body.");
-        }
-
-        var trimmedBody = completionBody.TrimStart();
-        if (trimmedBody.Length == 0 || trimmedBody[0] != '{')
-        {
-            return ParseMentionsResult.Fail(
-                "AI HTTP body was not JSON (starts with: " + Truncate(trimmedBody, 80) + ").");
+            // Chat completions wrapper expected.
         }
 
         try
@@ -431,25 +309,14 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             using var doc = JsonDocument.Parse(completionBody);
             if (!doc.RootElement.TryGetProperty("choices", out var choices) || choices.GetArrayLength() == 0)
             {
-                return ParseMentionsResult.Fail("AI response missing choices[].");
+                return VerifyParseResult.Fail("missing choices");
             }
 
-            var choice = choices[0];
-            string? finishReason = null;
-            if (choice.TryGetProperty("finish_reason", out var fr))
-            {
-                finishReason = fr.GetString();
-            }
-
-            if (!choice.TryGetProperty("message", out var message))
-            {
-                return ParseMentionsResult.Fail("AI response missing message.");
-            }
-
+            var message = choices[0].GetProperty("message");
             var content = ReadMessageContent(message);
             if (string.IsNullOrWhiteSpace(content))
             {
-                return ParseMentionsResult.Fail("AI message content was empty.");
+                return VerifyParseResult.Fail("empty content");
             }
 
             content = StripCodeFence(content.Trim());
@@ -457,22 +324,28 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             var end = content.LastIndexOf('}');
             if (start < 0 || end <= start)
             {
-                return ParseMentionsResult.Fail(
-                    "AI content had no JSON object (starts with: " + Truncate(content, 80) + ").");
+                return VerifyParseResult.Fail("no JSON object in content: " + Truncate(content, 80));
             }
 
             content = content[start..(end + 1)];
-            var parsed = JsonSerializer.Deserialize<AiResponse>(content, JsonOptions);
-            return new ParseMentionsResult
+            var parsed = JsonSerializer.Deserialize<VerifyResponse>(content, JsonOptions);
+            if (parsed is null)
+            {
+                return VerifyParseResult.Fail("deserialize null");
+            }
+
+            return new VerifyParseResult
             {
                 Ok = true,
-                Mentions = parsed?.Mentions ?? [],
-                FinishReason = finishReason
+                Keep = parsed.Keep,
+                Term = parsed.Term,
+                Summary = parsed.Summary,
+                Reason = parsed.Reason
             };
         }
         catch (JsonException ex)
         {
-            return ParseMentionsResult.Fail("AI JSON parse error: " + ex.Message);
+            return VerifyParseResult.Fail(ex.Message);
         }
     }
 
@@ -505,26 +378,22 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         };
     }
 
-    private static string Truncate(string value, int max)
+    private static string ResolveModel(PluginConfiguration config)
     {
-        if (string.IsNullOrEmpty(value))
+        if (!string.IsNullOrWhiteSpace(config.AiModel))
         {
-            return string.Empty;
+            return config.AiModel.Trim();
         }
 
-        var oneLine = value.Replace('\r', ' ').Replace('\n', ' ');
-        return oneLine.Length <= max ? oneLine : oneLine[..max] + "…";
-    }
-
-    private static List<List<AiCandidate>> ChunkList(IReadOnlyList<AiCandidate> items, int size)
-    {
-        var chunks = new List<List<AiCandidate>>();
-        for (var i = 0; i < items.Count; i += size)
+        var baseUrl = (config.AiBaseUrl ?? string.Empty).Trim();
+        var provider = (config.AiProvider ?? string.Empty).Trim();
+        if (provider.Equals("Groq", StringComparison.OrdinalIgnoreCase)
+            || baseUrl.Contains("groq.com", StringComparison.OrdinalIgnoreCase))
         {
-            chunks.Add(items.Skip(i).Take(size).ToList());
+            return "llama-3.1-8b-instant";
         }
 
-        return chunks;
+        return "gpt-4o-mini";
     }
 
     private static TimeSpan? ParseRetryDelay(string body)
@@ -618,44 +487,57 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         return trimmed.Trim();
     }
 
+    private static string Truncate(string value, int max)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return string.Empty;
+        }
+
+        var oneLine = value.Replace('\r', ' ').Replace('\n', ' ');
+        return oneLine.Length <= max ? oneLine : oneLine[..max] + "…";
+    }
+
     private static HttpClient CreateClient()
     {
         var client = new HttpClient
         {
-            Timeout = TimeSpan.FromSeconds(90)
+            Timeout = TimeSpan.FromSeconds(60)
         };
         client.DefaultRequestHeaders.UserAgent.Add(
-            new ProductInfoHeaderValue("Jellyfin.Plugin.LookItUp", "1.2"));
+            new ProductInfoHeaderValue("Jellyfin.Plugin.LookItUp", "1.3"));
         return client;
     }
 
-    private sealed class AiCandidate
+    private sealed class VerifyResponse
     {
-        public string Term { get; init; } = string.Empty;
+        [JsonPropertyName("keep")]
+        public bool Keep { get; set; }
 
-        public long StartMs { get; init; }
+        [JsonPropertyName("term")]
+        public string? Term { get; set; }
 
-        public long EndMs { get; init; }
+        [JsonPropertyName("summary")]
+        public string? Summary { get; set; }
 
-        public string Context { get; init; } = string.Empty;
+        [JsonPropertyName("reason")]
+        public string? Reason { get; set; }
     }
 
-    private sealed class AiResponse
-    {
-        [JsonPropertyName("mentions")]
-        public List<AiEntityMention> Mentions { get; set; } = [];
-    }
-
-    private sealed class ParseMentionsResult
+    private sealed class VerifyParseResult
     {
         public bool Ok { get; init; }
 
-        public IReadOnlyList<AiEntityMention> Mentions { get; init; } = [];
+        public bool Keep { get; init; }
 
-        public string? FinishReason { get; init; }
+        public string? Term { get; init; }
+
+        public string? Summary { get; init; }
+
+        public string? Reason { get; init; }
 
         public string? Error { get; init; }
 
-        public static ParseMentionsResult Fail(string error) => new() { Ok = false, Error = error };
+        public static VerifyParseResult Fail(string error) => new() { Ok = false, Error = error };
     }
 }

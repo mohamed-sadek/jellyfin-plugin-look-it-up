@@ -127,10 +127,9 @@
                         <h2 class="sectionTitle">AI extraction</h2>
                     </div>
                     <p>
-                        During <strong>prepare</strong>, local name candidates are collected from subtitles, then
-                        <strong>one</strong> OpenAI-compatible chat call resolves them <em>in context</em>
-                        (e.g. Jon Voight the actor, not a surname etymology). Prefer Groq
-                        <code>llama-3.1-8b-instant</code> for free-tier speed.
+                        During <strong>prepare</strong>, local name candidates are ranked from subtitles, then the top N
+                        are each sent in <strong>one Groq/OpenAI request</strong>. The model must verify the candidate is a
+                        real name/reference (and may reject false positives) before returning a short summary.
                     </p>
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="txtAiProvider">AI provider</label>
@@ -156,6 +155,11 @@
                             Groq: <code>https://api.groq.com/openai/v1</code>.
                             OpenAI: <code>https://api.openai.com/v1</code>.
                         </div>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="txtAiNamesPerPrepare">AI names per prepare</label>
+                        <input id="txtAiNamesPerPrepare" type="number" is="emby-input" min="1" max="20" />
+                        <div class="fieldDescription">How many top local candidates get one verify+define request each (start with 5).</div>
                     </div>
 
                     <div class="sectionTitleContainer flex align-items-center" style="margin-top:1.5em;">
@@ -397,6 +401,7 @@
                         document.querySelector('#txtAiApiKey').placeholder = config.AiApiKey ? '(saved — enter new key to replace)' : '(not set)';
                         document.querySelector('#txtAiModel').value = config.AiModel || 'llama-3.1-8b-instant';
                         document.querySelector('#txtAiBaseUrl').value = config.AiBaseUrl || 'https://api.groq.com/openai/v1';
+                        document.querySelector('#txtAiNamesPerPrepare').value = config.AiNamesPerPrepare || 5;
                         Dashboard.hideLoadingMsg();
                         refreshPrepareStatus();
                     });
@@ -428,6 +433,7 @@
                         config.AiProvider = document.querySelector('#txtAiProvider').value || 'Groq';
                         config.AiModel = document.querySelector('#txtAiModel').value || 'llama-3.1-8b-instant';
                         config.AiBaseUrl = document.querySelector('#txtAiBaseUrl').value || 'https://api.groq.com/openai/v1';
+                        config.AiNamesPerPrepare = parseInt(document.querySelector('#txtAiNamesPerPrepare').value, 10) || 5;
                         var newKey = document.querySelector('#txtAiApiKey').value;
                         if (newKey) {
                             config.AiApiKey = newKey;

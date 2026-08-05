@@ -1,7 +1,7 @@
 ---
 name: "Look it up"
 guid: "a8ab0fed-cac9-406d-b98b-58161bf970b8"
-version: "1.2.7.0"
+version: "1.2.8.0"
 targetAbi: "10.11.0.0"
 framework: "net9.0"
 overview: "AI-prepare subtitle references, then show short popups during playback"
@@ -13,4 +13,5 @@ owner: "lookitup"
 artifacts:
   - "Jellyfin.Plugin.LookItUp.dll"
 changelog: >
-  Fast AI prepare: local NER candidates then one chat call; Groq llama-3.1-8b-instant defaults
+  Per-name AI verify: top 5 local candidates each get one Groq request that must confirm
+  the candidate is a real name/reference before returning a short summary.

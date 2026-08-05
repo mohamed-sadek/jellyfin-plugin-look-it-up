@@ -16,7 +16,7 @@ public class PluginConfiguration : BasePluginConfiguration
         WikipediaLanguage = "en";
         MaxAnnotationsPerItem = 40;
         MinEntityLength = 3;
-        PopupDurationMs = 2000;
+        PopupDurationMs = 3000;
         PreferredSubtitleLanguages = "en";
         ScanOnPlayback = false;
         WriteSidecarFiles = true;
@@ -27,6 +27,7 @@ public class PluginConfiguration : BasePluginConfiguration
         AiApiKey = string.Empty;
         AiModel = "llama-3.1-8b-instant";
         AiBaseUrl = "https://api.groq.com/openai/v1";
+        AiNamesPerPrepare = 5;
     }
 
     /// <summary>Gets or sets whether Look it up is enabled.</summary>
@@ -75,4 +76,9 @@ public class PluginConfiguration : BasePluginConfiguration
 
     /// <summary>Gets or sets the OpenAI-compatible base URL (e.g. https://api.groq.com/openai/v1).</summary>
     public string AiBaseUrl { get; set; }
+
+    /// <summary>
+    /// Gets or sets how many local name candidates to verify with AI (one request each). Default 5.
+    /// </summary>
+    public int AiNamesPerPrepare { get; set; }
 }

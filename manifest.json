@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "1.2.8.0",
+        "changelog": "Per-name AI verify: top 5 candidates each get one Groq request that must confirm the candidate is a real name before summarizing",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.8.0/look-it-up_1.2.8.0.zip",
+        "checksum": "631a6462f3f46603841e66c0de0c743f",
+        "timestamp": "2026-08-05T08:50:00Z"
+      },
+      {
         "version": "1.2.7.0",
         "changelog": "Unique name candidates; exclude ALL-CAPS speaker labels; exclude Jellyfin cast/character names",
         "targetAbi": "10.11.0.0",
