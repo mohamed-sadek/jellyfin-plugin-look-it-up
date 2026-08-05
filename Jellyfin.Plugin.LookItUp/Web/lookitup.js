@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  const CLIENT_VERSION = '1.2.15.0';
+  const CLIENT_VERSION = '1.2.16.0';
   const STYLE_ID = 'lookitup-styles';
   const POPUP_ID = 'lookitup-popup';
   const POLL_MS = 200;
@@ -217,6 +217,23 @@
         visibility: visible !important;
         pointer-events: auto !important;
       }
+      #${POPUP_ID} .lookitup-row {
+        display: flex !important;
+        gap: 12px !important;
+        align-items: flex-start !important;
+      }
+      #${POPUP_ID} .lookitup-photo {
+        flex: 0 0 auto !important;
+        width: 64px !important;
+        height: 64px !important;
+        border-radius: 10px !important;
+        object-fit: cover !important;
+        background: rgba(255, 255, 255, 0.08) !important;
+      }
+      #${POPUP_ID} .lookitup-copy {
+        flex: 1 1 auto !important;
+        min-width: 0 !important;
+      }
       #${POPUP_ID} .lookitup-term {
         display: block !important;
         font-weight: 800 !important;
@@ -300,6 +317,7 @@
     const term = String(readProp(annotation, 'term', 'Term') || '');
     const summary = String(readProp(annotation, 'summary', 'Summary') || '');
     const url = readProp(annotation, 'url', 'Url');
+    const imageUrl = readProp(annotation, 'imageUrl', 'ImageUrl');
 
     if (!term && !summary) {
       return;
@@ -314,10 +332,29 @@
     shownAtMs = Date.now();
     popup.innerHTML = '';
 
+    const row = document.createElement('div');
+    row.className = 'lookitup-row';
+
+    if (imageUrl && /^https?:\/\//i.test(String(imageUrl))) {
+      const img = document.createElement('img');
+      img.className = 'lookitup-photo';
+      img.src = String(imageUrl);
+      img.alt = term || '';
+      img.loading = 'lazy';
+      img.referrerPolicy = 'no-referrer';
+      img.onerror = function () {
+        img.remove();
+      };
+      row.appendChild(img);
+    }
+
+    const copy = document.createElement('div');
+    copy.className = 'lookitup-copy';
+
     const termEl = document.createElement('span');
     termEl.className = 'lookitup-term';
     termEl.textContent = term || 'Look it up';
-    popup.appendChild(termEl);
+    copy.appendChild(termEl);
 
     const body = document.createElement('div');
     body.className = 'lookitup-body';
@@ -326,7 +363,7 @@
       text = summary.slice(term.length + 1).trim();
     }
     body.textContent = text || summary || 'Mentioned in subtitles';
-    popup.appendChild(body);
+    copy.appendChild(body);
 
     if (url) {
       const link = document.createElement('div');
@@ -337,8 +374,11 @@
       a.rel = 'noopener noreferrer';
       a.textContent = 'Learn more';
       link.appendChild(a);
-      popup.appendChild(link);
+      copy.appendChild(link);
     }
+
+    row.appendChild(copy);
+    popup.appendChild(row);
 
     popup.classList.remove('visible');
     void popup.offsetWidth;
@@ -354,6 +394,7 @@
       term: term,
       summary: summary,
       url: url || null,
+      imageUrl: imageUrl || null,
       durationMs: duration,
       durationSec: Math.round(duration / 1000),
       fontSizePx: popupStyle.fontSizePx,
@@ -584,6 +625,8 @@
       term: readProp(a, 'term', 'Term') || '',
       summary: readProp(a, 'summary', 'Summary') || '',
       url: readProp(a, 'url', 'Url') || null,
+      imageUrl: readProp(a, 'imageUrl', 'ImageUrl') || null,
+      kind: readProp(a, 'kind', 'Kind') || null,
       startMs: Number(readProp(a, 'startMs', 'StartMs') || 0),
       endMs: Number(readProp(a, 'endMs', 'EndMs') || 0)
     })).filter((a) =>

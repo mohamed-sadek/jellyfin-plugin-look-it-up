@@ -55,7 +55,7 @@ public class LookItUpService : ILookItUpService
     /// <summary>
     /// Bump when scan logic changes so stale caches are ignored.
     /// </summary>
-    public const int CurrentCacheVersion = 6;
+    public const int CurrentCacheVersion = 8;
 
     private static readonly HashSet<string> TextSubtitleCodecs = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -227,7 +227,8 @@ public class LookItUpService : ILookItUpService
 
     /// <summary>
     /// Picks AI verify targets, preferring earlier shorter Cap+Cap forms over later long phrases
-    /// (e.g. "Jon Voight" @ 0:59 over "Jon Voight's LeBaron" @ 2:31).
+    /// (e.g. "Jon Voight" @ 0:59 over "Jon Voight's LeBaron" @ 2:31),
+    /// while still queuing the possessive tail (LeBaron) separately.
     /// </summary>
     private static List<NameCandidate> SelectAiBatch(IReadOnlyList<NameCandidate> ranked, int limit)
     {
@@ -242,12 +243,46 @@ public class LookItUpService : ILookItUpService
             }
 
             var preferred = PreferEarlierShorterForm(candidate, ranked);
-            if (!used.Add(preferred.Term))
+            if (used.Add(preferred.Term))
+            {
+                batch.Add(preferred);
+            }
+
+            // Collapsing "Jon Voight's LeBaron" → "Jon Voight" must not drop "LeBaron".
+            if (batch.Count >= limit)
+            {
+                break;
+            }
+
+            var tail = GetPossessiveTail(candidate.Term);
+            if (tail is null || !used.Add(tail))
             {
                 continue;
             }
 
-            batch.Add(preferred);
+            NameCandidate? tailCandidate = null;
+            foreach (var other in ranked)
+            {
+                if (!other.Term.Equals(tail, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (tailCandidate is null || other.StartMs < tailCandidate.StartMs)
+                {
+                    tailCandidate = other;
+                }
+            }
+
+            batch.Add(tailCandidate ?? new NameCandidate
+            {
+                Term = tail,
+                StartMs = candidate.StartMs,
+                EndMs = candidate.EndMs,
+                CueText = candidate.CueText,
+                Score = candidate.Score,
+                Reason = "possessive-tail"
+            });
         }
 
         return batch.OrderBy(c => c.StartMs).ToList();
@@ -281,6 +316,31 @@ public class LookItUpService : ILookItUpService
         return best ?? candidate;
     }
 
+    private static string? GetPossessiveTail(string term)
+    {
+        var parts = term.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        for (var i = 0; i < parts.Length - 1; i++)
+        {
+            if (!IsPossessiveToken(parts[i]))
+            {
+                continue;
+            }
+
+            var tail = string.Join(' ', parts.Skip(i + 1));
+            return string.IsNullOrWhiteSpace(tail) ? null : tail;
+        }
+
+        return null;
+    }
+
+    private static bool IsPossessiveToken(string token)
+    {
+        return token.EndsWith("'s", StringComparison.OrdinalIgnoreCase)
+               || token.EndsWith("’s", StringComparison.OrdinalIgnoreCase)
+               || token.EndsWith("'", StringComparison.Ordinal)
+               || token.EndsWith("’", StringComparison.Ordinal);
+    }
+
     private static string StripPossessive(string token)
     {
         if (token.EndsWith("'s", StringComparison.OrdinalIgnoreCase)
@@ -295,6 +355,33 @@ public class LookItUpService : ILookItUpService
         }
 
         return token;
+    }
+
+    private static string InferKind(string term, string summary)
+    {
+        var text = (term + " " + summary).ToLowerInvariant();
+        if (text.Contains("actor", StringComparison.Ordinal)
+            || text.Contains("actress", StringComparison.Ordinal)
+            || text.Contains("singer", StringComparison.Ordinal)
+            || text.Contains("musician", StringComparison.Ordinal)
+            || text.Contains("politician", StringComparison.Ordinal)
+            || text.Contains("athlete", StringComparison.Ordinal)
+            || text.Contains("director", StringComparison.Ordinal)
+            || text.Contains("comedian", StringComparison.Ordinal)
+            || text.Contains("writer", StringComparison.Ordinal)
+            || text.Contains("author", StringComparison.Ordinal))
+        {
+            return "person";
+        }
+
+        if (text.Contains("film", StringComparison.Ordinal)
+            || text.Contains("movie", StringComparison.Ordinal)
+            || text.Contains("television", StringComparison.Ordinal))
+        {
+            return "film";
+        }
+
+        return "other";
     }
 
     /// <summary>
@@ -473,33 +560,72 @@ public class LookItUpService : ILookItUpService
                 }
 
                 var popupMs = Math.Max(config.PopupDurationMs, 8000);
-                annotations = aiResult.Mentions
-                    .Select(m =>
+                var wikiLang = string.IsNullOrWhiteSpace(config.WikipediaLanguage) ? "en" : config.WikipediaLanguage;
+                var built = new List<ContextAnnotation>();
+                foreach (var m in aiResult.Mentions)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var term = m.Term.Trim();
+                    var kind = string.IsNullOrWhiteSpace(m.Kind)
+                               || string.Equals(m.Kind, "other", StringComparison.OrdinalIgnoreCase)
+                        ? InferKind(term, m.Summary)
+                        : m.Kind.Trim().ToLowerInvariant();
+                    if (string.Equals(m.Kind, "person", StringComparison.OrdinalIgnoreCase))
                     {
-                        var term = m.Term.Trim();
-                        var anchored = FindEarliestMention(cues, term);
-                        var startMs = anchored?.StartMs ?? m.StartMs;
-                        var endMs = anchored?.EndMs ?? m.EndMs;
-                        if (anchored is { } hit && hit.StartMs != m.StartMs)
-                        {
-                            _logger.LogInformation(
-                                "Look it up re-anchored {Term} from {OldMs}ms → earliest cue {NewMs}ms",
-                                term,
-                                m.StartMs,
-                                hit.StartMs);
-                        }
+                        kind = "person";
+                    }
+                    var anchored = FindEarliestMention(cues, term);
+                    var startMs = anchored?.StartMs ?? m.StartMs;
+                    var endMs = anchored?.EndMs ?? m.EndMs;
+                    if (anchored is { } hit && hit.StartMs != m.StartMs)
+                    {
+                        _logger.LogInformation(
+                            "Look it up re-anchored {Term} from {OldMs}ms → earliest cue {NewMs}ms",
+                            term,
+                            m.StartMs,
+                            hit.StartMs);
+                    }
 
-                        return new ContextAnnotation
+                    string? pageUrl = null;
+                    string? imageUrl = null;
+                    if (string.Equals(kind, "person", StringComparison.OrdinalIgnoreCase))
+                    {
+                        try
                         {
-                            Term = term,
-                            Summary = m.Summary.Trim().StartsWith(term, StringComparison.OrdinalIgnoreCase)
-                                ? m.Summary.Trim()
-                                : $"{term}: {m.Summary.Trim()}",
-                            Url = null,
-                            StartMs = startMs,
-                            EndMs = Math.Max(endMs, startMs + popupMs)
-                        };
-                    })
+                            var wiki = await _wikipedia
+                                .LookupAsync(term, wikiLang, cancellationToken)
+                                .ConfigureAwait(false);
+                            if (wiki.Found)
+                            {
+                                pageUrl = wiki.Url;
+                                imageUrl = wiki.ImageUrl;
+                                _logger.LogInformation(
+                                    "Look it up Wikipedia image for {Term}: {HasImage}",
+                                    term,
+                                    !string.IsNullOrWhiteSpace(imageUrl));
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogDebug(ex, "Wikipedia image lookup failed for {Term}", term);
+                        }
+                    }
+
+                    built.Add(new ContextAnnotation
+                    {
+                        Term = term,
+                        Summary = m.Summary.Trim().StartsWith(term, StringComparison.OrdinalIgnoreCase)
+                            ? m.Summary.Trim()
+                            : $"{term}: {m.Summary.Trim()}",
+                        Url = pageUrl,
+                        ImageUrl = imageUrl,
+                        Kind = kind,
+                        StartMs = startMs,
+                        EndMs = Math.Max(endMs, startMs + popupMs)
+                    });
+                }
+
+                annotations = built
                     .GroupBy(a => a.Term, StringComparer.OrdinalIgnoreCase)
                     .Select(g => g.OrderBy(a => a.StartMs).First())
                     .OrderBy(a => a.StartMs)
@@ -597,6 +723,8 @@ public class LookItUpService : ILookItUpService
                     Term = lookup.Title,
                     Summary = $"{lookup.Title}: {lookup.Summary}",
                     Url = lookup.Url,
+                    ImageUrl = lookup.ImageUrl,
+                    Kind = "other",
                     StartMs = cue.StartMs,
                     EndMs = Math.Max(cue.EndMs, cue.StartMs + matchWindowMs)
                 }, score));

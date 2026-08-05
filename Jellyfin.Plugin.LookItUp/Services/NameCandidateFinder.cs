@@ -193,6 +193,33 @@ public partial class NameCandidateFinder : INameCandidateFinder
                         minLength,
                         scoreBonus: 40,
                         reason: "cap-phrase");
+
+                    // "Jon Voight's LeBaron" → also keep "LeBaron" (brand/object after 's).
+                    for (var p = 0; p < parts.Count - 1; p++)
+                    {
+                        if (!IsPossessiveToken(parts[p]))
+                        {
+                            continue;
+                        }
+
+                        var tailParts = parts.Skip(p + 1).ToList();
+                        if (tailParts.Count == 0)
+                        {
+                            continue;
+                        }
+
+                        var tailOcc = list[i + p + 1];
+                        TryAddCandidate(
+                            candidates,
+                            string.Join(' ', tailParts),
+                            tailOcc,
+                            tokenStats,
+                            titleNorm,
+                            excludeNames,
+                            minLength,
+                            scoreBonus: 35,
+                            reason: "possessive-tail");
+                    }
                 }
 
                 i = Math.Max(i + 1, j);
@@ -276,13 +303,37 @@ public partial class NameCandidateFinder : INameCandidateFinder
             }
 
             var parts = other.Term.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            if (parts.Any(p => p.Equals(candidate.Term, StringComparison.OrdinalIgnoreCase)))
+            for (var i = 0; i < parts.Length; i++)
             {
+                if (!parts[i].Equals(candidate.Term, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                // Token after a possessive ("…'s LeBaron") is its own entity — keep it.
+                if (i > 0 && IsPossessiveToken(parts[i - 1]))
+                {
+                    continue;
+                }
+
+                if (i > 0 && parts.Take(i).Any(IsPossessiveToken))
+                {
+                    continue;
+                }
+
                 return true;
             }
         }
 
         return false;
+    }
+
+    private static bool IsPossessiveToken(string token)
+    {
+        return token.EndsWith("'s", StringComparison.OrdinalIgnoreCase)
+               || token.EndsWith("’s", StringComparison.OrdinalIgnoreCase)
+               || token.EndsWith("'", StringComparison.Ordinal)
+               || token.EndsWith("’", StringComparison.Ordinal);
     }
 
     private static void TryAddCandidate(

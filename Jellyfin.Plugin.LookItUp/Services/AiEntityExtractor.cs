@@ -319,7 +319,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 return (new AiEntityMention
                 {
                     Term = term,
-                    Kind = "other",
+                    Kind = NormalizeKind(parsed.Kind),
                     Summary = summary,
                     StartMs = candidate.StartMs,
                     EndMs = Math.Max(candidate.EndMs, candidate.StartMs + 3000)
@@ -359,7 +359,8 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 "Return a JSON object about this subtitle name candidate.\n" +
                 "keep=true only for a real person/place/film/brand/cultural reference worth a short popup.\n" +
                 "Otherwise keep=false.\n" +
-                "Schema: {\"keep\":true,\"term\":\"Jon Voight\",\"summary\":\"American actor known for Midnight Cowboy and Deliverance.\"}\n" +
+                "Schema: {\"keep\":true,\"term\":\"Jon Voight\",\"kind\":\"person\",\"summary\":\"American actor known for Midnight Cowboy.\"}\n" +
+                "kind must be one of: person, place, film, brand, other.\n" +
                 "or {\"keep\":false,\"reason\":\"not a notable name\"}\n" +
                 "Summary: one or two short sentences, up to ~200 characters.\n" +
                 "Show: " + itemName + "\n" +
@@ -371,7 +372,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             user =
                 "JSON only. Is \"" + candidate.Term + "\" a real name/reference in \"" +
                 candidate.CueText + "\"?\n" +
-                "{\"keep\":true,\"term\":\"...\",\"summary\":\"...\"} or {\"keep\":false,\"reason\":\"...\"}";
+                "{\"keep\":true,\"term\":\"...\",\"kind\":\"person\",\"summary\":\"...\"} or {\"keep\":false,\"reason\":\"...\"}";
         }
 
         var payload = new Dictionary<string, object?>
@@ -464,6 +465,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 Ok = true,
                 Keep = parsed.Keep,
                 Term = parsed.Term,
+                Kind = parsed.Kind,
                 Summary = parsed.Summary,
                 Reason = parsed.Reason,
                 FinishReason = finishReason,
@@ -721,6 +723,9 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         [JsonPropertyName("term")]
         public string? Term { get; set; }
 
+        [JsonPropertyName("kind")]
+        public string? Kind { get; set; }
+
         [JsonPropertyName("summary")]
         public string? Summary { get; set; }
 
@@ -735,6 +740,8 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         public bool Keep { get; init; }
 
         public string? Term { get; init; }
+
+        public string? Kind { get; init; }
 
         public string? Summary { get; init; }
 
@@ -757,5 +764,18 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 FinishReason = finishReason,
                 RawMessageJson = rawMessageJson
             };
+    }
+
+    private static string NormalizeKind(string? kind)
+    {
+        var value = (kind ?? string.Empty).Trim().ToLowerInvariant();
+        return value switch
+        {
+            "person" or "people" or "actor" or "actress" => "person",
+            "place" or "location" or "city" or "country" => "place",
+            "film" or "movie" or "show" or "tv" => "film",
+            "brand" or "company" or "org" or "organization" => "brand",
+            _ => string.IsNullOrWhiteSpace(value) ? "other" : value
+        };
     }
 }

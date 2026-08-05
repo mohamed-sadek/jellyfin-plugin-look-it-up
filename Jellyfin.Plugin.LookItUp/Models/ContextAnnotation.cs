@@ -21,6 +21,16 @@ public class ContextAnnotation
     public string? Url { get; set; }
 
     /// <summary>
+    /// Gets or sets an optional image URL (e.g. person portrait from Wikipedia).
+    /// </summary>
+    public string? ImageUrl { get; set; }
+
+    /// <summary>
+    /// Gets or sets the entity kind when known (person, place, film, other).
+    /// </summary>
+    public string? Kind { get; set; }
+
+    /// <summary>
     /// Gets or sets the playback time (ms) when the popup should appear.
     /// </summary>
     public long StartMs { get; set; }

@@ -21,6 +21,11 @@ public class EntityLookupResult
     public string? Url { get; set; }
 
     /// <summary>
+    /// Gets or sets an optional thumbnail image URL (e.g. Wikipedia lead image).
+    /// </summary>
+    public string? ImageUrl { get; set; }
+
+    /// <summary>
     /// Gets or sets a value indicating whether a match was found.
     /// </summary>
     public bool Found { get; set; }

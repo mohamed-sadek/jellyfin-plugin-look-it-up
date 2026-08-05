@@ -111,6 +111,7 @@ public class WikipediaLookupService : IWikipediaLookupService
                 Title = title,
                 Summary = summary,
                 Url = payload.ContentUrls?.Desktop?.Page,
+                ImageUrl = payload.Thumbnail?.Source ?? payload.OriginalImage?.Source,
                 Found = true
             };
 
@@ -155,8 +156,20 @@ public class WikipediaLookupService : IWikipediaLookupService
         [JsonPropertyName("extract")]
         public string? Extract { get; set; }
 
+        [JsonPropertyName("thumbnail")]
+        public WikipediaImage? Thumbnail { get; set; }
+
+        [JsonPropertyName("originalimage")]
+        public WikipediaImage? OriginalImage { get; set; }
+
         [JsonPropertyName("content_urls")]
         public ContentUrls? ContentUrls { get; set; }
+    }
+
+    private sealed class WikipediaImage
+    {
+        [JsonPropertyName("source")]
+        public string? Source { get; set; }
     }
 
     private sealed class ContentUrls

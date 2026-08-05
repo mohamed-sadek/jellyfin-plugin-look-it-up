@@ -205,11 +205,16 @@
                         <h2 class="sectionTitle">Web client overlay</h2>
                     </div>
                     <p>
-                        Load the overlay with JavaScript Injector. Prefer the plugin script (not a CDN copy),
-                        so popup appearance settings are applied:
+                        Load the overlay with <strong>JavaScript Injector</strong> (or File Transformation).
+                        Paste <em>JavaScript</em> — not an HTML <code>&lt;script&gt;</code> tag (that breaks <code>public.js</code> with <code>Unexpected token '&lt;'</code>):
                     </p>
-                    <pre style="white-space:pre-wrap;word-break:break-all;background:rgba(0,0,0,.08);padding:12px;border-radius:8px;">&lt;script src="/LookItUp/script.js?v=1.2.15"&gt;&lt;/script&gt;</pre>
-                    <div class="fieldDescription">Hard-refresh after changing the injector. Console should show <code>overlay ready 1.2.15.0</code> and <code>popup settings applied</code>.</div>
+                    <pre style="white-space:pre-wrap;word-break:break-all;background:rgba(0,0,0,.08);padding:12px;border-radius:8px;">(function () {
+  var s = document.createElement('script');
+  s.src = '/LookItUp/script.js?v=1.2.16';
+  s.async = true;
+  document.head.appendChild(s);
+})();</pre>
+                    <div class="fieldDescription">Hard-refresh after saving. Console should show <code>overlay ready 1.2.16.0</code> and <code>popup settings applied</code>.</div>
 
                     <div>
                         <button is="emby-button" type="submit" class="raised button-submit block emby-button">
