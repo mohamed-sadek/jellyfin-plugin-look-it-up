@@ -412,8 +412,19 @@ public class LookItUpPrepareService : ILookItUpPrepareService
                 return false;
             }
 
-            _logger.LogInformation("Look it up library prepare cancel requested");
-            _cts.Cancel();
+            _logger.LogInformation("Look it up prepare cancel requested");
+            try
+            {
+                _cts.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                // ignored
+            }
+
+            _status.IsRunning = false;
+            _status.CurrentItem = null;
+            _status.FinishedAtUtc = DateTime.UtcNow;
             _status.LastError = "Cancelled by user";
             return true;
         }

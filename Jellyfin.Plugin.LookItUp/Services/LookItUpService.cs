@@ -1,6 +1,8 @@
+using System.Collections.Concurrent;
 using System.Text;
 using Jellyfin.Data.Enums;
 using Jellyfin.Plugin.LookItUp.Models;
+using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Entities.TV;
@@ -88,6 +90,8 @@ public class LookItUpService : ILookItUpService
     private readonly INameCandidateFinder _nameCandidateFinder;
     private readonly IAnnotationStore _store;
     private readonly ILogger<LookItUpService> _logger;
+    private readonly string _subtitleCacheDir;
+    private readonly ConcurrentDictionary<Guid, SubtitleContent> _subtitleMemory = new();
 
     /// <summary>
     /// Initializes a new instance of the <see cref="LookItUpService"/> class.
@@ -102,6 +106,7 @@ public class LookItUpService : ILookItUpService
         IAiEntityExtractor aiExtractor,
         INameCandidateFinder nameCandidateFinder,
         IAnnotationStore store,
+        IApplicationPaths appPaths,
         ILogger<LookItUpService> logger)
     {
         _libraryManager = libraryManager;
@@ -114,6 +119,19 @@ public class LookItUpService : ILookItUpService
         _nameCandidateFinder = nameCandidateFinder;
         _store = store;
         _logger = logger;
+
+        var root = appPaths.PluginConfigurationsPath
+                   ?? appPaths.ProgramDataPath
+                   ?? Path.GetTempPath();
+        _subtitleCacheDir = Path.Combine(root, "LookItUp", "subtitles");
+        try
+        {
+            Directory.CreateDirectory(_subtitleCacheDir);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not create subtitle cache directory {Dir}", _subtitleCacheDir);
+        }
     }
 
     /// <inheritdoc />
@@ -1085,9 +1103,91 @@ public class LookItUpService : ILookItUpService
             }
         }
 
-        // 2) Embedded text tracks via Jellyfin's subtitle encoder (ffmpeg)
-        return await ExtractEmbeddedSubtitleAsync(item, preferred, cancellationToken).ConfigureAwait(false);
+        // 2) Cached embedded extract (skip ffmpeg on repeat preview/prepare)
+        if (TryReadCachedEmbeddedSubtitle(item, out var cached))
+        {
+            _logger.LogInformation("Using cached embedded subtitles for {Item}", item.Name);
+            return cached;
+        }
+
+        // 3) Embedded text tracks via Jellyfin's subtitle encoder (ffmpeg)
+        var extracted = await ExtractEmbeddedSubtitleAsync(item, preferred, cancellationToken)
+            .ConfigureAwait(false);
+        if (extracted is not null)
+        {
+            TryWriteCachedEmbeddedSubtitle(item, extracted);
+        }
+
+        return extracted;
     }
+
+    private bool TryReadCachedEmbeddedSubtitle(BaseItem item, out SubtitleContent? content)
+    {
+        content = null;
+        if (_subtitleMemory.TryGetValue(item.Id, out var mem) && !string.IsNullOrWhiteSpace(mem.Content))
+        {
+            content = mem;
+            return true;
+        }
+
+        var srtPath = GetSubtitleCacheSrtPath(item.Id);
+        var labelPath = GetSubtitleCacheLabelPath(item.Id);
+        if (!File.Exists(srtPath) || !File.Exists(labelPath))
+        {
+            return false;
+        }
+
+        try
+        {
+            // Invalidate when the media file is newer than the cache.
+            if (!string.IsNullOrWhiteSpace(item.Path) && File.Exists(item.Path))
+            {
+                var mediaWrite = File.GetLastWriteTimeUtc(item.Path);
+                var cacheWrite = File.GetLastWriteTimeUtc(srtPath);
+                if (mediaWrite > cacheWrite)
+                {
+                    return false;
+                }
+            }
+
+            var text = File.ReadAllText(srtPath);
+            var label = File.ReadAllText(labelPath).Trim();
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return false;
+            }
+
+            content = new SubtitleContent(text, string.IsNullOrWhiteSpace(label) ? "cached-embedded" : label);
+            _subtitleMemory[item.Id] = content;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed reading subtitle cache for {Item}", item.Name);
+            return false;
+        }
+    }
+
+    private void TryWriteCachedEmbeddedSubtitle(BaseItem item, SubtitleContent extracted)
+    {
+        try
+        {
+            Directory.CreateDirectory(_subtitleCacheDir);
+            File.WriteAllText(GetSubtitleCacheSrtPath(item.Id), extracted.Content);
+            File.WriteAllText(GetSubtitleCacheLabelPath(item.Id), extracted.Label ?? "embedded");
+            _subtitleMemory[item.Id] = extracted;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed writing subtitle cache for {Item}", item.Name);
+        }
+    }
+
+    private string GetSubtitleCacheSrtPath(Guid itemId)
+        => Path.Combine(_subtitleCacheDir, itemId.ToString("N") + ".srt");
+
+    private string GetSubtitleCacheLabelPath(Guid itemId)
+        => Path.Combine(_subtitleCacheDir, itemId.ToString("N") + ".label");
 
     private async Task<SubtitleContent?> ExtractEmbeddedSubtitleAsync(
         BaseItem item,

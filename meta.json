@@ -5,7 +5,7 @@
   "overview": "AI-prepare subtitle references, then show short popups during playback",
   "owner": "lookitup",
   "category": "General",
-  "version": "1.2.20.0",
+  "version": "1.2.21.0",
   "targetAbi": "10.11.0.0",
   "framework": "net9.0",
   "autoUpdateEnabled": false

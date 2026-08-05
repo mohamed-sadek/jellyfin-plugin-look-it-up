@@ -39,7 +39,10 @@
                 pageName: 'LookItUpPrepare',
                 rootItemId: null,
                 preview: null,
-                statusTimer: null
+                statusTimer: null,
+                previewRequest: null,
+                previewAbort: null,
+                previewGen: 0
             };
 
             function qs(id) { return document.querySelector(id); }
@@ -130,15 +133,9 @@
 
                     var toggle = document.createElement('button');
                     toggle.type = 'button';
+                    toggle.setAttribute('data-action', 'toggle-episode');
                     toggle.className = 'raised emby-button';
-                    toggle.setAttribute('is', 'emby-button');
                     toggle.innerHTML = '<span>Toggle episode</span>';
-                    toggle.addEventListener('click', function () {
-                        var boxes = section.querySelectorAll('input.lookitup-term');
-                        var anyOff = Array.prototype.some.call(boxes, function (b) { return !b.checked; });
-                        boxes.forEach(function (b) { b.checked = anyOff; });
-                        updateSummary();
-                    });
                     head.appendChild(toggle);
                     section.appendChild(head);
 
@@ -163,7 +160,6 @@
                         cb.dataset.itemId = itemId;
                         cb.dataset.term = term;
                         cb.dataset.suggested = suggested ? '1' : '0';
-                        cb.addEventListener('change', updateSummary);
 
                         var body = document.createElement('div');
                         body.style.flex = '1';
@@ -243,26 +239,67 @@
                 });
             }
 
+            function abortPreview() {
+                LookItUpPrepare.previewGen += 1;
+                if (LookItUpPrepare.previewAbort) {
+                    try { LookItUpPrepare.previewAbort.abort(); } catch (e) { /* ignore */ }
+                    LookItUpPrepare.previewAbort = null;
+                }
+                if (LookItUpPrepare.previewRequest && LookItUpPrepare.previewRequest.abort) {
+                    try { LookItUpPrepare.previewRequest.abort(); } catch (e) { /* ignore */ }
+                }
+                LookItUpPrepare.previewRequest = null;
+                try { Dashboard.hideLoadingMsg(); } catch (e) { /* ignore */ }
+            }
+
             function loadPreview() {
                 var id = LookItUpPrepare.rootItemId;
                 if (!id) {
                     qs('#prepareRootLabel').textContent = 'Missing item id. Open this page from the Look it up button on a show or episode.';
                     return;
                 }
+                abortPreview();
+                var gen = LookItUpPrepare.previewGen;
                 var n = parseInt(qs('#txtNamesPerItem').value, 10) || 5;
-                Dashboard.showLoadingMsg();
-                ApiClient.ajax({
+                qs('#prepareRootLabel').textContent = 'Loading candidates… (embedded subtitles can take a while; use Stop to cancel)';
+                qs('#prepareItemsHost').innerHTML = '';
+                qs('#prepareSummary').textContent = '';
+
+                var controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+                LookItUpPrepare.previewAbort = controller;
+
+                var reqOpts = {
                     url: ApiClient.getUrl('LookItUp/' + id + '/prepare-preview') + '?namesPerItem=' + encodeURIComponent(n),
                     type: 'GET',
                     dataType: 'json'
-                }).then(function (preview) {
-                    Dashboard.hideLoadingMsg();
+                };
+                if (controller) {
+                    reqOpts.signal = controller.signal;
+                }
+                var req = ApiClient.ajax(reqOpts);
+                LookItUpPrepare.previewRequest = req;
+
+                Promise.resolve(req).then(function (preview) {
+                    if (gen !== LookItUpPrepare.previewGen) {
+                        return;
+                    }
+                    LookItUpPrepare.previewRequest = null;
+                    LookItUpPrepare.previewAbort = null;
                     var suggested = preview.suggestedNamesPerItem || preview.SuggestedNamesPerItem || n;
                     qs('#txtNamesPerItem').value = suggested;
                     renderPreview(preview);
                 }).catch(function (err) {
-                    Dashboard.hideLoadingMsg();
-                    qs('#prepareRootLabel').textContent = 'Failed to load preview: ' + err;
+                    if (gen !== LookItUpPrepare.previewGen) {
+                        return;
+                    }
+                    LookItUpPrepare.previewRequest = null;
+                    LookItUpPrepare.previewAbort = null;
+                    var msg = String((err && (err.name || err.message || err.statusText)) || err || '');
+                    if (/abort|cancel/i.test(msg) || (err && err.name === 'AbortError')) {
+                        qs('#prepareRootLabel').textContent = 'Candidate load cancelled.';
+                        return;
+                    }
+                    qs('#prepareRootLabel').textContent = 'Failed to load preview: ' + msg;
                 });
             }
 
@@ -275,31 +312,125 @@
                 if (!window.confirm('Prepare ' + countSelected() + ' name(s) across ' + items.length + ' item(s) with AI?')) {
                     return;
                 }
-                Dashboard.showLoadingMsg();
+                qs('#prepareJobStatus').textContent = 'Starting prepare…';
                 ApiClient.ajax({
                     url: ApiClient.getUrl('LookItUp/' + LookItUpPrepare.rootItemId + '/prepare-selected'),
                     type: 'POST',
                     dataType: 'json',
-                    headers: { 'Content-Type': 'application/json' },
+                    contentType: 'application/json',
                     data: JSON.stringify({ force: true, items: items })
                 }).then(function (result) {
-                    Dashboard.hideLoadingMsg();
                     renderJobStatus(result.status || result.Status || result);
                     if (!LookItUpPrepare.statusTimer) {
                         LookItUpPrepare.statusTimer = setInterval(refreshJobStatus, 2000);
                     }
-                    Dashboard.alert(result.started || result.Started
-                        ? 'Prepare started.'
-                        : ('Could not start: ' + (result.error || result.Error || 'unknown')));
+                    var started = result.started || result.Started;
+                    if (!started) {
+                        Dashboard.alert('Could not start: ' + (result.error || result.Error || 'unknown'));
+                    }
+                    refreshJobStatus();
                 }).catch(function (err) {
-                    Dashboard.hideLoadingMsg();
                     Dashboard.alert('Prepare failed: ' + err);
                 });
+            }
+
+            function stopAll() {
+                abortPreview();
+                qs('#prepareRootLabel').textContent = 'Stopped. Click Reload candidates to try again.';
+                qs('#prepareJobStatus').textContent = 'Stop requested…';
+                LookItUpPrepare.preview = null;
+                qs('#prepareItemsHost').innerHTML = '';
+                qs('#prepareSummary').textContent = '';
+                ApiClient.ajax({
+                    url: ApiClient.getUrl('LookItUp/prepare/cancel'),
+                    type: 'POST',
+                    dataType: 'json',
+                    contentType: 'application/json',
+                    data: '{}'
+                }).then(function (result) {
+                    var cancelled = !!(result.cancelled ?? result.Cancelled);
+                    qs('#prepareJobStatus').textContent = cancelled
+                        ? 'Stop requested — prepare job cancelled.'
+                        : 'Stop: preview aborted (no background prepare job was running).';
+                    refreshJobStatus();
+                }).catch(function (err) {
+                    qs('#prepareJobStatus').textContent =
+                        'Preview aborted. Cancel API failed: ' + err + ' (safe to ignore if nothing was preparing)';
+                });
+            }
+
+            function onPageClick(e) {
+                var t = e.target;
+                if (!t || !t.closest) return;
+                var btn = t.closest('#btnReloadPreview, #btnSelectSuggested, #btnSelectNone, #btnStartPrepare, #btnCancelPrepare, [data-action="toggle-episode"]');
+                if (!btn) return;
+                var id = btn.id;
+                var action = btn.getAttribute('data-action');
+                e.preventDefault();
+                e.stopPropagation();
+                if (id === 'btnReloadPreview') {
+                    loadPreview();
+                } else if (id === 'btnSelectSuggested') {
+                    document.querySelectorAll('#prepareItemsHost input.lookitup-term').forEach(function (cb) {
+                        cb.checked = cb.dataset.suggested === '1';
+                    });
+                    updateSummary();
+                } else if (id === 'btnSelectNone') {
+                    document.querySelectorAll('#prepareItemsHost input.lookitup-term').forEach(function (cb) {
+                        cb.checked = false;
+                    });
+                    updateSummary();
+                } else if (id === 'btnStartPrepare') {
+                    startSelected();
+                } else if (id === 'btnCancelPrepare') {
+                    stopAll();
+                } else if (action === 'toggle-episode') {
+                    var section = btn.closest('.lookitup-ep');
+                    if (!section) return;
+                    var boxes = section.querySelectorAll('input.lookitup-term');
+                    var anyOff = Array.prototype.some.call(boxes, function (b) { return !b.checked; });
+                    boxes.forEach(function (b) { b.checked = anyOff; });
+                    updateSummary();
+                }
             }
 
             document.querySelector('#LookItUpPreparePage')
                 .addEventListener('pageshow', function () {
                     LookItUpPrepare.rootItemId = readQueryId();
+                    var page = qs('#LookItUpPreparePage');
+                    // Bind to this DOM node so re-created pages get a fresh listener.
+                    if (page && !page.__lookitupBound) {
+                        page.addEventListener('click', onPageClick, true);
+                        page.addEventListener('change', function (e) {
+                            if (e.target && e.target.classList && e.target.classList.contains('lookitup-term')) {
+                                updateSummary();
+                            }
+                        });
+                        page.__lookitupBound = true;
+                    }
+                    // Direct handlers — Jellyfin may replace button nodes between visits.
+                    var stopBtn = qs('#btnCancelPrepare');
+                    if (stopBtn) {
+                        stopBtn.onclick = function (e) {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            stopAll();
+                        };
+                    }
+                    var reloadBtn = qs('#btnReloadPreview');
+                    if (reloadBtn) {
+                        reloadBtn.onclick = function (e) {
+                            e.preventDefault();
+                            loadPreview();
+                        };
+                    }
+                    var startBtn = qs('#btnStartPrepare');
+                    if (startBtn) {
+                        startBtn.onclick = function (e) {
+                            e.preventDefault();
+                            startSelected();
+                        };
+                    }
                     ApiClient.getPluginConfiguration(LookItUpPrepare.pluginUniqueId).then(function (config) {
                         qs('#txtNamesPerItem').value = config.AiNamesPerPrepare || config.aiNamesPerPrepare || 5;
                         loadPreview();
@@ -310,28 +441,6 @@
                         refreshJobStatus();
                     });
                 });
-
-            qs('#btnReloadPreview').addEventListener('click', loadPreview);
-            qs('#btnSelectSuggested').addEventListener('click', function () {
-                document.querySelectorAll('#prepareItemsHost input.lookitup-term').forEach(function (cb) {
-                    cb.checked = cb.dataset.suggested === '1';
-                });
-                updateSummary();
-            });
-            qs('#btnSelectNone').addEventListener('click', function () {
-                document.querySelectorAll('#prepareItemsHost input.lookitup-term').forEach(function (cb) {
-                    cb.checked = false;
-                });
-                updateSummary();
-            });
-            qs('#btnStartPrepare').addEventListener('click', startSelected);
-            qs('#btnCancelPrepare').addEventListener('click', function () {
-                ApiClient.ajax({
-                    url: ApiClient.getUrl('LookItUp/prepare/cancel'),
-                    type: 'POST',
-                    dataType: 'json'
-                }).then(refreshJobStatus);
-            });
         </script>
     </div>
 </body>
