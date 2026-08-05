@@ -10,19 +10,19 @@
                 <div class="sectionTitleContainer flex align-items-center">
                     <h1 class="sectionTitle">Look it up — Prepare</h1>
                 </div>
-                <p id="prepareRootLabel" style="opacity:.85;">Loading…</p>
+                <p id="prepareRootLabel" style="opacity:.85;">Set the number below, then click Load candidates.</p>
 
                 <div class="inputContainer" style="max-width:20em;">
                     <label class="inputLabel inputLabelUnfocused" for="txtNamesPerItem">Suggested names per episode</label>
-                    <input id="txtNamesPerItem" type="number" is="emby-input" min="1" max="40" />
-                    <div class="fieldDescription">Pre-checks the top N candidates per episode. You can still check/uncheck freely.</div>
+                    <input id="txtNamesPerItem" type="number" is="emby-input" min="1" max="40" value="5" />
+                    <div class="fieldDescription">Pre-checks the top N candidates per episode. You can still check/uncheck freely after loading.</div>
                 </div>
 
                 <div style="display:flex;flex-wrap:wrap;gap:8px;margin:1em 0;">
-                    <button is="emby-button" type="button" id="btnReloadPreview" class="raised emby-button"><span>Reload candidates</span></button>
+                    <button is="emby-button" type="button" id="btnLoadPreview" class="raised button-submit emby-button"><span>Load candidates</span></button>
                     <button is="emby-button" type="button" id="btnSelectSuggested" class="raised emby-button"><span>Select suggested</span></button>
                     <button is="emby-button" type="button" id="btnSelectNone" class="raised emby-button"><span>Select none</span></button>
-                    <button is="emby-button" type="button" id="btnStartPrepare" class="raised button-submit emby-button"><span>Prepare selected</span></button>
+                    <button is="emby-button" type="button" id="btnStartPrepare" class="raised emby-button"><span>Prepare selected</span></button>
                     <button is="emby-button" type="button" id="btnCancelPrepare" class="raised button-cancel emby-button"><span>Stop</span></button>
                 </div>
 
@@ -36,11 +36,11 @@
         <script type="text/javascript">
             var LookItUpPrepare = {
                 pluginUniqueId: 'a8ab0fed-cac9-406d-b98b-58161bf970b8',
-                pageName: 'LookItUpPrepare',
                 rootItemId: null,
                 preview: null,
                 statusTimer: null,
-                previewGen: 0
+                previewGen: 0,
+                loading: false
             };
 
             function qs(id) { return document.querySelector(id); }
@@ -54,6 +54,11 @@
                 } catch (e) {
                     return null;
                 }
+            }
+
+            function ensureItemId() {
+                LookItUpPrepare.rootItemId = readQueryId() || LookItUpPrepare.rootItemId;
+                return LookItUpPrepare.rootItemId;
             }
 
             function formatClock(ms) {
@@ -85,6 +90,17 @@
                 });
                 qs('#prepareSummary').textContent =
                     items.length + ' item(s), ' + totalCand + ' candidate(s), ' + countSelected() + ' selected for AI';
+            }
+
+            function setLoadBusy(busy, message) {
+                LookItUpPrepare.loading = !!busy;
+                var btn = qs('#btnLoadPreview');
+                if (btn) {
+                    btn.disabled = !!busy;
+                }
+                if (message) {
+                    qs('#prepareRootLabel').textContent = message;
+                }
             }
 
             function renderPreview(preview) {
@@ -131,9 +147,15 @@
 
                     var toggle = document.createElement('button');
                     toggle.type = 'button';
-                    toggle.setAttribute('data-action', 'toggle-episode');
                     toggle.className = 'raised emby-button';
+                    toggle.setAttribute('is', 'emby-button');
                     toggle.innerHTML = '<span>Toggle episode</span>';
+                    toggle.addEventListener('click', function () {
+                        var boxes = section.querySelectorAll('input.lookitup-term');
+                        var anyOff = Array.prototype.some.call(boxes, function (b) { return !b.checked; });
+                        boxes.forEach(function (b) { b.checked = anyOff; });
+                        updateSummary();
+                    });
                     head.appendChild(toggle);
                     section.appendChild(head);
 
@@ -158,6 +180,7 @@
                         cb.dataset.itemId = itemId;
                         cb.dataset.term = term;
                         cb.dataset.suggested = suggested ? '1' : '0';
+                        cb.addEventListener('change', updateSummary);
 
                         var body = document.createElement('div');
                         body.style.flex = '1';
@@ -238,16 +261,16 @@
             }
 
             function loadPreview() {
-                var id = LookItUpPrepare.rootItemId;
+                var id = ensureItemId();
                 if (!id) {
                     qs('#prepareRootLabel').textContent = 'Missing item id. Open this page from the Look it up button on a show or episode.';
                     return;
                 }
-                // Invalidate any in-flight response without AbortSignal (ApiClient may not support it).
+
                 LookItUpPrepare.previewGen += 1;
                 var gen = LookItUpPrepare.previewGen;
                 var n = parseInt(qs('#txtNamesPerItem').value, 10) || 5;
-                qs('#prepareRootLabel').textContent = 'Loading candidates…';
+                setLoadBusy(true, 'Loading candidates…');
                 qs('#prepareItemsHost').innerHTML = '';
                 qs('#prepareSummary').textContent = '';
 
@@ -259,6 +282,7 @@
                     if (gen !== LookItUpPrepare.previewGen) {
                         return;
                     }
+                    setLoadBusy(false);
                     var suggested = preview.suggestedNamesPerItem || preview.SuggestedNamesPerItem || n;
                     qs('#txtNamesPerItem').value = suggested;
                     renderPreview(preview);
@@ -266,11 +290,16 @@
                     if (gen !== LookItUpPrepare.previewGen) {
                         return;
                     }
-                    qs('#prepareRootLabel').textContent = 'Failed to load preview: ' + err;
+                    setLoadBusy(false, 'Failed to load preview: ' + err);
                 });
             }
 
             function startSelected() {
+                var id = ensureItemId();
+                if (!id) {
+                    Dashboard.alert('Missing item id.');
+                    return;
+                }
                 var items = collectSelections();
                 if (!items.length) {
                     Dashboard.alert('Select at least one name.');
@@ -281,7 +310,7 @@
                 }
                 qs('#prepareJobStatus').textContent = 'Starting prepare…';
                 ApiClient.ajax({
-                    url: ApiClient.getUrl('LookItUp/' + LookItUpPrepare.rootItemId + '/prepare-selected'),
+                    url: ApiClient.getUrl('LookItUp/' + id + '/prepare-selected'),
                     type: 'POST',
                     dataType: 'json',
                     contentType: 'application/json',
@@ -302,12 +331,13 @@
             }
 
             function stopAll() {
+                // Drop any in-flight preview result and re-enable the load button.
                 LookItUpPrepare.previewGen += 1;
-                qs('#prepareRootLabel').textContent = 'Stopped. Click Reload candidates to try again.';
-                qs('#prepareJobStatus').textContent = 'Stop requested…';
+                setLoadBusy(false, 'Stopped. Adjust the number and click Load candidates when ready.');
                 LookItUpPrepare.preview = null;
                 qs('#prepareItemsHost').innerHTML = '';
                 qs('#prepareSummary').textContent = '';
+                qs('#prepareJobStatus').textContent = 'Stop requested…';
                 ApiClient.ajax({
                     url: ApiClient.getUrl('LookItUp/prepare/cancel'),
                     type: 'POST',
@@ -317,85 +347,64 @@
                 }).then(function (result) {
                     var cancelled = !!(result.cancelled ?? result.Cancelled);
                     qs('#prepareJobStatus').textContent = cancelled
-                        ? 'Stop requested — prepare job cancelled.'
-                        : 'Stop: no background prepare job was running.';
+                        ? 'Prepare job cancelled.'
+                        : 'Stopped (no background prepare job was running).';
                     refreshJobStatus();
                 }).catch(function (err) {
-                    qs('#prepareJobStatus').textContent =
-                        'Cancel API failed: ' + err + ' (safe to ignore if nothing was preparing)';
+                    qs('#prepareJobStatus').textContent = 'Stop note: ' + err;
                 });
             }
 
-            function bindOnce(el, handler) {
-                if (!el) return;
-                el.onclick = handler;
-            }
-
-            document.querySelector('#LookItUpPreparePage')
-                .addEventListener('pageshow', function () {
-                    LookItUpPrepare.rootItemId = readQueryId();
-                    bindOnce(qs('#btnCancelPrepare'), function (e) {
-                        e.preventDefault();
-                        stopAll();
-                    });
-                    bindOnce(qs('#btnReloadPreview'), function (e) {
-                        e.preventDefault();
-                        loadPreview();
-                    });
-                    bindOnce(qs('#btnStartPrepare'), function (e) {
-                        e.preventDefault();
-                        startSelected();
-                    });
-                    bindOnce(qs('#btnSelectSuggested'), function (e) {
-                        e.preventDefault();
-                        document.querySelectorAll('#prepareItemsHost input.lookitup-term').forEach(function (cb) {
-                            cb.checked = cb.dataset.suggested === '1';
-                        });
-                        updateSummary();
-                    });
-                    bindOnce(qs('#btnSelectNone'), function (e) {
-                        e.preventDefault();
-                        document.querySelectorAll('#prepareItemsHost input.lookitup-term').forEach(function (cb) {
-                            cb.checked = false;
-                        });
-                        updateSummary();
-                    });
-                    var page = qs('#LookItUpPreparePage');
-                    if (page && !page.__lookitupToggleBound) {
-                        page.addEventListener('click', function (e) {
-                            var t = e.target;
-                            if (!t || !t.closest) return;
-                            var btn = t.closest('[data-action="toggle-episode"]');
-                            if (!btn) return;
-                            e.preventDefault();
-                            var section = btn.closest('.lookitup-ep');
-                            if (!section) return;
-                            var boxes = section.querySelectorAll('input.lookitup-term');
-                            var anyOff = Array.prototype.some.call(boxes, function (b) { return !b.checked; });
-                            boxes.forEach(function (b) { b.checked = anyOff; });
-                            updateSummary();
-                        });
-                        page.addEventListener('change', function (e) {
-                            if (e.target && e.target.classList && e.target.classList.contains('lookitup-term')) {
-                                updateSummary();
-                            }
-                        });
-                        page.__lookitupToggleBound = true;
+            function onPageShow() {
+                ensureItemId();
+                if (!LookItUpPrepare.rootItemId) {
+                    qs('#prepareRootLabel').textContent = 'Missing item id. Open this page from the Look it up button on a show or episode.';
+                } else if (!LookItUpPrepare.loading && !LookItUpPrepare.preview) {
+                    qs('#prepareRootLabel').textContent = 'Set the number below, then click Load candidates.';
+                }
+                ApiClient.getPluginConfiguration(LookItUpPrepare.pluginUniqueId).then(function (config) {
+                    var input = qs('#txtNamesPerItem');
+                    if (input && (!input.value || input.value === '5')) {
+                        input.value = config.AiNamesPerPrepare || config.aiNamesPerPrepare || 5;
                     }
-                    ApiClient.getPluginConfiguration(LookItUpPrepare.pluginUniqueId).then(function (config) {
-                        if (!qs('#txtNamesPerItem').value) {
-                            qs('#txtNamesPerItem').value = config.AiNamesPerPrepare || config.aiNamesPerPrepare || 5;
-                        }
-                        loadPreview();
-                        refreshJobStatus();
-                    }).catch(function () {
-                        if (!qs('#txtNamesPerItem').value) {
-                            qs('#txtNamesPerItem').value = 5;
-                        }
-                        loadPreview();
-                        refreshJobStatus();
-                    });
+                }).catch(function () { /* ignore */ });
+                refreshJobStatus();
+            }
+
+            // Bind immediately (same pattern as configPage) — do not wait for pageshow.
+            qs('#btnLoadPreview').addEventListener('click', function (e) {
+                e.preventDefault();
+                loadPreview();
+            });
+            qs('#btnSelectSuggested').addEventListener('click', function (e) {
+                e.preventDefault();
+                document.querySelectorAll('#prepareItemsHost input.lookitup-term').forEach(function (cb) {
+                    cb.checked = cb.dataset.suggested === '1';
                 });
+                updateSummary();
+            });
+            qs('#btnSelectNone').addEventListener('click', function (e) {
+                e.preventDefault();
+                document.querySelectorAll('#prepareItemsHost input.lookitup-term').forEach(function (cb) {
+                    cb.checked = false;
+                });
+                updateSummary();
+            });
+            qs('#btnStartPrepare').addEventListener('click', function (e) {
+                e.preventDefault();
+                startSelected();
+            });
+            qs('#btnCancelPrepare').addEventListener('click', function (e) {
+                e.preventDefault();
+                stopAll();
+            });
+
+            var pageEl = qs('#LookItUpPreparePage');
+            pageEl.addEventListener('pageshow', onPageShow);
+            pageEl.addEventListener('viewshow', onPageShow);
+            // If the page is already visible when the script runs.
+            ensureItemId();
+            refreshJobStatus();
         </script>
     </div>
 </body>
