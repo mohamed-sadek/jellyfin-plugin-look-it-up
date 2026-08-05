@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "1.2.15.0",
+        "changelog": "Respect popup appearance settings; duration UI in seconds; cache-bust overlay script",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.15.0/look-it-up_1.2.15.0.zip",
+        "checksum": "9a2574430aba74188594246973a8ca58",
+        "timestamp": "2026-08-05T09:35:00Z"
+      },
+      {
         "version": "1.2.14.0",
         "changelog": "Configurable popup style (font, colors, placement, duration); longer AI summaries (280 chars, word-safe trim)",
         "targetAbi": "10.11.0.0",

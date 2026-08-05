@@ -292,6 +292,7 @@ public class LookItUpController : ControllerBase
             aiConfigured = !string.IsNullOrWhiteSpace(config?.AiApiKey)
                            && !string.Equals(config?.AiProvider, "None", StringComparison.OrdinalIgnoreCase),
             cacheVersion = _lookItUpService.CacheVersion,
+            popup = BuildPopupSettings(config),
             prepare = _prepareService.GetStatus(),
             instanceLoaded = Plugin.Instance is not null,
             targetServer = "10.11.x"
@@ -316,6 +317,9 @@ public class LookItUpController : ControllerBase
 
         using var reader = new StreamReader(stream);
         var script = reader.ReadToEnd();
+        Response.Headers.CacheControl = "no-cache, no-store, must-revalidate";
+        Response.Headers.Pragma = "no-cache";
+        Response.Headers["X-LookItUp-Version"] = Plugin.Instance?.Version?.ToString() ?? "unknown";
         return Content(script, "application/javascript");
     }
 }

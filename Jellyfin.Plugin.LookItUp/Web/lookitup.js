@@ -1,12 +1,13 @@
 (function () {
   'use strict';
 
-  const CLIENT_VERSION = '1.2.14.0';
+  const CLIENT_VERSION = '1.2.15.0';
   const STYLE_ID = 'lookitup-styles';
   const POPUP_ID = 'lookitup-popup';
   const POLL_MS = 200;
   const DEFAULT_POPUP_MS = 3000;
   const MIN_MATCH_WINDOW_MS = 8000;
+  const SETTINGS_REFRESH_MS = 5000;
   const JUNK_TERMS = new Set([
     'all', 'new', 'seem', 'consumer', 'yeah', 'heh', 'done', 'away', 'let', 'now',
     'take', 'lie', 'thud', 'street', 'pop', 'car', 'limited', 'tim', 'vic', 'mom',
@@ -39,8 +40,23 @@
   let lastLoadErrorAt = 0;
   let lastDiagAt = 0;
   let lastCueLogTerm = null;
+  let lastSettingsFetchAt = 0;
+  let settingsFetchInFlight = false;
   // Terms already shown for their current cue window (don't re-show after auto-hide).
   const shownThisPass = new Set();
+
+  function pick(obj) {
+    if (!obj) {
+      return undefined;
+    }
+    for (var i = 1; i < arguments.length; i++) {
+      var key = arguments[i];
+      if (obj[key] !== undefined && obj[key] !== null && obj[key] !== '') {
+        return obj[key];
+      }
+    }
+    return undefined;
+  }
 
   function sanitizeCssColor(value, fallback) {
     const raw = String(value || '').trim();
@@ -81,15 +97,80 @@
 
   function applyPopupSettings(raw) {
     const src = raw || {};
-    popupDurationMs = Math.min(30000, Math.max(1000, Number(src.durationMs || src.DurationMs || popupDurationMs) || DEFAULT_POPUP_MS));
+    const duration = Number(pick(src, 'durationMs', 'DurationMs', 'popupDurationMs', 'PopupDurationMs'));
+    popupDurationMs = Math.min(30000, Math.max(1000, (Number.isFinite(duration) && duration > 0 ? duration : popupDurationMs) || DEFAULT_POPUP_MS));
     popupStyle = {
-      fontSizePx: Math.min(48, Math.max(10, Number(src.fontSizePx || src.FontSizePx) || 16)),
-      textColor: sanitizeCssColor(src.textColor || src.TextColor, '#f7fafc'),
-      backgroundColor: sanitizeCssColor(src.backgroundColor || src.BackgroundColor, 'rgba(8, 12, 20, 0.96)'),
-      placement: String(src.placement || src.Placement || 'BottomCenter'),
-      edgeOffsetPct: Math.min(40, Math.max(2, Number(src.edgeOffsetPct || src.EdgeOffsetPct) || 10))
+      fontSizePx: Math.min(48, Math.max(10, Number(pick(src, 'fontSizePx', 'FontSizePx')) || popupStyle.fontSizePx || 16)),
+      textColor: sanitizeCssColor(pick(src, 'textColor', 'TextColor'), popupStyle.textColor || '#f7fafc'),
+      backgroundColor: sanitizeCssColor(pick(src, 'backgroundColor', 'BackgroundColor'), popupStyle.backgroundColor || 'rgba(8, 12, 20, 0.96)'),
+      placement: String(pick(src, 'placement', 'Placement') || popupStyle.placement || 'BottomCenter'),
+      edgeOffsetPct: Math.min(40, Math.max(2, Number(pick(src, 'edgeOffsetPct', 'EdgeOffsetPct')) || popupStyle.edgeOffsetPct || 10))
     };
     ensureStyles();
+    console.info('[Look it up] popup settings applied', {
+      durationMs: popupDurationMs,
+      durationSec: Math.round(popupDurationMs / 1000),
+      fontSizePx: popupStyle.fontSizePx,
+      placement: popupStyle.placement,
+      textColor: popupStyle.textColor,
+      backgroundColor: popupStyle.backgroundColor,
+      edgeOffsetPct: popupStyle.edgeOffsetPct
+    });
+  }
+
+  async function refreshPopupSettings(force) {
+    const api = getApiClient();
+    if (!api || settingsFetchInFlight) {
+      return;
+    }
+    if (!force && Date.now() - lastSettingsFetchAt < SETTINGS_REFRESH_MS) {
+      return;
+    }
+    settingsFetchInFlight = true;
+    try {
+      const status = await api.ajax({
+        url: api.getUrl('LookItUp/status'),
+        type: 'GET',
+        dataType: 'json'
+      });
+      lastSettingsFetchAt = Date.now();
+      const popupCfg = pick(status, 'popup', 'Popup');
+      if (popupCfg) {
+        applyPopupSettings(popupCfg);
+      } else {
+        console.warn('[Look it up] /LookItUp/status has no popup settings — is the plugin updated to 1.2.15+?');
+      }
+    } catch (err) {
+      console.debug('[Look it up] settings refresh failed', err);
+    } finally {
+      settingsFetchInFlight = false;
+    }
+  }
+
+  function applyInlinePopupChrome(popup) {
+    const pos = placementCss(popupStyle.placement, popupStyle.edgeOffsetPct);
+    const fontPx = popupStyle.fontSizePx;
+    popup.style.setProperty('position', 'fixed', 'important');
+    popup.style.setProperty('top', pos.top, 'important');
+    popup.style.setProperty('right', pos.right, 'important');
+    popup.style.setProperty('bottom', pos.bottom, 'important');
+    popup.style.setProperty('left', pos.left, 'important');
+    popup.style.setProperty('transform', pos.transform, 'important');
+    popup.style.setProperty('z-index', '2147483647', 'important');
+    popup.style.setProperty('background', popupStyle.backgroundColor, 'important');
+    popup.style.setProperty('color', popupStyle.textColor, 'important');
+    popup.style.setProperty('font-size', fontPx + 'px', 'important');
+    popup.style.setProperty('opacity', '1', 'important');
+    popup.style.setProperty('visibility', 'visible', 'important');
+    const termEl = popup.querySelector('.lookitup-term');
+    if (termEl) {
+      termEl.style.setProperty('font-size', Math.round(fontPx * 1.1) + 'px', 'important');
+      termEl.style.setProperty('color', popupStyle.textColor, 'important');
+    }
+    const bodyEl = popup.querySelector('.lookitup-body');
+    if (bodyEl) {
+      bodyEl.style.setProperty('color', popupStyle.textColor, 'important');
+    }
   }
 
   function ensureStyles() {
@@ -262,8 +343,7 @@
     popup.classList.remove('visible');
     void popup.offsetWidth;
     popup.classList.add('visible');
-    // Clear any old inline placement overrides so CSS from settings wins.
-    popup.style.cssText = '';
+    applyInlinePopupChrome(popup);
 
     if (hideTimer) {
       clearTimeout(hideTimer);
@@ -275,6 +355,9 @@
       summary: summary,
       url: url || null,
       durationMs: duration,
+      durationSec: Math.round(duration / 1000),
+      fontSizePx: popupStyle.fontSizePx,
+      placement: popupStyle.placement,
       startMs: readProp(annotation, 'startMs', 'StartMs'),
       endMs: readProp(annotation, 'endMs', 'EndMs'),
       playbackMs: getCurrentTimeMs()
@@ -561,6 +644,7 @@
         popupCfg.durationMs = rawDuration;
       }
       applyPopupSettings(popupCfg);
+      lastSettingsFetchAt = Date.now();
       const rawList = data.annotations || data.Annotations || [];
       annotations = normalizeAnnotations(rawList);
       if (data.prepared === false && annotations.length === 0) {
@@ -706,9 +790,12 @@
       annotations = [];
       shownThisPass.clear();
       hidePopup();
+      refreshPopupSettings(true);
       loadAnnotations(itemId);
       return;
     }
+
+    refreshPopupSettings(false);
 
     const now = getCurrentTimeMs();
     if (Date.now() - lastDiagAt > 4000 && annotations.length) {
@@ -784,6 +871,7 @@
     setInterval(tick, POLL_MS);
     console.info('[Look it up] overlay ready', CLIENT_VERSION);
     logServerVersion(0);
+    refreshPopupSettings(true);
   }
 
   if (document.readyState === 'loading') {

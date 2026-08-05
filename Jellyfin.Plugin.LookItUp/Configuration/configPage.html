@@ -124,9 +124,9 @@
                     <p>These apply at playback time (saved in plugin config; no need to re-prepare).</p>
 
                     <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="txtPopupDuration">How long it stays (ms)</label>
-                        <input id="txtPopupDuration" type="number" is="emby-input" min="1000" max="30000" step="500" />
-                        <div class="fieldDescription">1–30 seconds. Example: 5000 = five seconds.</div>
+                        <label class="inputLabel inputLabelUnfocused" for="txtPopupDurationSec">How long it stays (seconds)</label>
+                        <input id="txtPopupDurationSec" type="number" is="emby-input" min="1" max="30" step="1" />
+                        <div class="fieldDescription">1–30 seconds on screen after a name triggers.</div>
                     </div>
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="txtPopupFontSize">Font size (px)</label>
@@ -204,8 +204,12 @@
                     <div class="sectionTitleContainer flex align-items-center" style="margin-top:1.5em;">
                         <h2 class="sectionTitle">Web client overlay</h2>
                     </div>
-                    <p>Load the overlay with JavaScript Injector (or similar):</p>
-                    <pre style="white-space:pre-wrap;word-break:break-all;background:rgba(0,0,0,.08);padding:12px;border-radius:8px;">&lt;script src="/LookItUp/script.js"&gt;&lt;/script&gt;</pre>
+                    <p>
+                        Load the overlay with JavaScript Injector. Prefer the plugin script (not a CDN copy),
+                        so popup appearance settings are applied:
+                    </p>
+                    <pre style="white-space:pre-wrap;word-break:break-all;background:rgba(0,0,0,.08);padding:12px;border-radius:8px;">&lt;script src="/LookItUp/script.js?v=1.2.15"&gt;&lt;/script&gt;</pre>
+                    <div class="fieldDescription">Hard-refresh after changing the injector. Console should show <code>overlay ready 1.2.15.0</code> and <code>popup settings applied</code>.</div>
 
                     <div>
                         <button is="emby-button" type="submit" class="raised button-submit block emby-button">
@@ -228,6 +232,16 @@
                     None: { model: '', baseUrl: '' }
                 }
             };
+
+            function cfgGet(config, pascal, camel, fallback) {
+                if (config[pascal] !== undefined && config[pascal] !== null && config[pascal] !== '') {
+                    return config[pascal];
+                }
+                if (config[camel] !== undefined && config[camel] !== null && config[camel] !== '') {
+                    return config[camel];
+                }
+                return fallback;
+            }
 
             function applyProviderPreset(provider, force) {
                 var preset = LookItUpConfig.providerPresets[provider];
@@ -458,12 +472,12 @@
                         document.querySelector('#txtPreferredSubtitleLanguages').value = config.PreferredSubtitleLanguages || 'en';
                         document.querySelector('#txtMaxAnnotations').value = config.MaxAnnotationsPerItem;
                         document.querySelector('#txtMinEntityLength').value = config.MinEntityLength;
-                        document.querySelector('#txtPopupDuration').value = config.PopupDurationMs || 3000;
-                        document.querySelector('#txtPopupFontSize').value = config.PopupFontSizePx || 16;
-                        document.querySelector('#txtPopupTextColor').value = config.PopupTextColor || '#f7fafc';
-                        document.querySelector('#txtPopupBgColor').value = config.PopupBackgroundColor || 'rgba(8, 12, 20, 0.96)';
-                        document.querySelector('#selPopupPlacement').value = config.PopupPlacement || 'BottomCenter';
-                        document.querySelector('#txtPopupEdgeOffset').value = config.PopupEdgeOffsetPct || 10;
+                        document.querySelector('#txtPopupDurationSec').value = Math.max(1, Math.round((cfgGet(config, 'PopupDurationMs', 'popupDurationMs', 3000) || 3000) / 1000));
+                        document.querySelector('#txtPopupFontSize').value = cfgGet(config, 'PopupFontSizePx', 'popupFontSizePx', 16);
+                        document.querySelector('#txtPopupTextColor').value = cfgGet(config, 'PopupTextColor', 'popupTextColor', '#f7fafc');
+                        document.querySelector('#txtPopupBgColor').value = cfgGet(config, 'PopupBackgroundColor', 'popupBackgroundColor', 'rgba(8, 12, 20, 0.96)');
+                        document.querySelector('#selPopupPlacement').value = cfgGet(config, 'PopupPlacement', 'popupPlacement', 'BottomCenter');
+                        document.querySelector('#txtPopupEdgeOffset').value = cfgGet(config, 'PopupEdgeOffsetPct', 'popupEdgeOffsetPct', 10);
                         var provider = config.AiProvider || 'Groq';
                         document.querySelector('#selAiProvider').value = provider;
                         document.querySelector('#txtAiApiKey').value = '';
@@ -508,7 +522,14 @@
                         config.PreferredSubtitleLanguages = document.querySelector('#txtPreferredSubtitleLanguages').value;
                         config.MaxAnnotationsPerItem = parseInt(document.querySelector('#txtMaxAnnotations').value, 10);
                         config.MinEntityLength = parseInt(document.querySelector('#txtMinEntityLength').value, 10);
-                        config.PopupDurationMs = parseInt(document.querySelector('#txtPopupDuration').value, 10) || 3000;
+                        var durationSec = parseInt(document.querySelector('#txtPopupDurationSec').value, 10);
+                        if (!durationSec || durationSec < 1) {
+                            durationSec = 3;
+                        }
+                        if (durationSec > 30) {
+                            durationSec = 30;
+                        }
+                        config.PopupDurationMs = durationSec * 1000;
                         config.PopupFontSizePx = parseInt(document.querySelector('#txtPopupFontSize').value, 10) || 16;
                         config.PopupTextColor = document.querySelector('#txtPopupTextColor').value || '#f7fafc';
                         config.PopupBackgroundColor = document.querySelector('#txtPopupBgColor').value || 'rgba(8, 12, 20, 0.96)';
