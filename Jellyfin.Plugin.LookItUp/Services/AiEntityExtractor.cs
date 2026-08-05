@@ -75,6 +75,12 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             return false;
         }
 
+        // Ollama is usually local and often has no API key.
+        if (provider.Equals("Ollama", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
         return !string.IsNullOrWhiteSpace(config.AiApiKey);
     }
 
@@ -228,7 +234,9 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
 
             var payload = BuildChatPayload(itemName, candidate, model, attempt);
             using var request = new HttpRequestMessage(HttpMethod.Post, url);
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", config.AiApiKey.Trim());
+            request.Headers.Authorization = new AuthenticationHeaderValue(
+                "Bearer",
+                string.IsNullOrWhiteSpace(config.AiApiKey) ? "ollama" : config.AiApiKey.Trim());
             request.Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
 
             try

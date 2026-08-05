@@ -128,33 +128,35 @@
                     </div>
                     <p>
                         During <strong>prepare</strong>, local name candidates are ranked from subtitles, then the top N
-                        are each sent in <strong>one Groq/OpenAI request</strong>. The model must verify the candidate is a
-                        real name/reference (and may reject false positives) before returning a short summary.
+                        are each sent in <strong>one OpenAI-compatible request</strong>. The model must verify the candidate is a
+                        real name/reference before returning a short summary. If Groq is flaky, switch to
+                        <strong>OpenAI</strong> or <strong>OpenRouter</strong> below (same flow).
                     </p>
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="txtAiProvider">AI provider</label>
-                        <input id="txtAiProvider" type="text" is="emby-input" />
-                        <div class="fieldDescription">
-                            <code>Groq</code> (recommended), <code>OpenAI</code>, <code>OpenRouter</code>, <code>Ollama</code>, or <code>None</code> (legacy Wikipedia).
-                        </div>
+                    <div class="selectContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="selAiProvider">AI provider</label>
+                        <select id="selAiProvider" is="emby-select" class="emby-select-withcolor emby-select">
+                            <option value="Groq">Groq</option>
+                            <option value="OpenAI">OpenAI</option>
+                            <option value="OpenRouter">OpenRouter</option>
+                            <option value="Ollama">Ollama (local)</option>
+                            <option value="None">None (legacy Wikipedia)</option>
+                        </select>
+                        <div class="fieldDescription">Changing provider fills a recommended model and base URL. You still need that provider’s API key.</div>
                     </div>
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="txtAiApiKey">AI API key</label>
                         <input id="txtAiApiKey" type="password" is="emby-input" autocomplete="off" />
-                        <div class="fieldDescription">Stored in Jellyfin plugin config. Leave blank to keep the existing key when saving. Groq: console.groq.com/keys</div>
+                        <div class="fieldDescription">Leave blank to keep the existing key. Groq: console.groq.com/keys · OpenAI: platform.openai.com/api-keys · OpenRouter: openrouter.ai/keys</div>
                     </div>
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="txtAiModel">AI model</label>
                         <input id="txtAiModel" type="text" is="emby-input" />
-                        <div class="fieldDescription">Recommended Groq: <code>openai/gpt-oss-20b</code> (replacement for deprecated <code>llama-3.1-8b-instant</code>). OpenAI: <code>gpt-4o-mini</code>.</div>
+                        <div class="fieldDescription">Groq: <code>openai/gpt-oss-20b</code>. OpenAI: <code>gpt-4o-mini</code>. OpenRouter: <code>openai/gpt-4o-mini</code>.</div>
                     </div>
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="txtAiBaseUrl">AI base URL</label>
                         <input id="txtAiBaseUrl" type="text" is="emby-input" />
-                        <div class="fieldDescription">
-                            Groq: <code>https://api.groq.com/openai/v1</code>.
-                            OpenAI: <code>https://api.openai.com/v1</code>.
-                        </div>
+                        <div class="fieldDescription">Usually filled by the provider preset. Ollama default: <code>http://127.0.0.1:11434/v1</code>.</div>
                     </div>
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="txtAiNamesPerPrepare">AI names per prepare</label>
@@ -180,8 +182,32 @@
         <script type="text/javascript">
             var LookItUpConfig = {
                 pluginUniqueId: 'a8ab0fed-cac9-406d-b98b-58161bf970b8',
-                statusTimer: null
+                statusTimer: null,
+                providerPresets: {
+                    Groq: { model: 'openai/gpt-oss-20b', baseUrl: 'https://api.groq.com/openai/v1' },
+                    OpenAI: { model: 'gpt-4o-mini', baseUrl: 'https://api.openai.com/v1' },
+                    OpenRouter: { model: 'openai/gpt-4o-mini', baseUrl: 'https://openrouter.ai/api/v1' },
+                    Ollama: { model: 'llama3.2', baseUrl: 'http://127.0.0.1:11434/v1' },
+                    None: { model: '', baseUrl: '' }
+                }
             };
+
+            function applyProviderPreset(provider, force) {
+                var preset = LookItUpConfig.providerPresets[provider];
+                if (!preset) {
+                    return;
+                }
+                var modelEl = document.querySelector('#txtAiModel');
+                var urlEl = document.querySelector('#txtAiBaseUrl');
+                if (force || !modelEl.value || modelEl.dataset.fromPreset === '1') {
+                    modelEl.value = preset.model;
+                    modelEl.dataset.fromPreset = '1';
+                }
+                if (force || !urlEl.value || urlEl.dataset.fromPreset === '1') {
+                    urlEl.value = preset.baseUrl;
+                    urlEl.dataset.fromPreset = '1';
+                }
+            }
 
             function renderPrepareStatus(s) {
                 var box = document.querySelector('#prepareStatusBox');
@@ -396,7 +422,8 @@
                         document.querySelector('#txtMaxAnnotations').value = config.MaxAnnotationsPerItem;
                         document.querySelector('#txtMinEntityLength').value = config.MinEntityLength;
                         document.querySelector('#txtPopupDuration').value = config.PopupDurationMs;
-                        document.querySelector('#txtAiProvider').value = config.AiProvider || 'Groq';
+                        var provider = config.AiProvider || 'Groq';
+                        document.querySelector('#selAiProvider').value = provider;
                         document.querySelector('#txtAiApiKey').value = '';
                         document.querySelector('#txtAiApiKey').placeholder = config.AiApiKey ? '(saved — enter new key to replace)' : '(not set)';
                         document.querySelector('#txtAiModel').value = config.AiModel || 'openai/gpt-oss-20b';
@@ -406,6 +433,16 @@
                         refreshPrepareStatus();
                     });
                 });
+
+            document.querySelector('#selAiProvider').addEventListener('change', function () {
+                applyProviderPreset(this.value, true);
+            });
+            document.querySelector('#txtAiModel').addEventListener('input', function () {
+                this.dataset.fromPreset = '0';
+            });
+            document.querySelector('#txtAiBaseUrl').addEventListener('input', function () {
+                this.dataset.fromPreset = '0';
+            });
 
             document.querySelector('#btnPreviewNames').addEventListener('click', previewNames);
             document.querySelector('#btnPrepareOne').addEventListener('click', prepareOneItem);
@@ -430,7 +467,7 @@
                         config.MaxAnnotationsPerItem = parseInt(document.querySelector('#txtMaxAnnotations').value, 10);
                         config.MinEntityLength = parseInt(document.querySelector('#txtMinEntityLength').value, 10);
                         config.PopupDurationMs = parseInt(document.querySelector('#txtPopupDuration').value, 10);
-                        config.AiProvider = document.querySelector('#txtAiProvider').value || 'Groq';
+                        config.AiProvider = document.querySelector('#selAiProvider').value || 'Groq';
                         config.AiModel = document.querySelector('#txtAiModel').value || 'openai/gpt-oss-20b';
                         config.AiBaseUrl = document.querySelector('#txtAiBaseUrl').value || 'https://api.groq.com/openai/v1';
                         config.AiNamesPerPrepare = parseInt(document.querySelector('#txtAiNamesPerPrepare').value, 10) || 5;
