@@ -19,7 +19,22 @@ public sealed class AiExtractionResult
     public IReadOnlyList<AiEntityMention> Mentions { get; init; } = [];
 
     /// <summary>Gets a short warning when AI failed or returned nothing useful.</summary>
-    public string? Warning { get; init; }
+    public string? Warning { get; set; }
+}
+
+/// <summary>
+/// Media context for AI verification (show vs episode title, known cast).
+/// </summary>
+public sealed class AiMediaContext
+{
+    /// <summary>Series or movie title (e.g. "The Larry Sanders Show").</summary>
+    public string ShowName { get; init; } = string.Empty;
+
+    /// <summary>Episode or item title when different from the show.</summary>
+    public string? EpisodeName { get; init; }
+
+    /// <summary>Known cast / character names from Jellyfin metadata.</summary>
+    public IReadOnlyList<string> KnownCastNames { get; init; } = [];
 }
 
 /// <summary>
@@ -36,7 +51,7 @@ public interface IAiEntityExtractor
     /// Verifies candidates one-by-one and returns kept mentions with short summaries.
     /// </summary>
     Task<AiExtractionResult> ResolveNamesAsync(
-        string itemName,
+        AiMediaContext media,
         IReadOnlyList<NameCandidate> candidates,
         PluginConfiguration config,
         CancellationToken cancellationToken);
@@ -86,7 +101,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
 
     /// <inheritdoc />
     public async Task<AiExtractionResult> ResolveNamesAsync(
-        string itemName,
+        AiMediaContext media,
         IReadOnlyList<NameCandidate> candidates,
         PluginConfiguration config,
         CancellationToken cancellationToken)
@@ -130,9 +145,13 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 hardMax);
         }
 
+        var itemLabel = string.IsNullOrWhiteSpace(media.ShowName)
+            ? (media.EpisodeName ?? "item")
+            : media.ShowName;
+
         _logger.LogInformation(
             "Look it up AI per-name verify for {Item}: {Count} candidates via {BaseUrl} model={Model}",
-            itemName,
+            itemLabel,
             batch.Count,
             baseUrl,
             model);
@@ -160,7 +179,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             try
             {
                 var result = await VerifyOneAsync(
-                        itemName,
+                        media,
                         candidate,
                         config,
                         model,
@@ -211,11 +230,11 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             $"AI verify {mentions.Count} kept / {rejected} rejected / {failed} failed of {batch.Count}. " +
             string.Join("; ", outcomes);
 
-        _logger.LogInformation("Look it up AI batch result for {Item}: {Summary}", itemName, summary);
+        _logger.LogInformation("Look it up AI batch result for {Item}: {Summary}", itemLabel, summary);
 
         if (mentions.Count == 0)
         {
-            _logger.LogWarning("Look it up AI produced 0 mentions for {Item}: {Summary}", itemName, summary);
+            _logger.LogWarning("Look it up AI produced 0 mentions for {Item}: {Summary}", itemLabel, summary);
             return new AiExtractionResult { Warning = summary };
         }
 
@@ -227,7 +246,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
     }
 
     private async Task<(AiEntityMention? Mention, string? Error, string? RejectReason)> VerifyOneAsync(
-        string itemName,
+        AiMediaContext media,
         NameCandidate candidate,
         PluginConfiguration config,
         string model,
@@ -242,7 +261,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var payload = BuildChatPayload(itemName, candidate, model, attempt);
+            var payload = BuildChatPayload(media, candidate, model, attempt);
             using var request = new HttpRequestMessage(HttpMethod.Post, url);
             request.Headers.Authorization = new AuthenticationHeaderValue(
                 "Bearer",
@@ -356,31 +375,45 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
     }
 
     private static Dictionary<string, object?> BuildChatPayload(
-        string itemName,
+        AiMediaContext media,
         NameCandidate candidate,
         string model,
         int attempt)
     {
+        var show = string.IsNullOrWhiteSpace(media.ShowName) ? "unknown show" : media.ShowName.Trim();
+        var episode = string.IsNullOrWhiteSpace(media.EpisodeName) ? null : media.EpisodeName.Trim();
+        var castHint = media.KnownCastNames.Count == 0
+            ? string.Empty
+            : "Known cast/characters from metadata (always reject): "
+              + string.Join(", ", media.KnownCastNames.Take(40))
+              + "\n";
+
         // Short user-only prompts: llama-3.1-8b-instant often returned finish_reason=stop with empty content.
         string user;
         if (attempt == 1)
         {
             user =
                 "Return a JSON object about this subtitle name candidate.\n" +
-                "keep=true only for a real person/place/film/brand/cultural reference worth a short popup.\n" +
-                "Otherwise keep=false.\n" +
+                "This dialogue is from the TV show/movie \"" + show + "\".\n" +
+                "keep=true ONLY for a real-world person, place, film, brand, or cultural reference " +
+                "that a viewer might want explained — NOT fictional characters or cast from this show.\n" +
+                "keep=false if the candidate is a character, nickname, or cast member in \"" + show + "\", " +
+                "or ordinary dialogue, or not worth a popup.\n" +
+                castHint +
                 "Schema: {\"keep\":true,\"term\":\"Jon Voight\",\"kind\":\"person\",\"summary\":\"American actor known for Midnight Cowboy.\"}\n" +
                 "kind must be one of: person, place, film, brand, other.\n" +
-                "or {\"keep\":false,\"reason\":\"not a notable name\"}\n" +
+                "or {\"keep\":false,\"reason\":\"character in this show\"}\n" +
                 "Summary: one or two short sentences, up to ~200 characters.\n" +
-                "Show: " + itemName + "\n" +
+                "Show: " + show + "\n" +
+                (episode is null ? string.Empty : "Episode: " + episode + "\n") +
                 "Candidate: " + candidate.Term + "\n" +
                 "Line: " + candidate.CueText;
         }
         else
         {
             user =
-                "JSON only. Is \"" + candidate.Term + "\" a real name/reference in \"" +
+                "JSON only. Show \"" + show + "\". Is \"" + candidate.Term +
+                "\" a real-world reference (not a character from this show) in \"" +
                 candidate.CueText + "\"?\n" +
                 "{\"keep\":true,\"term\":\"...\",\"kind\":\"person\",\"summary\":\"...\"} or {\"keep\":false,\"reason\":\"...\"}";
         }

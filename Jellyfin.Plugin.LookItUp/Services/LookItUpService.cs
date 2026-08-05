@@ -457,6 +457,72 @@ public class LookItUpService : ILookItUpService
         return exclude;
     }
 
+    private AiMediaContext BuildAiMediaContext(BaseItem item, IReadOnlyCollection<string> excludedCast)
+    {
+        string showName;
+        string? episodeName = null;
+
+        if (item is Episode episode)
+        {
+            episodeName = episode.Name;
+            showName = episode.SeriesName;
+            if (string.IsNullOrWhiteSpace(showName))
+            {
+                try
+                {
+                    var series = episode.Series ?? (episode.SeriesId != Guid.Empty
+                        ? _libraryManager.GetItemById(episode.SeriesId)
+                        : null);
+                    showName = series?.Name ?? episode.Name ?? "Unknown show";
+                }
+                catch
+                {
+                    showName = episode.Name ?? "Unknown show";
+                }
+            }
+        }
+        else if (item is Season season)
+        {
+            showName = season.SeriesName;
+            if (string.IsNullOrWhiteSpace(showName))
+            {
+                try
+                {
+                    var series = season.SeriesId != Guid.Empty
+                        ? _libraryManager.GetItemById(season.SeriesId)
+                        : null;
+                    showName = series?.Name ?? season.Name ?? "Unknown show";
+                }
+                catch
+                {
+                    showName = season.Name ?? "Unknown show";
+                }
+            }
+
+            episodeName = season.Name;
+        }
+        else
+        {
+            // Movies and other items: the item name is the show/title.
+            showName = item.Name ?? "Unknown title";
+        }
+
+        // Prefer fuller names for the AI hint (role + person), still capped.
+        var castHint = excludedCast
+            .Where(n => !string.IsNullOrWhiteSpace(n) && n.Length >= 2)
+            .OrderByDescending(n => n.Contains(' ', StringComparison.Ordinal))
+            .ThenBy(n => n, StringComparer.OrdinalIgnoreCase)
+            .Take(40)
+            .ToList();
+
+        return new AiMediaContext
+        {
+            ShowName = showName,
+            EpisodeName = episodeName,
+            KnownCastNames = castHint
+        };
+    }
+
     /// <summary>
     /// Picks AI verify targets, preferring earlier shorter Cap+Cap forms over later long phrases
     /// (e.g. "Jon Voight" @ 0:59 over "Jon Voight's LeBaron" @ 2:31),
@@ -803,9 +869,16 @@ public class LookItUpService : ILookItUpService
                     aiBaseUrl,
                     nameCandidates.Count);
 
+                var mediaContext = BuildAiMediaContext(item, excludedCast);
+                _logger.LogInformation(
+                    "Look it up AI media context: show={Show} episode={Episode} castHints={CastCount}",
+                    mediaContext.ShowName,
+                    mediaContext.EpisodeName ?? "-",
+                    mediaContext.KnownCastNames.Count);
+
                 var aiResult = await _aiExtractor
                     .ResolveNamesAsync(
-                        item.Name ?? itemId.ToString("N"),
+                        mediaContext,
                         nameCandidates,
                         config,
                         cancellationToken)
