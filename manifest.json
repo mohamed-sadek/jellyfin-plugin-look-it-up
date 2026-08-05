@@ -8,6 +8,13 @@
     "category": "General",
     "versions": [
       {
+        "version": "1.2.28.0",
+        "changelog": "Van Gogh-style names; cultural-ref focus; drop God/Earth/OpenSubtitles and meta summaries",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.28.0/look-it-up_1.2.28.0.zip",
+        "checksum": "4580df0d864a683b392108f7170f8b2e",
+        "timestamp": "2026-08-05T15:42:19Z"
+      },{
         "version": "1.2.27.0",
         "changelog": "Load all subtitle candidates; N only pre-selects; prepare sends every checked name",
         "targetAbi": "10.11.0.0",

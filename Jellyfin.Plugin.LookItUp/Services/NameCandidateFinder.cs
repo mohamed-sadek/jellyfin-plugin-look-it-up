@@ -62,6 +62,42 @@ public partial class NameCandidateFinder : INameCandidateFinder
         "know", "think", "want", "like", "take", "give", "tell", "say", "said", "ask"
     };
 
+    /// <summary>
+    /// Lowercase (or any-case) particles that appear inside real names: Vincent van Gogh, Ludwig van Beethoven.
+    /// </summary>
+    private static readonly HashSet<string> NameParticles = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "van", "von", "de", "da", "dal", "del", "della", "delle", "dei", "degli", "di", "du",
+        "la", "le", "el", "al", "bin", "ibn", "af", "av", "der", "den", "ten", "ter",
+        "y", "e", "san", "santa", "saint", "st"
+    };
+
+    /// <summary>
+    /// Terms that look capitalized but are not worth popup candidates (credits, common knowledge, demonyms).
+    /// </summary>
+    private static readonly HashSet<string> JunkOrTooCommonTerms = new(StringComparer.OrdinalIgnoreCase)
+    {
+        // Subtitle file credits / noise
+        "opensubtitles", "opensubtitle", "subtitles", "subtitle", "subs", "synced", "sync",
+        "english", "eng", "srt", "webrip", "web-dl", "bluray", "hdtv",
+        // Universal / basic knowledge — not cultural deep cuts
+        "god", "jesus", "christ", "jesus christ", "lord", "heaven", "hell", "amen",
+        "earth", "world", "moon", "sun", "sky", "sea", "ocean",
+        "man", "woman", "boy", "girl", "mom", "dad", "mum", "daddy", "mommy",
+        "love", "life", "death", "time", "truth", "money", "home", "school",
+        "america", "american", "americans", "usa", "u.s.", "u.s.a.",
+        "china", "chinese", "japan", "japanese", "france", "french", "germany", "german",
+        "italy", "italian", "spain", "spanish", "mexico", "mexican", "canada", "canadian",
+        "britain", "british", "england", "english", "russia", "russian", "india", "indian",
+        "europe", "european", "africa", "african", "asia", "asian",
+        // Filler caps often mistaken for names
+        "ok", "okay", "oh", "uh", "um", "ah", "hmm", "huh", "wow", "whoa",
+        "thud", "bang", "boom", "beep", "ring", "knock",
+        "one", "two", "three", "first", "last", "next", "right", "left",
+        "everything", "nothing", "something", "anything", "everyone", "someone",
+        "through", "without", "feeling", "playing", "winning", "office", "screaming"
+    };
+
     /// <inheritdoc />
     public IReadOnlyList<NameCandidate> Find(
         IReadOnlyList<SubtitleCue> cues,
@@ -168,7 +204,7 @@ public partial class NameCandidateFinder : INameCandidateFinder
 
         var candidates = new Dictionary<string, NameCandidate>(StringComparer.OrdinalIgnoreCase);
 
-        // Cap+Cap phrases (and longer Cap runs), first occurrence.
+        // Cap(+particle)+Cap phrases (Vincent van Gogh, Jon Voight), first occurrence.
         foreach (var group in occurrences.GroupBy(o => o.CueIndex))
         {
             var list = group.OrderBy(o => o.TokenIndex).ToList();
@@ -179,9 +215,13 @@ public partial class NameCandidateFinder : INameCandidateFinder
                 var parts = new List<string> { start.Surface };
                 var j = i + 1;
                 while (j < list.Count
-                       && list[j].TokenIndex == list[j - 1].TokenIndex + 1
-                       && AreAdjacentContentTokens(list[j - 1], list[j]))
+                       && TryExtendNamePhrase(list[j - 1], list[j], out var middleParticles))
                 {
+                    if (middleParticles is { Count: > 0 })
+                    {
+                        parts.AddRange(middleParticles);
+                    }
+
                     parts.Add(list[j].Surface);
                     j++;
                 }
@@ -208,13 +248,14 @@ public partial class NameCandidateFinder : INameCandidateFinder
                             continue;
                         }
 
-                        var tailParts = parts.Skip(p + 1).ToList();
+                        var tailParts = parts.Skip(p + 1).Where(t => !NameParticles.Contains(t)).ToList();
                         if (tailParts.Count == 0)
                         {
                             continue;
                         }
 
-                        var tailOcc = list[i + p + 1];
+                        // Approximate occurrence for the first tail Cap token.
+                        var tailOcc = list[Math.Min(i + p + 1, list.Count - 1)];
                         TryAddCandidate(
                             candidates,
                             string.Join(' ', tailParts),
@@ -373,6 +414,11 @@ public partial class NameCandidateFinder : INameCandidateFinder
             return;
         }
 
+        if (IsJunkOrTooCommon(term))
+        {
+            return;
+        }
+
         if (IsAllCapsTerm(term))
         {
             return;
@@ -456,26 +502,46 @@ public partial class NameCandidateFinder : INameCandidateFinder
         return parts.All(excludeNames.Contains);
     }
 
-    private static bool AreAdjacentContentTokens(Occurrence left, Occurrence right)
+    private static bool TryExtendNamePhrase(
+        Occurrence left,
+        Occurrence right,
+        out List<string>? middleParticles)
     {
-        // Tokens list is shared per cue; ensure no non-space content between indexes.
+        middleParticles = null;
+
+        // Tokens list is shared per cue; allow only punctuation and name particles between Caps.
         if (left.Tokens is null || !ReferenceEquals(left.Tokens, right.Tokens))
         {
             return right.TokenIndex == left.TokenIndex + 1;
         }
 
+        if (right.TokenIndex <= left.TokenIndex)
+        {
+            return false;
+        }
+
         for (var i = left.TokenIndex + 1; i < right.TokenIndex; i++)
         {
-            if (!left.Tokens[i].IsPunctuationOnly)
+            var tok = left.Tokens[i];
+            if (tok.EndsSentence || tok.BreaksPhrase)
             {
                 return false;
             }
 
-            // Hyphenated names ok; sentence / speaker-label breaks are not a phrase.
-            if (left.Tokens[i].EndsSentence || left.Tokens[i].BreaksPhrase)
+            if (tok.IsPunctuationOnly)
             {
-                return false;
+                continue;
             }
+
+            if (NameParticles.Contains(tok.Surface))
+            {
+                middleParticles ??= [];
+                middleParticles.Add(tok.Surface);
+                continue;
+            }
+
+            // Any other lowercase/content word breaks the name phrase.
+            return false;
         }
 
         return true;
@@ -612,6 +678,21 @@ public partial class NameCandidateFinder : INameCandidateFinder
 
     [GeneratedRegex(@"\s+", RegexOptions.CultureInvariant)]
     private static partial Regex WhitespaceRegex();
+
+    private static bool IsJunkOrTooCommon(string term)
+    {
+        if (JunkOrTooCommonTerms.Contains(term))
+        {
+            return true;
+        }
+
+        // "OpenSubtitles.com" / "www.OpenSubtitles.org"
+        var compact = term.Replace(".", string.Empty, StringComparison.Ordinal)
+            .Replace("-", string.Empty, StringComparison.Ordinal)
+            .Replace(" ", string.Empty, StringComparison.Ordinal);
+        return compact.Contains("opensubtitle", StringComparison.OrdinalIgnoreCase)
+               || compact.Equals("subtitles", StringComparison.OrdinalIgnoreCase);
+    }
 
     private static bool IsContractionOrDialogueParticle(string term)
     {

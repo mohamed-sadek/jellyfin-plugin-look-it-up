@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  const CLIENT_VERSION = '1.2.27.0';
+  const CLIENT_VERSION = '1.2.28.0';
   const STYLE_ID = 'lookitup-styles';
   const POPUP_ID = 'lookitup-popup';
   const SERIES_BTN_ID = 'lookitup-prepare-series-btn';

@@ -325,6 +325,12 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 }
 
                 var term = string.IsNullOrWhiteSpace(parsed.Term) ? candidate.Term : parsed.Term!.Trim();
+                if (IsTooBasicToKeep(term))
+                {
+                    _logger.LogInformation("Look it up AI kept {Term} but local filter dropped it as too basic", term);
+                    return (null, null, "too basic");
+                }
+
                 var summary = (parsed.Summary ?? string.Empty).Trim();
                 if (summary.Length == 0)
                 {
@@ -336,7 +342,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                     summary = term + ": " + summary;
                 }
 
-                summary = ClampSummary(summary, 280);
+                summary = ClampSummary(SanitizeSummary(summary, term), 280);
 
                 _logger.LogInformation(
                     "Look it up AI kept {Term} → {Canonical}: {Summary}",
@@ -393,16 +399,24 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         {
             user =
                 "Return a JSON object about this subtitle name candidate.\n" +
-                "This dialogue is from the TV show/movie \"" + show + "\".\n" +
-                "keep=true ONLY for a real-world person, place, film, brand, or cultural reference " +
-                "that a viewer might want explained — NOT fictional characters or cast from this show.\n" +
-                "keep=false if the candidate is a character, nickname, or cast member in \"" + show + "\", " +
-                "or ordinary dialogue, or not worth a popup.\n" +
+                "This dialogue is from \"" + show + "\".\n" +
+                "Goal: short popups for CULTURAL REFERENCES a typical viewer might not fully know — " +
+                "artists, historical figures, niche brands, specific places, films, songs, medical/drug names, " +
+                "historical events, subcultures, etc.\n" +
+                "keep=true ONLY if explaining it adds value.\n" +
+                "keep=false for:\n" +
+                "- characters / cast / nicknames from \"" + show + "\"\n" +
+                "- basic knowledge everyone already knows (God, Earth, Moon, Sun, America, Chinese, Man, Love, …)\n" +
+                "- demonyms or nationalities alone\n" +
+                "- religious exclamations\n" +
+                "- subtitle credits (OpenSubtitles, Subtitles)\n" +
+                "- ordinary dialogue words\n" +
                 castHint +
-                "Schema: {\"keep\":true,\"term\":\"Jon Voight\",\"kind\":\"person\",\"summary\":\"American actor known for Midnight Cowboy.\"}\n" +
+                "Schema: {\"keep\":true,\"term\":\"Vincent van Gogh\",\"kind\":\"person\",\"summary\":\"Dutch post-impressionist painter known for The Starry Night and Sunflowers.\"}\n" +
                 "kind must be one of: person, place, film, brand, other.\n" +
-                "or {\"keep\":false,\"reason\":\"character in this show\"}\n" +
-                "Summary: one or two short sentences, up to ~200 characters.\n" +
+                "or {\"keep\":false,\"reason\":\"too basic\"}\n" +
+                "Summary: 1–2 short factual sentences about who/what it is. " +
+                "Never mention the show. Never say \"not a character\", \"real-world\", \"fictional\", or that it is/isn't from the show.\n" +
                 "Show: " + show + "\n" +
                 (episode is null ? string.Empty : "Episode: " + episode + "\n") +
                 "Candidate: " + candidate.Term + "\n" +
@@ -411,9 +425,9 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         else
         {
             user =
-                "JSON only. Show \"" + show + "\". Is \"" + candidate.Term +
-                "\" a real-world reference (not a character from this show) in \"" +
-                candidate.CueText + "\"?\n" +
+                "JSON only. Candidate \"" + candidate.Term + "\" in \"" + candidate.CueText + "\".\n" +
+                "Keep only if it is a non-obvious cultural reference worth a popup (not God/Earth/America/basic words, not a show character).\n" +
+                "Summary must be factual and must never mention the show.\n" +
                 "{\"keep\":true,\"term\":\"...\",\"kind\":\"person\",\"summary\":\"...\"} or {\"keep\":false,\"reason\":\"...\"}";
         }
 
@@ -711,6 +725,54 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         return trimmed.Trim();
     }
 
+    private static string SanitizeSummary(string summary, string term)
+    {
+        if (string.IsNullOrWhiteSpace(summary))
+        {
+            return summary;
+        }
+
+        var s = summary.Trim();
+
+        // Drop meta clauses the model loves: "..., not a character from the show."
+        s = Regex.Replace(
+            s,
+            @"[,:;]?\s*(which\s+)?(is\s+)?(a\s+)?real[-\s]?world[^.]*?(from the show[^.]*?)?\.\s*",
+            " ",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        s = Regex.Replace(
+            s,
+            @"[,:;]?\s*(and\s+)?(is|isn'?t|is not|are not)?\s*(a\s+)?(fictional\s+)?character\b[^.]*\.?\s*",
+            " ",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        s = Regex.Replace(
+            s,
+            @"[,:;]?\s*not a (fictional\s+)?character\b[^.]*\.?\s*",
+            " ",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        s = Regex.Replace(
+            s,
+            @"\b(from|in) the show\b[^.]*\.?",
+            string.Empty,
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        s = Regex.Replace(s, @"\s{2,}", " ").Trim();
+        s = s.TrimStart(',', ';', ':', '-', '—', ' ').Trim();
+
+        if (s.Length == 0)
+        {
+            return term + ".";
+        }
+
+        // Ensure it still leads with the term when possible.
+        if (!s.StartsWith(term, StringComparison.OrdinalIgnoreCase)
+            && s.Length < 220)
+        {
+            s = term + ": " + char.ToUpperInvariant(s[0]) + s[1..];
+        }
+
+        return s;
+    }
+
     private static string ClampSummary(string summary, int maxChars)
     {
         if (string.IsNullOrEmpty(summary) || summary.Length <= maxChars)
@@ -808,16 +870,51 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             };
     }
 
+    private static bool IsTooBasicToKeep(string term)
+    {
+        if (string.IsNullOrWhiteSpace(term))
+        {
+            return true;
+        }
+
+        var t = term.Trim();
+        // Mirror the local finder junk list for terms AI might still keep.
+        var basic = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "god", "jesus", "christ", "jesus christ", "lord", "heaven", "hell",
+            "earth", "world", "moon", "sun", "sky", "sea", "ocean",
+            "america", "american", "americans", "usa",
+            "china", "chinese", "japan", "japanese", "france", "french",
+            "germany", "german", "italy", "italian", "spain", "spanish",
+            "britain", "british", "england", "english", "russia", "russian",
+            "india", "indian", "europe", "european", "africa", "african", "asia", "asian",
+            "opensubtitles", "subtitles", "subtitle",
+            "man", "woman", "boy", "girl", "love", "life", "death", "time", "home", "school"
+        };
+
+        if (basic.Contains(t))
+        {
+            return true;
+        }
+
+        var compact = t.Replace(".", string.Empty, StringComparison.Ordinal)
+            .Replace(" ", string.Empty, StringComparison.Ordinal);
+        return compact.Contains("opensubtitle", StringComparison.OrdinalIgnoreCase);
+    }
+
     private static string NormalizeKind(string? kind)
     {
         var value = (kind ?? string.Empty).Trim().ToLowerInvariant();
         return value switch
         {
-            "person" or "people" or "actor" or "actress" => "person",
-            "place" or "location" or "city" or "country" => "place",
-            "film" or "movie" or "show" or "tv" => "film",
-            "brand" or "company" or "org" or "organization" => "brand",
-            _ => string.IsNullOrWhiteSpace(value) ? "other" : value
+            "person" or "people" or "actor" or "actress" or "artist" or "author" or "writer" => "person",
+            "place" or "location" or "city" or "country" or "planet" or "region" => "place",
+            "film" or "movie" or "show" or "tv" or "series" or "song" or "album" => "film",
+            "brand" or "company" or "org" or "organization" or "product" or "drug" or "medication" => "brand",
+            "event" or "history" or "historical" or "war" or "award" or "condition" or "disorder"
+                or "group" or "people-group" or "culture" or "subculture"
+                or "other" or "real-world reference" or "reference" => "other",
+            _ => "other"
         };
     }
 }
