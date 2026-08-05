@@ -1,9 +1,10 @@
 (function () {
   'use strict';
 
-  const CLIENT_VERSION = '1.2.28.0';
+  const CLIENT_VERSION = '1.2.29.0';
   const STYLE_ID = 'lookitup-styles';
-  const POPUP_ID = 'lookitup-popup';
+  const STACK_ID = 'lookitup-stack';
+  const POPUP_ID = 'lookitup-popup'; // legacy single-popup id (removed on upgrade)
   const SERIES_BTN_ID = 'lookitup-prepare-series-btn';
   const SERIES_STATUS_ID = 'lookitup-prepare-series-status';
   const POLL_MS = 200;
@@ -11,6 +12,7 @@
   const DEFAULT_POPUP_DELAY_MS = 1000;
   const MIN_MATCH_WINDOW_MS = 8000;
   const SETTINGS_REFRESH_MS = 5000;
+  const MAX_STACKED_POPUPS = 3;
   const JUNK_TERMS = new Set([
     'all', 'new', 'seem', 'consumer', 'yeah', 'heh', 'done', 'away', 'let', 'now',
     'take', 'lie', 'thud', 'street', 'pop', 'car', 'limited', 'tim', 'vic', 'mom',
@@ -29,8 +31,8 @@
   let currentItemId = null;
   let lastShownTerm = null;
   let shownAtMs = 0;
-  let hideTimer = null;
-  let pendingShowTimer = null;
+  let hideTimer = null; // legacy; per-card timers live on card elements
+  let pendingShowTimers = new Map(); // term -> timeout id
   let popupDurationMs = DEFAULT_POPUP_MS;
   let popupDelayMs = DEFAULT_POPUP_DELAY_MS;
   let popupStyle = {
@@ -89,20 +91,20 @@
 
     switch (key) {
       case 'bottomleft':
-        return { top: 'auto', right: 'auto', bottom: edgeCss, left: sideCss, transform: 'none' };
+        return { top: 'auto', right: 'auto', bottom: edgeCss, left: sideCss, transform: 'none', align: 'flex-start' };
       case 'bottomright':
-        return { top: 'auto', right: sideCss, bottom: edgeCss, left: 'auto', transform: 'none' };
+        return { top: 'auto', right: sideCss, bottom: edgeCss, left: 'auto', transform: 'none', align: 'flex-end' };
       case 'topcenter':
-        return { top: edgeCss, right: 'auto', bottom: 'auto', left: '50%', transform: 'translateX(-50%)' };
+        return { top: edgeCss, right: 'auto', bottom: 'auto', left: '50%', transform: 'translateX(-50%)', align: 'center' };
       case 'topleft':
-        return { top: edgeCss, right: 'auto', bottom: 'auto', left: sideCss, transform: 'none' };
+        return { top: edgeCss, right: 'auto', bottom: 'auto', left: sideCss, transform: 'none', align: 'flex-start' };
       case 'topright':
-        return { top: edgeCss, right: sideCss, bottom: 'auto', left: 'auto', transform: 'none' };
+        return { top: edgeCss, right: sideCss, bottom: 'auto', left: 'auto', transform: 'none', align: 'flex-end' };
       case 'center':
-        return { top: '50%', right: 'auto', bottom: 'auto', left: '50%', transform: 'translate(-50%, -50%)' };
+        return { top: '50%', right: 'auto', bottom: 'auto', left: '50%', transform: 'translate(-50%, -50%)', align: 'center' };
       case 'bottomcenter':
       default:
-        return { top: 'auto', right: 'auto', bottom: edgeCss, left: '50%', transform: 'translateX(-50%)' };
+        return { top: 'auto', right: 'auto', bottom: edgeCss, left: '50%', transform: 'translateX(-50%)', align: 'center' };
     }
   }
 
@@ -162,27 +164,31 @@
     }
   }
 
-  function applyInlinePopupChrome(popup) {
+  function applyInlineStackChrome(stack) {
     const pos = placementCss(popupStyle.placement, popupStyle.edgeOffsetPct);
+    stack.style.setProperty('position', 'fixed', 'important');
+    stack.style.setProperty('top', pos.top, 'important');
+    stack.style.setProperty('right', pos.right, 'important');
+    stack.style.setProperty('bottom', pos.bottom, 'important');
+    stack.style.setProperty('left', pos.left, 'important');
+    stack.style.setProperty('transform', pos.transform, 'important');
+    stack.style.setProperty('z-index', '2147483647', 'important');
+    stack.style.setProperty('align-items', pos.align || 'center', 'important');
+  }
+
+  function applyInlineCardChrome(card) {
     const fontPx = popupStyle.fontSizePx;
-    popup.style.setProperty('position', 'fixed', 'important');
-    popup.style.setProperty('top', pos.top, 'important');
-    popup.style.setProperty('right', pos.right, 'important');
-    popup.style.setProperty('bottom', pos.bottom, 'important');
-    popup.style.setProperty('left', pos.left, 'important');
-    popup.style.setProperty('transform', pos.transform, 'important');
-    popup.style.setProperty('z-index', '2147483647', 'important');
-    popup.style.setProperty('background', popupStyle.backgroundColor, 'important');
-    popup.style.setProperty('color', popupStyle.textColor, 'important');
-    popup.style.setProperty('font-size', fontPx + 'px', 'important');
-    popup.style.setProperty('opacity', '1', 'important');
-    popup.style.setProperty('visibility', 'visible', 'important');
-    const termEl = popup.querySelector('.lookitup-term');
+    card.style.setProperty('background', popupStyle.backgroundColor, 'important');
+    card.style.setProperty('color', popupStyle.textColor, 'important');
+    card.style.setProperty('font-size', fontPx + 'px', 'important');
+    card.style.setProperty('opacity', '1', 'important');
+    card.style.setProperty('visibility', 'visible', 'important');
+    const termEl = card.querySelector('.lookitup-term');
     if (termEl) {
       termEl.style.setProperty('font-size', Math.round(fontPx * 1.1) + 'px', 'important');
       termEl.style.setProperty('color', popupStyle.textColor, 'important');
     }
-    const bodyEl = popup.querySelector('.lookitup-body');
+    const bodyEl = card.querySelector('.lookitup-body');
     if (bodyEl) {
       bodyEl.style.setProperty('color', popupStyle.textColor, 'important');
     }
@@ -203,7 +209,7 @@
     const bg = popupStyle.backgroundColor;
 
     style.textContent = `
-      #${POPUP_ID} {
+      #${STACK_ID} {
         position: fixed !important;
         top: ${pos.top} !important;
         right: ${pos.right} !important;
@@ -211,6 +217,16 @@
         left: ${pos.left} !important;
         transform: ${pos.transform} !important;
         z-index: 2147483647 !important;
+        display: flex !important;
+        flex-direction: column-reverse !important;
+        gap: 10px !important;
+        align-items: ${pos.align || 'center'} !important;
+        max-width: min(560px, 92vw) !important;
+        pointer-events: none !important;
+        width: max-content !important;
+      }
+      #${STACK_ID} .lookitup-card {
+        position: relative !important;
         max-width: min(560px, 92vw) !important;
         width: max-content !important;
         padding: 16px 20px !important;
@@ -227,17 +243,17 @@
         text-align: left !important;
         display: block !important;
       }
-      #${POPUP_ID}.visible {
+      #${STACK_ID} .lookitup-card.visible {
         opacity: 1 !important;
         visibility: visible !important;
         pointer-events: auto !important;
       }
-      #${POPUP_ID} .lookitup-row {
+      #${STACK_ID} .lookitup-row {
         display: flex !important;
         gap: 12px !important;
         align-items: flex-start !important;
       }
-      #${POPUP_ID} .lookitup-photo {
+      #${STACK_ID} .lookitup-photo {
         flex: 0 0 auto !important;
         width: 64px !important;
         height: 64px !important;
@@ -245,18 +261,18 @@
         object-fit: cover !important;
         background: rgba(255, 255, 255, 0.08) !important;
       }
-      #${POPUP_ID} .lookitup-copy {
+      #${STACK_ID} .lookitup-copy {
         flex: 1 1 auto !important;
         min-width: 0 !important;
       }
-      #${POPUP_ID} .lookitup-term {
+      #${STACK_ID} .lookitup-term {
         display: block !important;
         font-weight: 800 !important;
         font-size: ${titlePx}px !important;
         margin-bottom: 6px !important;
         color: ${text} !important;
       }
-      #${POPUP_ID} .lookitup-body {
+      #${STACK_ID} .lookitup-body {
         display: block !important;
         font-weight: 500 !important;
         color: ${text} !important;
@@ -309,30 +325,67 @@
     );
   }
 
-  function ensurePopup() {
+  function ensureStack() {
     ensureStyles();
-    let popup = document.getElementById(POPUP_ID);
     const root = getMountRoot() || document.body;
-
-    if (!popup) {
-      popup = document.createElement('div');
-      popup.id = POPUP_ID;
-      popup.setAttribute('role', 'status');
-      popup.setAttribute('aria-live', 'polite');
-      root.appendChild(popup);
-    } else if (popup.parentElement !== root) {
-      root.appendChild(popup);
+    // Drop legacy single popup if present.
+    const legacy = document.getElementById(POPUP_ID);
+    if (legacy) {
+      legacy.remove();
     }
 
-    return popup;
+    let stack = document.getElementById(STACK_ID);
+    if (!stack) {
+      stack = document.createElement('div');
+      stack.id = STACK_ID;
+      stack.setAttribute('role', 'status');
+      stack.setAttribute('aria-live', 'polite');
+      root.appendChild(stack);
+    } else if (stack.parentElement !== root) {
+      root.appendChild(stack);
+    }
+
+    applyInlineStackChrome(stack);
+    return stack;
+  }
+
+  function clearPendingShowTimers() {
+    for (const timer of pendingShowTimers.values()) {
+      clearTimeout(timer);
+    }
+    pendingShowTimers.clear();
+  }
+
+  function hideCard(card) {
+    if (!card) {
+      return;
+    }
+    if (card._lookitupHideTimer) {
+      clearTimeout(card._lookitupHideTimer);
+      card._lookitupHideTimer = null;
+    }
+    card.classList.remove('visible');
+    card.style.opacity = '0';
+    card.style.visibility = 'hidden';
+    const term = card.getAttribute('data-term') || '';
+    setTimeout(() => {
+      if (card.parentElement) {
+        card.remove();
+      }
+      if (lastShownTerm === term) {
+        const top = document.querySelector('#' + STACK_ID + ' .lookitup-card.visible');
+        lastShownTerm = top ? top.getAttribute('data-term') : null;
+      }
+    }, 180);
   }
 
   function hidePopup() {
-    const popup = document.getElementById(POPUP_ID);
-    if (popup) {
-      popup.classList.remove('visible');
-      popup.style.opacity = '0';
-      popup.style.visibility = 'hidden';
+    clearPendingShowTimers();
+    const stack = document.getElementById(STACK_ID);
+    if (stack) {
+      for (const card of [...stack.querySelectorAll('.lookitup-card')]) {
+        hideCard(card);
+      }
     }
     lastShownTerm = null;
     shownAtMs = 0;
@@ -340,6 +393,14 @@
       clearTimeout(hideTimer);
       hideTimer = null;
     }
+  }
+
+  function visibleCardCount() {
+    const stack = document.getElementById(STACK_ID);
+    if (!stack) {
+      return 0;
+    }
+    return stack.querySelectorAll('.lookitup-card.visible').length;
   }
 
   function readProp(obj, camel, pascal) {
@@ -362,7 +423,7 @@
   }
 
   function showPopup(annotation) {
-    const popup = ensurePopup();
+    const stack = ensureStack();
     const term = String(readProp(annotation, 'term', 'Term') || '');
     const summary = String(readProp(annotation, 'summary', 'Summary') || '');
     const url = readProp(annotation, 'url', 'Url');
@@ -373,14 +434,28 @@
       return;
     }
 
-    // Already on screen for this term ? do not refresh the hide timer.
-    if (lastShownTerm === term && popup.classList.contains('visible')) {
+    // Already on screen for this term ? keep it; do not reset its timer.
+    const existing = [...stack.querySelectorAll('.lookitup-card.visible')]
+      .find((c) => (c.getAttribute('data-term') || '') === term);
+    if (existing) {
       return;
+    }
+
+    // Cap stack size: drop oldest visible card.
+    while (visibleCardCount() >= MAX_STACKED_POPUPS) {
+      const oldest = stack.querySelector('.lookitup-card.visible');
+      if (!oldest) {
+        break;
+      }
+      hideCard(oldest);
     }
 
     lastShownTerm = term;
     shownAtMs = Date.now();
-    popup.innerHTML = '';
+
+    const card = document.createElement('div');
+    card.className = 'lookitup-card';
+    card.setAttribute('data-term', term);
 
     const row = document.createElement('div');
     row.className = 'lookitup-row';
@@ -422,18 +497,16 @@
     copy.appendChild(body);
 
     row.appendChild(copy);
-    popup.appendChild(row);
+    card.appendChild(row);
+    // Newest on top visually (column-reverse): append so it becomes the flex "first"/top.
+    stack.appendChild(card);
 
-    popup.classList.remove('visible');
-    void popup.offsetWidth;
-    popup.classList.add('visible');
-    applyInlinePopupChrome(popup);
+    void card.offsetWidth;
+    card.classList.add('visible');
+    applyInlineCardChrome(card);
 
-    if (hideTimer) {
-      clearTimeout(hideTimer);
-    }
     const duration = Math.max(1000, Number(popupDurationMs) || DEFAULT_POPUP_MS);
-    hideTimer = setTimeout(() => hidePopup(), duration);
+    card._lookitupHideTimer = setTimeout(() => hideCard(card), duration);
     console.info('[Look it up] name triggered', {
       term: term,
       summary: summary,
@@ -442,6 +515,7 @@
       proxiedImage: proxiedImage || null,
       durationMs: duration,
       durationSec: Math.round(duration / 1000),
+      stacked: visibleCardCount(),
       fontSizePx: popupStyle.fontSizePx,
       placement: popupStyle.placement,
       startMs: readProp(annotation, 'startMs', 'StartMs'),
@@ -793,7 +867,7 @@
   }
 
   function tryShowForCurrentTime() {
-    ensurePopup();
+    ensureStack();
     const now = getCurrentTimeMs();
     if (now == null || !annotations.length) {
       return;
@@ -821,44 +895,45 @@
       return;
     }
 
-    const active = matches.find((m) => !shownThisPass.has(m.term));
-    if (!active) {
+    const toShow = matches.filter((m) => !shownThisPass.has(m.term));
+    if (!toShow.length) {
       return;
     }
 
-    shownThisPass.add(active.term);
-    if (lastCueLogTerm !== active.term) {
-      lastCueLogTerm = active.term;
-      console.info('[Look it up] cue match ? search/popup', {
-        term: active.term,
-        playbackMs: now,
-        at: formatClock(now),
-        window: [active.startMs, annotationWindowEnd(active)],
-        delayMs: popupDelayMs,
-        durationMs: popupDurationMs
-      });
-    }
-
-    if (pendingShowTimer) {
-      clearTimeout(pendingShowTimer);
-      pendingShowTimer = null;
-    }
-
-    const delay = Math.max(0, Number(popupDelayMs) || 0);
-    const fire = () => {
-      pendingShowTimer = null;
-      const t = getCurrentTimeMs();
-      if (t == null || t < active.startMs || t > annotationWindowEnd(active)) {
-        shownThisPass.delete(active.term);
-        return;
+    for (const active of toShow) {
+      shownThisPass.add(active.term);
+      if (lastCueLogTerm !== active.term) {
+        lastCueLogTerm = active.term;
+        console.info('[Look it up] cue match ? search/popup', {
+          term: active.term,
+          playbackMs: now,
+          at: formatClock(now),
+          window: [active.startMs, annotationWindowEnd(active)],
+          delayMs: popupDelayMs,
+          durationMs: popupDurationMs
+        });
       }
-      showPopup(active);
-    };
 
-    if (delay <= 0) {
-      fire();
-    } else {
-      pendingShowTimer = setTimeout(fire, delay);
+      if (pendingShowTimers.has(active.term)) {
+        continue;
+      }
+
+      const delay = Math.max(0, Number(popupDelayMs) || 0);
+      const fire = () => {
+        pendingShowTimers.delete(active.term);
+        const t = getCurrentTimeMs();
+        if (t == null || t < active.startMs || t > annotationWindowEnd(active)) {
+          shownThisPass.delete(active.term);
+          return;
+        }
+        showPopup(active);
+      };
+
+      if (delay <= 0) {
+        fire();
+      } else {
+        pendingShowTimers.set(active.term, setTimeout(fire, delay));
+      }
     }
   }
 
@@ -926,7 +1001,8 @@
         nextAtMs: next && next.startMs,
         nextAt: next && formatClock(next.startMs),
         nextInSec: next && now != null ? Math.max(0, Math.round((next.startMs - now) / 1000)) : null,
-        popupVisible: !!document.getElementById(POPUP_ID)?.classList.contains('visible')
+        popupVisible: visibleCardCount() > 0,
+        stackedPopups: visibleCardCount()
       });
     }
 
@@ -977,7 +1053,7 @@
   }
 
   function start() {
-    ensurePopup();
+    ensureStack();
     ensureStyles();
     setInterval(tick, POLL_MS);
     setInterval(syncSeriesPrepareUi, 1500);

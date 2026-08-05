@@ -205,73 +205,27 @@ public partial class NameCandidateFinder : INameCandidateFinder
         var candidates = new Dictionary<string, NameCandidate>(StringComparer.OrdinalIgnoreCase);
 
         // Cap(+particle)+Cap phrases (Vincent van Gogh, Jon Voight), first occurrence.
+        // Skip dialogue particles as phrase heads so "Uh… Vincent van Gogh" → Vincent van Gogh, not Uh….
         foreach (var group in occurrences.GroupBy(o => o.CueIndex))
         {
-            var list = group.OrderBy(o => o.TokenIndex).ToList();
-            var i = 0;
-            while (i < list.Count)
-            {
-                var start = list[i];
-                var parts = new List<string> { start.Surface };
-                var j = i + 1;
-                while (j < list.Count
-                       && TryExtendNamePhrase(list[j - 1], list[j], out var middleParticles))
-                {
-                    if (middleParticles is { Count: > 0 })
-                    {
-                        parts.AddRange(middleParticles);
-                    }
-
-                    parts.Add(list[j].Surface);
-                    j++;
-                }
-
-                if (parts.Count >= 2)
-                {
-                    var term = string.Join(' ', parts);
-                    TryAddCandidate(
-                        candidates,
-                        term,
-                        start,
-                        tokenStats,
-                        titleNorm,
-                        excludeNames,
-                        minLength,
-                        scoreBonus: 40,
-                        reason: "cap-phrase");
-
-                    // "Jon Voight's LeBaron" → also keep "LeBaron" (brand/object after 's).
-                    for (var p = 0; p < parts.Count - 1; p++)
-                    {
-                        if (!IsPossessiveToken(parts[p]))
-                        {
-                            continue;
-                        }
-
-                        var tailParts = parts.Skip(p + 1).Where(t => !NameParticles.Contains(t)).ToList();
-                        if (tailParts.Count == 0)
-                        {
-                            continue;
-                        }
-
-                        // Approximate occurrence for the first tail Cap token.
-                        var tailOcc = list[Math.Min(i + p + 1, list.Count - 1)];
-                        TryAddCandidate(
-                            candidates,
-                            string.Join(' ', tailParts),
-                            tailOcc,
-                            tokenStats,
-                            titleNorm,
-                            excludeNames,
-                            minLength,
-                            scoreBonus: 35,
-                            reason: "possessive-tail");
-                    }
-                }
-
-                i = Math.Max(i + 1, j);
-            }
+            AddCapPhrasesFromOccurrences(
+                group.OrderBy(o => o.TokenIndex).ToList(),
+                candidates,
+                tokenStats,
+                titleNorm,
+                excludeNames,
+                minLength);
         }
+
+        // Subtitle wraps: "Vincent Van" / "Gogh." on consecutive cues.
+        AddCrossCueParticlePhrases(
+            cues,
+            occurrences,
+            candidates,
+            tokenStats,
+            titleNorm,
+            excludeNames,
+            minLength);
 
         // Single tokens with mid-sentence capitalization evidence.
         foreach (var occ in occurrences)
@@ -400,6 +354,26 @@ public partial class NameCandidateFinder : INameCandidateFinder
             return;
         }
 
+        // Strip leading dialogue Caps glued onto names ("Uh Vincent van Gogh").
+        var split = term.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList();
+        while (split.Count > 0
+               && FunctionWords.Contains(split[0])
+               && !NameParticles.Contains(split[0]))
+        {
+            split.RemoveAt(0);
+        }
+
+        if (split.Count == 0)
+        {
+            return;
+        }
+
+        term = string.Join(' ', split);
+        if (term.Length < minLength)
+        {
+            return;
+        }
+
         // Never keep multi-clause dialogue fragments ("Wonderful, Hank …").
         if (term.Contains(',', StringComparison.Ordinal)
             || term.Contains(';', StringComparison.Ordinal)
@@ -500,6 +474,297 @@ public partial class NameCandidateFinder : INameCandidateFinder
         }
 
         return parts.All(excludeNames.Contains);
+    }
+
+    private static void AddCapPhrasesFromOccurrences(
+        IReadOnlyList<Occurrence> list,
+        Dictionary<string, NameCandidate> candidates,
+        Dictionary<string, TokenStats> tokenStats,
+        string? titleNorm,
+        IReadOnlySet<string> excludeNames,
+        int minLength)
+    {
+        var i = 0;
+        while (i < list.Count)
+        {
+            // "Uh / And / But … Name" — dialogue Caps are not name heads.
+            if (FunctionWords.Contains(list[i].Surface))
+            {
+                i++;
+                continue;
+            }
+
+            var start = list[i];
+            var parts = new List<string> { start.Surface };
+            var j = i + 1;
+            while (j < list.Count
+                   && TryExtendNamePhrase(list[j - 1], list[j], out var middleParticles))
+            {
+                if (middleParticles is { Count: > 0 })
+                {
+                    parts.AddRange(middleParticles);
+                }
+
+                parts.Add(list[j].Surface);
+                j++;
+            }
+
+            if (parts.Count >= 2)
+            {
+                TryAddCandidate(
+                    candidates,
+                    string.Join(' ', parts),
+                    start,
+                    tokenStats,
+                    titleNorm,
+                    excludeNames,
+                    minLength,
+                    scoreBonus: 40,
+                    reason: "cap-phrase");
+
+                // "Jon Voight's LeBaron" → also keep "LeBaron" (brand/object after 's).
+                for (var p = 0; p < parts.Count - 1; p++)
+                {
+                    if (!IsPossessiveToken(parts[p]))
+                    {
+                        continue;
+                    }
+
+                    var tailParts = parts.Skip(p + 1).Where(t => !NameParticles.Contains(t)).ToList();
+                    if (tailParts.Count == 0)
+                    {
+                        continue;
+                    }
+
+                    var tailOcc = list[Math.Min(i + p + 1, list.Count - 1)];
+                    TryAddCandidate(
+                        candidates,
+                        string.Join(' ', tailParts),
+                        tailOcc,
+                        tokenStats,
+                        titleNorm,
+                        excludeNames,
+                        minLength,
+                        scoreBonus: 35,
+                        reason: "possessive-tail");
+                }
+            }
+
+            i = Math.Max(i + 1, j);
+        }
+    }
+
+    /// <summary>
+    /// Joins Cap(+particle) at the end of one cue with Cap(s) at the start of the next
+    /// when a wrap splits names like "Vincent Van" / "Gogh.".
+    /// </summary>
+    private static void AddCrossCueParticlePhrases(
+        IReadOnlyList<SubtitleCue> cues,
+        IReadOnlyList<Occurrence> occurrences,
+        Dictionary<string, NameCandidate> candidates,
+        Dictionary<string, TokenStats> tokenStats,
+        string? titleNorm,
+        IReadOnlySet<string> excludeNames,
+        int minLength)
+    {
+        const long maxGapMs = 2500;
+        var byCue = occurrences
+            .GroupBy(o => o.CueIndex)
+            .ToDictionary(g => g.Key, g => g.OrderBy(o => o.TokenIndex).ToList());
+
+        for (var cueIndex = 0; cueIndex < cues.Count - 1; cueIndex++)
+        {
+            if (!byCue.TryGetValue(cueIndex, out var leftCaps) || leftCaps.Count == 0)
+            {
+                continue;
+            }
+
+            if (!byCue.TryGetValue(cueIndex + 1, out var rightCaps) || rightCaps.Count == 0)
+            {
+                continue;
+            }
+
+            if (cues[cueIndex + 1].StartMs - cues[cueIndex].EndMs > maxGapMs)
+            {
+                continue;
+            }
+
+            var leftTokens = leftCaps[0].Tokens;
+            var rightTokens = rightCaps[0].Tokens;
+            if (leftTokens is null || rightTokens is null)
+            {
+                continue;
+            }
+
+            var lastLeft = leftCaps[^1];
+            if (FunctionWords.Contains(lastLeft.Surface) && !NameParticles.Contains(lastLeft.Surface))
+            {
+                continue;
+            }
+
+            // No sentence end after the last Cap on the left cue.
+            var leftEnded = false;
+            for (var t = lastLeft.TokenIndex + 1; t < leftTokens.Count; t++)
+            {
+                if (leftTokens[t].EndsSentence)
+                {
+                    leftEnded = true;
+                    break;
+                }
+            }
+
+            if (leftEnded)
+            {
+                continue;
+            }
+
+            // Left must end on a name particle (TitleCase "Van" or lowercase "van" after Cap).
+            var trailingParticles = new List<string>();
+            if (NameParticles.Contains(lastLeft.Surface))
+            {
+                // particle already included as Cap occurrence
+            }
+            else
+            {
+                for (var t = lastLeft.TokenIndex + 1; t < leftTokens.Count; t++)
+                {
+                    var tok = leftTokens[t];
+                    if (tok.IsPunctuationOnly)
+                    {
+                        if (tok.EndsSentence || tok.BreaksPhrase)
+                        {
+                            trailingParticles.Clear();
+                            break;
+                        }
+
+                        continue;
+                    }
+
+                    if (NameParticles.Contains(tok.Surface))
+                    {
+                        trailingParticles.Add(tok.Surface);
+                        continue;
+                    }
+
+                    trailingParticles.Clear();
+                    break;
+                }
+
+                if (trailingParticles.Count == 0)
+                {
+                    continue;
+                }
+            }
+
+            // Collect contiguous Cap(+particle) run ending at lastLeft, skipping function heads.
+            var leftRun = new List<Occurrence>();
+            for (var i = leftCaps.Count - 1; i >= 0; i--)
+            {
+                var occ = leftCaps[i];
+                if (leftRun.Count == 0)
+                {
+                    leftRun.Add(occ);
+                    continue;
+                }
+
+                if (!TryExtendNamePhrase(occ, leftRun[0], out _))
+                {
+                    break;
+                }
+
+                leftRun.Insert(0, occ);
+            }
+
+            while (leftRun.Count > 0 && FunctionWords.Contains(leftRun[0].Surface)
+                                     && !NameParticles.Contains(leftRun[0].Surface))
+            {
+                leftRun.RemoveAt(0);
+            }
+
+            if (leftRun.Count == 0)
+            {
+                continue;
+            }
+
+            var parts = new List<string>();
+            for (var i = 0; i < leftRun.Count; i++)
+            {
+                if (i > 0)
+                {
+                    if (!TryExtendNamePhrase(leftRun[i - 1], leftRun[i], out var mid))
+                    {
+                        parts.Clear();
+                        break;
+                    }
+
+                    if (mid is { Count: > 0 })
+                    {
+                        parts.AddRange(mid);
+                    }
+                }
+
+                parts.Add(leftRun[i].Surface);
+            }
+
+            if (parts.Count == 0)
+            {
+                continue;
+            }
+
+            parts.AddRange(trailingParticles);
+
+            var rightStart = rightCaps[0];
+            if (FunctionWords.Contains(rightStart.Surface))
+            {
+                continue;
+            }
+
+            // Next cue should start with Cap (optionally after punctuation only).
+            for (var t = 0; t < rightStart.TokenIndex; t++)
+            {
+                var tok = rightTokens[t];
+                if (tok.IsPunctuationOnly)
+                {
+                    continue;
+                }
+
+                // Content before first Cap → not a wrap continuation.
+                goto SkipCue;
+            }
+
+            parts.Add(rightStart.Surface);
+            for (var rj = 1; rj < rightCaps.Count; rj++)
+            {
+                if (!TryExtendNamePhrase(rightCaps[rj - 1], rightCaps[rj], out var midRight))
+                {
+                    break;
+                }
+
+                if (midRight is { Count: > 0 })
+                {
+                    parts.AddRange(midRight);
+                }
+
+                parts.Add(rightCaps[rj].Surface);
+            }
+
+            if (parts.Count >= 2)
+            {
+                TryAddCandidate(
+                    candidates,
+                    string.Join(' ', parts),
+                    leftRun[0],
+                    tokenStats,
+                    titleNorm,
+                    excludeNames,
+                    minLength,
+                    scoreBonus: 45,
+                    reason: "cap-phrase-wrap");
+            }
+
+            SkipCue:
+            ;
+        }
     }
 
     private static bool TryExtendNamePhrase(
