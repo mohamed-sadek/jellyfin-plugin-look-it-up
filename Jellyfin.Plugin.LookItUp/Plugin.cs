@@ -55,4 +55,18 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
             }
         ];
     }
+
+    /// <inheritdoc />
+    public override void UpdateConfiguration(BasePluginConfiguration configuration)
+    {
+        if (configuration is PluginConfiguration incoming
+            && string.IsNullOrWhiteSpace(incoming.AiApiKey)
+            && !string.IsNullOrWhiteSpace(Configuration.AiApiKey))
+        {
+            // Config UI leaves the key field blank on purpose; never wipe a saved key.
+            incoming.AiApiKey = Configuration.AiApiKey;
+        }
+
+        base.UpdateConfiguration(configuration);
+    }
 }

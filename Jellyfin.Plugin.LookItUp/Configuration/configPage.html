@@ -182,8 +182,8 @@
                     </div>
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="txtAiApiKey">AI API key</label>
-                        <input id="txtAiApiKey" type="password" is="emby-input" autocomplete="off" />
-                        <div class="fieldDescription">Leave blank to keep the existing key. Groq: console.groq.com/keys · OpenAI: platform.openai.com/api-keys · OpenRouter: openrouter.ai/keys</div>
+                        <input id="txtAiApiKey" type="password" is="emby-input" autocomplete="new-password" data-lpignore="true" data-1p-ignore="true" readonly onfocus="this.removeAttribute('readonly');" />
+                        <div class="fieldDescription">Leave blank to keep the existing key. Only paste a new key when replacing it. Groq: console.groq.com/keys · OpenAI: platform.openai.com/api-keys · OpenRouter: openrouter.ai/keys</div>
                     </div>
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="txtAiModel">AI model</label>
@@ -210,11 +210,11 @@
                     </p>
                     <pre style="white-space:pre-wrap;word-break:break-all;background:rgba(0,0,0,.08);padding:12px;border-radius:8px;">(function () {
   var s = document.createElement('script');
-  s.src = '/LookItUp/script.js?v=1.2.16';
+  s.src = '/LookItUp/script.js?v=1.2.17';
   s.async = true;
   document.head.appendChild(s);
 })();</pre>
-                    <div class="fieldDescription">Hard-refresh after saving. Console should show <code>overlay ready 1.2.16.0</code> and <code>popup settings applied</code>.</div>
+                    <div class="fieldDescription">Hard-refresh after saving. Console should show <code>overlay ready 1.2.17.0</code> and <code>popup settings applied</code>.</div>
 
                     <div>
                         <button is="emby-button" type="submit" class="raised button-submit block emby-button">
@@ -486,10 +486,11 @@
                         var provider = config.AiProvider || 'Groq';
                         document.querySelector('#selAiProvider').value = provider;
                         document.querySelector('#txtAiApiKey').value = '';
-                        document.querySelector('#txtAiApiKey').placeholder = config.AiApiKey ? '(saved — enter new key to replace)' : '(not set)';
-                        document.querySelector('#txtAiModel').value = config.AiModel || 'openai/gpt-oss-20b';
-                        document.querySelector('#txtAiBaseUrl').value = config.AiBaseUrl || 'https://api.groq.com/openai/v1';
-                        document.querySelector('#txtAiNamesPerPrepare').value = config.AiNamesPerPrepare || 5;
+                        var hasKey = !!(config.AiApiKey || config.aiApiKey);
+                        document.querySelector('#txtAiApiKey').placeholder = hasKey ? '(saved — leave blank to keep)' : '(not set)';
+                        document.querySelector('#txtAiModel').value = config.AiModel || config.aiModel || 'openai/gpt-oss-20b';
+                        document.querySelector('#txtAiBaseUrl').value = config.AiBaseUrl || config.aiBaseUrl || 'https://api.groq.com/openai/v1';
+                        document.querySelector('#txtAiNamesPerPrepare').value = config.AiNamesPerPrepare || config.aiNamesPerPrepare || 5;
                         Dashboard.hideLoadingMsg();
                         refreshPrepareStatus();
                     });
@@ -544,9 +545,13 @@
                         config.AiModel = document.querySelector('#txtAiModel').value || 'openai/gpt-oss-20b';
                         config.AiBaseUrl = document.querySelector('#txtAiBaseUrl').value || 'https://api.groq.com/openai/v1';
                         config.AiNamesPerPrepare = parseInt(document.querySelector('#txtAiNamesPerPrepare').value, 10) || 5;
-                        var newKey = document.querySelector('#txtAiApiKey').value;
-                        if (newKey) {
+                        var newKey = (document.querySelector('#txtAiApiKey').value || '').trim();
+                        // Never send blank/whitespace — preserves saved key (and blocks password-manager junk overwrites of empty field).
+                        if (newKey.length >= 8) {
                             config.AiApiKey = newKey;
+                        } else {
+                            delete config.AiApiKey;
+                            delete config.aiApiKey;
                         }
                         ApiClient.updatePluginConfiguration(LookItUpConfig.pluginUniqueId, config).then(function (result) {
                             Dashboard.processPluginConfigurationUpdateResult(result);
