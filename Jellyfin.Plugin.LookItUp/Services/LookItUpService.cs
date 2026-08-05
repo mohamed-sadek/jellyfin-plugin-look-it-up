@@ -225,6 +225,129 @@ public class LookItUpService : ILookItUpService
         return exclude;
     }
 
+    /// <summary>
+    /// Picks AI verify targets, preferring earlier shorter Cap+Cap forms over later long phrases
+    /// (e.g. "Jon Voight" @ 0:59 over "Jon Voight's LeBaron" @ 2:31).
+    /// </summary>
+    private static List<NameCandidate> SelectAiBatch(IReadOnlyList<NameCandidate> ranked, int limit)
+    {
+        var batch = new List<NameCandidate>(limit);
+        var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var candidate in ranked)
+        {
+            if (batch.Count >= limit)
+            {
+                break;
+            }
+
+            var preferred = PreferEarlierShorterForm(candidate, ranked);
+            if (!used.Add(preferred.Term))
+            {
+                continue;
+            }
+
+            batch.Add(preferred);
+        }
+
+        return batch.OrderBy(c => c.StartMs).ToList();
+    }
+
+    private static NameCandidate PreferEarlierShorterForm(
+        NameCandidate candidate,
+        IReadOnlyList<NameCandidate> pool)
+    {
+        var parts = candidate.Term.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 3)
+        {
+            return candidate;
+        }
+
+        var head2 = parts[0] + " " + StripPossessive(parts[1]);
+        NameCandidate? best = null;
+        foreach (var other in pool)
+        {
+            if (!other.Term.Equals(head2, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (other.StartMs <= candidate.StartMs && (best is null || other.StartMs < best.StartMs))
+            {
+                best = other;
+            }
+        }
+
+        return best ?? candidate;
+    }
+
+    private static string StripPossessive(string token)
+    {
+        if (token.EndsWith("'s", StringComparison.OrdinalIgnoreCase)
+            || token.EndsWith("’s", StringComparison.OrdinalIgnoreCase))
+        {
+            return token[..^2];
+        }
+
+        if (token.EndsWith("'", StringComparison.Ordinal) || token.EndsWith("’", StringComparison.Ordinal))
+        {
+            return token[..^1];
+        }
+
+        return token;
+    }
+
+    /// <summary>
+    /// Finds the earliest subtitle cue that mentions <paramref name="term"/> (case-insensitive, word-aware).
+    /// So when AI canonicalizes "Jon Voight's LeBaron" → "Jon Voight", the popup fires on the first mention.
+    /// </summary>
+    private static (long StartMs, long EndMs)? FindEarliestMention(
+        IReadOnlyList<SubtitleCue> cues,
+        string term)
+    {
+        if (string.IsNullOrWhiteSpace(term) || cues.Count == 0)
+        {
+            return null;
+        }
+
+        var needle = term.Trim();
+        foreach (var cue in cues.OrderBy(c => c.StartMs))
+        {
+            if (CueContainsTerm(cue.Text, needle))
+            {
+                return (cue.StartMs, cue.EndMs);
+            }
+        }
+
+        return null;
+    }
+
+    private static bool CueContainsTerm(string? cueText, string term)
+    {
+        if (string.IsNullOrWhiteSpace(cueText))
+        {
+            return false;
+        }
+
+        var text = cueText;
+        var idx = text.IndexOf(term, StringComparison.OrdinalIgnoreCase);
+        while (idx >= 0)
+        {
+            var beforeOk = idx == 0 || !char.IsLetterOrDigit(text[idx - 1]);
+            var afterIndex = idx + term.Length;
+            var afterOk = afterIndex >= text.Length || !char.IsLetterOrDigit(text[afterIndex]);
+            // Allow possessive / punctuation after the name: Jon Voight's, Jon Voight,
+            if (beforeOk && (afterOk || text[afterIndex] is '\'' or '’' or ',' or '.' or '!' or '?' or ';' or ':'))
+            {
+                return true;
+            }
+
+            idx = text.IndexOf(term, idx + 1, StringComparison.OrdinalIgnoreCase);
+        }
+
+        return false;
+    }
+
     private static void AddPeopleToExclude(
         HashSet<string> exclude,
         IReadOnlyList<PersonInfo> people,
@@ -319,10 +442,10 @@ public class LookItUpService : ILookItUpService
                 var minLen = Math.Max(2, config.MinEntityLength);
                 var excludedCast = BuildCastExcludeNames(item, minLen);
                 var nameLimit = Math.Clamp(config.AiNamesPerPrepare, 1, 20);
-                var nameCandidates = _nameCandidateFinder
-                    .Find(cues, item.Name, excludedCast, minLen, Math.Max(max, nameLimit))
-                    .Take(nameLimit)
+                var ranked = _nameCandidateFinder
+                    .Find(cues, item.Name, excludedCast, minLen, Math.Max(max, nameLimit * 4))
                     .ToList();
+                var nameCandidates = SelectAiBatch(ranked, nameLimit);
 
                 _logger.LogInformation(
                     "Look it up preparing {Item} with AI ({Provider}/{Model}) via {BaseUrl}: verifying top {Count} names",
@@ -351,16 +474,34 @@ public class LookItUpService : ILookItUpService
 
                 var popupMs = Math.Max(config.PopupDurationMs, 8000);
                 annotations = aiResult.Mentions
-                    .Select(m => new ContextAnnotation
+                    .Select(m =>
                     {
-                        Term = m.Term.Trim(),
-                        Summary = m.Summary.Trim().StartsWith(m.Term, StringComparison.OrdinalIgnoreCase)
-                            ? m.Summary.Trim()
-                            : $"{m.Term.Trim()}: {m.Summary.Trim()}",
-                        Url = null,
-                        StartMs = m.StartMs,
-                        EndMs = Math.Max(m.EndMs, m.StartMs + popupMs)
+                        var term = m.Term.Trim();
+                        var anchored = FindEarliestMention(cues, term);
+                        var startMs = anchored?.StartMs ?? m.StartMs;
+                        var endMs = anchored?.EndMs ?? m.EndMs;
+                        if (anchored is { } hit && hit.StartMs != m.StartMs)
+                        {
+                            _logger.LogInformation(
+                                "Look it up re-anchored {Term} from {OldMs}ms → earliest cue {NewMs}ms",
+                                term,
+                                m.StartMs,
+                                hit.StartMs);
+                        }
+
+                        return new ContextAnnotation
+                        {
+                            Term = term,
+                            Summary = m.Summary.Trim().StartsWith(term, StringComparison.OrdinalIgnoreCase)
+                                ? m.Summary.Trim()
+                                : $"{term}: {m.Summary.Trim()}",
+                            Url = null,
+                            StartMs = startMs,
+                            EndMs = Math.Max(endMs, startMs + popupMs)
+                        };
                     })
+                    .GroupBy(a => a.Term, StringComparer.OrdinalIgnoreCase)
+                    .Select(g => g.OrderBy(a => a.StartMs).First())
                     .OrderBy(a => a.StartMs)
                     .Take(max)
                     .ToList();
