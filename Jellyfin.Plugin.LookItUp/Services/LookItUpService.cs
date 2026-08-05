@@ -1,10 +1,13 @@
 using System.Text;
+using Jellyfin.Data.Enums;
 using Jellyfin.Plugin.LookItUp.Models;
 using MediaBrowser.Controller.Entities;
+using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.MediaEncoding;
 using MediaBrowser.Model.Entities;
+using MediaBrowser.Model.Querying;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.LookItUp.Services;
@@ -30,10 +33,15 @@ public interface ILookItUpService
     /// <summary>
     /// Precomputes and stores annotations for an item.
     /// </summary>
+    /// <param name="itemId">Media item id.</param>
+    /// <param name="force">When true, overwrite existing cache.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <param name="selectedTerms">When set, only these terms are sent to AI (instead of automatic top-N).</param>
     Task<PrepareItemResult> PrepareItemAsync(
         Guid itemId,
         bool force,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        IReadOnlyList<string>? selectedTerms = null);
 
     /// <summary>
     /// Returns a prepared cache entry when present and current.
@@ -44,6 +52,14 @@ public interface ILookItUpService
     /// Dry-run: extract subtitle name candidates that would be sent to AI (no AI call).
     /// </summary>
     Task<NameCandidatesResult> GetNameCandidatesAsync(Guid itemId, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Builds a prepare preview for a series/season/episode/movie (no AI).
+    /// </summary>
+    Task<PreparePreviewResult> GetPreparePreviewAsync(
+        Guid rootItemId,
+        int? suggestedNamesPerItem,
+        CancellationToken cancellationToken);
 }
 
 /// <summary>
@@ -197,6 +213,203 @@ public class LookItUpService : ILookItUpService
             Candidates = candidates,
             ExcludedCastNames = excludedCast.OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList()
         };
+    }
+
+    /// <inheritdoc />
+    public async Task<PreparePreviewResult> GetPreparePreviewAsync(
+        Guid rootItemId,
+        int? suggestedNamesPerItem,
+        CancellationToken cancellationToken)
+    {
+        var root = _libraryManager.GetItemById(rootItemId);
+        if (root is null)
+        {
+            return new PreparePreviewResult
+            {
+                RootItemId = rootItemId,
+                Warning = "Item not found."
+            };
+        }
+
+        var config = Plugin.Instance?.Configuration;
+        var defaultN = Math.Clamp(config?.AiNamesPerPrepare ?? 5, 1, 40);
+        var suggestedN = Math.Clamp(suggestedNamesPerItem ?? defaultN, 1, 40);
+        List<BaseItem> targets;
+        try
+        {
+            targets = ResolvePrepareTargets(root);
+        }
+        catch (Exception ex)
+        {
+            return new PreparePreviewResult
+            {
+                RootItemId = rootItemId,
+                RootItemName = root.Name,
+                RootItemType = root switch
+                {
+                    Series => "Series",
+                    Season => "Season",
+                    Episode => "Episode",
+                    Movie => "Movie",
+                    _ => root.GetType().Name
+                },
+                DefaultNamesPerPrepare = defaultN,
+                SuggestedNamesPerItem = suggestedN,
+                Warning = ex.Message
+            };
+        }
+
+        var items = new List<PreparePreviewItem>();
+        foreach (var target in targets)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var preview = await BuildPreviewItemAsync(target, suggestedN, cancellationToken)
+                .ConfigureAwait(false);
+            items.Add(preview);
+        }
+
+        return new PreparePreviewResult
+        {
+            RootItemId = rootItemId,
+            RootItemName = root.Name,
+            RootItemType = root switch
+            {
+                Series => "Series",
+                Season => "Season",
+                Episode => "Episode",
+                Movie => "Movie",
+                _ => root.GetType().Name
+            },
+            DefaultNamesPerPrepare = defaultN,
+            SuggestedNamesPerItem = suggestedN,
+            Items = items,
+            Warning = items.Count == 0 ? "No episodes/movies found under this item." : null
+        };
+    }
+
+    private async Task<PreparePreviewItem> BuildPreviewItemAsync(
+        BaseItem item,
+        int suggestedN,
+        CancellationToken cancellationToken)
+    {
+        var config = Plugin.Instance?.Configuration;
+        var already = TryGetPrepared(item.Id, out _);
+        var preferred = config?.PreferredSubtitleLanguages ?? "en";
+        var subtitle = await ResolveSubtitleContentAsync(item, preferred, cancellationToken)
+            .ConfigureAwait(false);
+        if (subtitle is null)
+        {
+            return new PreparePreviewItem
+            {
+                ItemId = item.Id,
+                Name = item.Name,
+                SeasonNumber = item.ParentIndexNumber,
+                EpisodeNumber = item.IndexNumber,
+                AlreadyPrepared = already,
+                Warning = "No readable text subtitles found."
+            };
+        }
+
+        var cues = _subtitleParser.Parse(subtitle.Content, subtitle.Label);
+        var max = Math.Max(1, config?.MaxAnnotationsPerItem ?? 40);
+        var minLen = Math.Max(2, config?.MinEntityLength ?? 3);
+        var excludedCast = BuildCastExcludeNames(item, minLen);
+        var ranked = _nameCandidateFinder
+            .Find(cues, item.Name, excludedCast, minLen, Math.Max(max, suggestedN * 4))
+            .ToList();
+        var suggested = new HashSet<string>(
+            SelectAiBatch(ranked, suggestedN).Select(c => c.Term),
+            StringComparer.OrdinalIgnoreCase);
+
+        return new PreparePreviewItem
+        {
+            ItemId = item.Id,
+            Name = item.Name,
+            SeasonNumber = item.ParentIndexNumber,
+            EpisodeNumber = item.IndexNumber,
+            Subtitle = subtitle.Label,
+            CueCount = cues.Count,
+            AlreadyPrepared = already,
+            Candidates = ranked.Select(c => new PreparePreviewCandidate
+            {
+                Term = c.Term,
+                Score = c.Score,
+                Reason = c.Reason,
+                StartMs = c.StartMs,
+                EndMs = c.EndMs,
+                CueText = c.CueText,
+                Suggested = suggested.Contains(c.Term)
+            }).ToList()
+        };
+    }
+
+    private List<BaseItem> ResolvePrepareTargets(BaseItem root)
+    {
+        if (root is Movie or Episode)
+        {
+            return string.IsNullOrWhiteSpace(root.Path) ? [] : [root];
+        }
+
+        if (root is not Series and not Season)
+        {
+            throw new InvalidOperationException(
+                "Look it up can prepare a Series, Season, Episode, or Movie.");
+        }
+
+        return _libraryManager.GetItemList(new InternalItemsQuery
+            {
+                AncestorIds = [root.Id],
+                IncludeItemTypes = [BaseItemKind.Episode],
+                Recursive = true,
+                IsVirtualItem = false,
+                MediaTypes = [MediaType.Video]
+            })
+            .Where(i => !string.IsNullOrWhiteSpace(i.Path))
+            .OrderBy(i => i.ParentIndexNumber ?? 0)
+            .ThenBy(i => i.IndexNumber ?? 0)
+            .ThenBy(i => i.SortName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static List<NameCandidate> FilterCandidatesBySelectedTerms(
+        IReadOnlyList<NameCandidate> ranked,
+        IReadOnlyList<string> selectedTerms,
+        IReadOnlyList<SubtitleCue> cues)
+    {
+        var wanted = selectedTerms
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .Select(t => t.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var byTerm = ranked.ToDictionary(c => c.Term, StringComparer.OrdinalIgnoreCase);
+        var result = new List<NameCandidate>();
+        foreach (var term in wanted)
+        {
+            if (byTerm.TryGetValue(term, out var existing))
+            {
+                result.Add(existing);
+                continue;
+            }
+
+            var anchored = FindEarliestMention(cues, term);
+            if (anchored is null)
+            {
+                continue;
+            }
+
+            result.Add(new NameCandidate
+            {
+                Term = term,
+                StartMs = anchored.Value.StartMs,
+                EndMs = anchored.Value.EndMs,
+                CueText = string.Empty,
+                Score = 50,
+                Reason = "user-selected"
+            });
+        }
+
+        return result;
     }
 
     private HashSet<string> BuildCastExcludeNames(BaseItem item, int minLength)
@@ -475,7 +688,8 @@ public class LookItUpService : ILookItUpService
     public async Task<PrepareItemResult> PrepareItemAsync(
         Guid itemId,
         bool force,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyList<string>? selectedTerms = null)
     {
         try
         {
@@ -532,10 +746,29 @@ public class LookItUpService : ILookItUpService
                 var ranked = _nameCandidateFinder
                     .Find(cues, item.Name, excludedCast, minLen, Math.Max(max, nameLimit * 4))
                     .ToList();
-                var nameCandidates = SelectAiBatch(ranked, nameLimit);
+
+                List<NameCandidate> nameCandidates;
+                if (selectedTerms is { Count: > 0 })
+                {
+                    nameCandidates = FilterCandidatesBySelectedTerms(ranked, selectedTerms, cues);
+                    if (nameCandidates.Count == 0)
+                    {
+                        return new PrepareItemResult
+                        {
+                            Mode = "ai",
+                            AiBaseUrl = aiBaseUrl,
+                            AiModel = aiModel,
+                            Warning = "None of the selected terms were found in subtitles."
+                        };
+                    }
+                }
+                else
+                {
+                    nameCandidates = SelectAiBatch(ranked, nameLimit);
+                }
 
                 _logger.LogInformation(
-                    "Look it up preparing {Item} with AI ({Provider}/{Model}) via {BaseUrl}: verifying top {Count} names",
+                    "Look it up preparing {Item} with AI ({Provider}/{Model}) via {BaseUrl}: verifying {Count} names",
                     item.Name,
                     config.AiProvider,
                     aiModel,

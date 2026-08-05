@@ -1,7 +1,7 @@
 ---
 name: "Look it up"
 guid: "a8ab0fed-cac9-406d-b98b-58161bf970b8"
-version: "1.2.19.0"
+version: "1.2.20.0"
 targetAbi: "10.11.0.0"
 framework: "net9.0"
 overview: "AI-prepare subtitle references, then show short popups during playback"
@@ -13,4 +13,4 @@ owner: "lookitup"
 artifacts:
   - "Jellyfin.Plugin.LookItUp.dll"
 changelog: >
-  Prepare whole show from series page; popup delay setting (default 1s); remove Learn more links.
+  Dedicated prepare page with selectable candidates; prepare button admins-only.

@@ -36,6 +36,11 @@ public interface ILookItUpPrepareService
     bool TryStartScopedPrepare(Guid rootItemId, bool force, out string? error);
 
     /// <summary>
+    /// Starts a background prepare for explicitly selected terms per item.
+    /// </summary>
+    bool TryStartSelectedPrepare(PrepareSelectedRequest request, out string? error);
+
+    /// <summary>
     /// Cancels a running library prepare job, if any.
     /// </summary>
     /// <returns>True if a job was cancelled.</returns>
@@ -44,7 +49,11 @@ public interface ILookItUpPrepareService
     /// <summary>
     /// Prepares a single item synchronously (for API / scheduled task item loops).
     /// </summary>
-    Task<PrepareItemResult> PrepareItemAsync(Guid itemId, bool force, CancellationToken cancellationToken);
+    Task<PrepareItemResult> PrepareItemAsync(
+        Guid itemId,
+        bool force,
+        CancellationToken cancellationToken,
+        IReadOnlyList<string>? selectedTerms = null);
 
     /// <summary>
     /// Runs a full library prepare (used by the scheduled task).
@@ -218,6 +227,182 @@ public class LookItUpPrepareService : ILookItUpPrepareService
     }
 
     /// <inheritdoc />
+    public bool TryStartSelectedPrepare(PrepareSelectedRequest request, out string? error)
+    {
+        error = null;
+        if (request?.Items is null || request.Items.Count == 0)
+        {
+            error = "No items selected.";
+            return false;
+        }
+
+        var work = request.Items
+            .Where(i => i.ItemId != Guid.Empty && i.Terms is { Count: > 0 })
+            .Select(i => (
+                ItemId: i.ItemId,
+                Terms: (IReadOnlyList<string>)i.Terms
+                    .Where(t => !string.IsNullOrWhiteSpace(t))
+                    .Select(t => t.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList()))
+            .Where(i => i.Terms.Count > 0)
+            .ToList();
+
+        if (work.Count == 0)
+        {
+            error = "No terms selected.";
+            return false;
+        }
+
+        lock (_gate)
+        {
+            if (_status.IsRunning)
+            {
+                error = "A prepare job is already running.";
+                return false;
+            }
+
+            var force = request.Force;
+            _cts = new CancellationTokenSource();
+            var token = _cts.Token;
+            _running = Task.Run(async () =>
+            {
+                try
+                {
+                    await RunSelectedPrepareAsync(work, force, token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    _logger.LogInformation("Look it up selected prepare cancelled");
+                    lock (_gate)
+                    {
+                        _status.IsRunning = false;
+                        _status.CurrentItem = null;
+                        _status.FinishedAtUtc = DateTime.UtcNow;
+                        _status.LastError = "Cancelled by user";
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Look it up selected prepare failed");
+                    lock (_gate)
+                    {
+                        _status.LastError = ex.Message;
+                        _status.IsRunning = false;
+                        _status.FinishedAtUtc = DateTime.UtcNow;
+                    }
+                }
+            }, token);
+
+            return true;
+        }
+    }
+
+    private async Task RunSelectedPrepareAsync(
+        IReadOnlyList<(Guid ItemId, IReadOnlyList<string> Terms)> work,
+        bool force,
+        CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            _status = new PrepareStatus
+            {
+                IsRunning = true,
+                Total = work.Count,
+                StartedAtUtc = DateTime.UtcNow,
+                CurrentItem = "selected terms"
+            };
+        }
+
+        _logger.LogInformation(
+            "Look it up selected prepare starting for {Count} items (force={Force})",
+            work.Count,
+            force);
+
+        for (var i = 0; i < work.Count; i++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var (itemId, terms) = work[i];
+            var item = _libraryManager.GetItemById(itemId);
+            var label = item?.Name ?? itemId.ToString("N");
+
+            lock (_gate)
+            {
+                _status.CurrentItem = label + " (" + terms.Count + " names)";
+            }
+
+            try
+            {
+                var result = await _lookItUpService
+                    .PrepareItemAsync(itemId, force, cancellationToken, terms)
+                    .ConfigureAwait(false);
+
+                lock (_gate)
+                {
+                    _status.Completed = i + 1;
+                    if (result.Cache is null)
+                    {
+                        _status.Failed++;
+                        if (!string.IsNullOrWhiteSpace(result.Warning))
+                        {
+                            _status.LastError = result.Warning;
+                        }
+                    }
+                    else if (result.Cache.Annotations.Count == 0)
+                    {
+                        _status.Skipped++;
+                        if (!string.IsNullOrWhiteSpace(result.Warning))
+                        {
+                            _status.LastError = result.Warning;
+                        }
+                    }
+                    else
+                    {
+                        _status.WithAnnotations++;
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                lock (_gate)
+                {
+                    _status.IsRunning = false;
+                    _status.CurrentItem = null;
+                    _status.FinishedAtUtc = DateTime.UtcNow;
+                    _status.LastError = "Cancelled by user";
+                }
+
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Selected prepare failed for {Item}", label);
+                lock (_gate)
+                {
+                    _status.Completed = i + 1;
+                    _status.Failed++;
+                    _status.LastError = ex.Message;
+                }
+            }
+        }
+
+        lock (_gate)
+        {
+            _status.IsRunning = false;
+            _status.CurrentItem = null;
+            _status.FinishedAtUtc = DateTime.UtcNow;
+            _status.Completed = work.Count;
+        }
+
+        _logger.LogInformation(
+            "Look it up selected prepare finished: {With} with annotations, {Skipped} skipped, {Failed} failed of {Total}",
+            _status.WithAnnotations,
+            _status.Skipped,
+            _status.Failed,
+            work.Count);
+    }
+
+    /// <inheritdoc />
     public bool TryCancelLibraryPrepare()
     {
         lock (_gate)
@@ -235,8 +420,12 @@ public class LookItUpPrepareService : ILookItUpPrepareService
     }
 
     /// <inheritdoc />
-    public Task<PrepareItemResult> PrepareItemAsync(Guid itemId, bool force, CancellationToken cancellationToken)
-        => _lookItUpService.PrepareItemAsync(itemId, force, cancellationToken);
+    public Task<PrepareItemResult> PrepareItemAsync(
+        Guid itemId,
+        bool force,
+        CancellationToken cancellationToken,
+        IReadOnlyList<string>? selectedTerms = null)
+        => _lookItUpService.PrepareItemAsync(itemId, force, cancellationToken, selectedTerms);
 
     /// <inheritdoc />
     public async Task RunLibraryPrepareAsync(bool force, IProgress<double>? progress, CancellationToken cancellationToken)

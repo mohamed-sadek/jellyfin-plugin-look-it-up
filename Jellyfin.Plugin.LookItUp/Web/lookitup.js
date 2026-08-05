@@ -1,7 +1,7 @@
 ﻿(function () {
   'use strict';
 
-  const CLIENT_VERSION = '1.2.19.0';
+  const CLIENT_VERSION = '1.2.20.0';
   const STYLE_ID = 'lookitup-styles';
   const POPUP_ID = 'lookitup-popup';
   const SERIES_BTN_ID = 'lookitup-prepare-series-btn';
@@ -50,6 +50,8 @@
   let seriesUiItemId = null;
   let seriesUiInFlight = false;
   let seriesStatusTimer = null;
+  let adminUserCached = null;
+  let adminUserCheckedAt = 0;
   // Terms already shown for their current cue window (don't re-show after auto-hide).
   const shownThisPass = new Set();
 
@@ -1093,34 +1095,31 @@
     }
   }
 
+  function openPreparePage(itemId) {
+    if (!itemId) {
+      return;
+    }
+    const page = 'LookItUpPrepare';
+    const target = 'configurationpage?name=' + encodeURIComponent(page) + '&id=' + encodeURIComponent(itemId);
+    try {
+      if (window.Dashboard && typeof Dashboard.navigate === 'function') {
+        Dashboard.navigate(target);
+        return;
+      }
+    } catch (_) {
+      /* fall through */
+    }
+    window.location.hash = '#!/' + target;
+  }
+
   async function startSeriesPrepare(forceRebuild) {
+    // Kept for status polling compatibility; primary UX is the prepare page.
     const api = getApiClient();
     const itemId = seriesUiItemId || getDetailsItemIdFromLocation();
     if (!api || !itemId) {
       return;
     }
-    const { btn } = ensureSeriesUi();
-    btn.disabled = true;
-    btn.textContent = 'Starting…';
-    try {
-      const result = await api.ajax({
-        url: api.getUrl('LookItUp/' + itemId + '/prepare-series') + (forceRebuild ? '?force=true' : ''),
-        type: 'POST',
-        dataType: 'json'
-      });
-      console.info('[Look it up] prepare-series started', result);
-      setSeriesStatus('Prepare started…', true);
-      if (!seriesStatusTimer) {
-        seriesStatusTimer = setInterval(refreshSeriesPrepareStatus, 2000);
-      }
-      refreshSeriesPrepareStatus();
-    } catch (err) {
-      btn.disabled = false;
-      btn.textContent = 'Look it up — prepare this show';
-      const msg = (err && (err.error || err.message)) || String(err);
-      setSeriesStatus('Prepare failed: ' + msg, true);
-      console.warn('[Look it up] prepare-series failed', err);
-    }
+    openPreparePage(itemId);
   }
 
   async function fetchDetailsItem(api, detailsId) {
@@ -1146,6 +1145,39 @@
     });
   }
 
+  async function isCurrentUserAdmin(api) {
+    if (!api) {
+      return false;
+    }
+    if (adminUserCached != null && Date.now() - adminUserCheckedAt < 60000) {
+      return adminUserCached;
+    }
+    try {
+      let user = null;
+      if (typeof api.getCurrentUser === 'function') {
+        user = await api.getCurrentUser();
+      } else if (typeof api.getCurrentUserId === 'function') {
+        const userId = api.getCurrentUserId();
+        if (userId) {
+          user = await api.ajax({
+            url: api.getUrl('Users/' + userId),
+            type: 'GET',
+            dataType: 'json'
+          });
+        }
+      }
+      const policy = user && (user.Policy || user.policy);
+      adminUserCached = !!(policy && (policy.IsAdministrator || policy.isAdministrator));
+      adminUserCheckedAt = Date.now();
+      return adminUserCached;
+    } catch (err) {
+      console.debug('[Look it up] admin check failed', err);
+      adminUserCached = false;
+      adminUserCheckedAt = Date.now();
+      return false;
+    }
+  }
+
   async function syncSeriesPrepareUi() {
     if (seriesUiInFlight) {
       return;
@@ -1169,9 +1201,14 @@
 
     seriesUiInFlight = true;
     try {
+      if (!(await isCurrentUserAdmin(api))) {
+        hideSeriesUi();
+        return;
+      }
+
       const item = await fetchDetailsItem(api, detailsId);
       const type = String((item && (item.Type || item.type)) || '');
-      if (type !== 'Series' && type !== 'Season') {
+      if (type !== 'Series' && type !== 'Season' && type !== 'Episode' && type !== 'Movie') {
         hideSeriesUi();
         return;
       }
@@ -1179,22 +1216,20 @@
       seriesUiItemId = detailsId;
       const { btn } = ensureSeriesUi();
       btn.style.display = 'block';
-      const name = (item && (item.Name || item.name)) || 'this show';
-      btn.title = 'Prepare Look it up annotations for all episodes in ' + name;
-      if (!btn.disabled) {
-        btn.textContent = type === 'Season'
-          ? 'Look it up — prepare this season'
-          : 'Look it up — prepare this show';
+      const name = (item && (item.Name || item.name)) || 'this title';
+      btn.title = 'Open Look it up prepare for ' + name;
+      btn.disabled = false;
+      if (type === 'Series') {
+        btn.textContent = 'Look it up — prepare this show';
+      } else if (type === 'Season') {
+        btn.textContent = 'Look it up — prepare this season';
+      } else if (type === 'Movie') {
+        btn.textContent = 'Look it up — prepare this movie';
+      } else {
+        btn.textContent = 'Look it up — prepare this episode';
       }
       btn.onclick = function () {
-        const ok = window.confirm(
-          'Prepare Look it up for every episode in "' + name + '"?\n\n' +
-            'Already-prepared episodes are skipped. This uses your AI quota.'
-        );
-        if (!ok) {
-          return;
-        }
-        startSeriesPrepare(false);
+        openPreparePage(detailsId);
       };
     } catch (err) {
       console.debug('[Look it up] series UI item lookup failed', err);

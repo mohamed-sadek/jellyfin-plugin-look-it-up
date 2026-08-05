@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Net.Http.Headers;
 using System.Reflection;
+using Jellyfin.Plugin.LookItUp.Models;
 using Jellyfin.Plugin.LookItUp.Services;
 using MediaBrowser.Controller.Library;
 using Microsoft.AspNetCore.Authorization;
@@ -256,6 +257,59 @@ public class LookItUpController : ControllerBase
             started = true,
             itemId,
             force,
+            status = _prepareService.GetStatus()
+        });
+    }
+
+    /// <summary>
+    /// Preview name candidates for a series/season/episode/movie (no AI).
+    /// </summary>
+    [HttpGet("{itemId}/prepare-preview")]
+    [Authorize]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult> GetPreparePreview(
+        [FromRoute] Guid itemId,
+        [FromQuery] int? namesPerItem = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (_libraryManager.GetItemById(itemId) is null)
+        {
+            return NotFound(new { error = "Item not found", itemId });
+        }
+
+        var preview = await _lookItUpService
+            .GetPreparePreviewAsync(itemId, namesPerItem, cancellationToken)
+            .ConfigureAwait(false);
+        return Ok(preview);
+    }
+
+    /// <summary>
+    /// Starts a background prepare for user-selected terms per item.
+    /// </summary>
+    [HttpPost("{itemId}/prepare-selected")]
+    [Authorize]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public ActionResult PrepareSelected(
+        [FromRoute] Guid itemId,
+        [FromBody] PrepareSelectedRequest? request)
+    {
+        // itemId is the root (show/episode) the UI was opened from; selections carry real episode ids.
+        _ = itemId;
+        request ??= new PrepareSelectedRequest();
+        if (!_prepareService.TryStartSelectedPrepare(request, out var error))
+        {
+            var conflict = string.Equals(error, "A prepare job is already running.", StringComparison.Ordinal);
+            return conflict
+                ? Conflict(new { started = false, error, status = _prepareService.GetStatus() })
+                : BadRequest(new { started = false, error, status = _prepareService.GetStatus() });
+        }
+
+        return Ok(new
+        {
+            started = true,
             status = _prepareService.GetStatus()
         });
     }
