@@ -8,6 +8,13 @@
     "category": "General",
     "versions": [
       {
+        "version": "1.2.18.0",
+        "changelog": "Proxy Wikipedia portraits through /LookItUp/image so CSP does not block popup photos",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.18.0/look-it-up_1.2.18.0.zip",
+        "checksum": "163e16980e7aca7c3d2df332ff6738c8",
+        "timestamp": "2026-08-05T11:04:51Z"
+      },{
         "version": "1.2.17.0",
         "changelog": "Never wipe a saved AI API key when saving config with a blank key field",
         "targetAbi": "10.11.0.0",

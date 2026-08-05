@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Net.Http.Headers;
 using System.Reflection;
 using Jellyfin.Plugin.LookItUp.Services;
 using MediaBrowser.Controller.Library;
@@ -15,6 +17,9 @@ namespace Jellyfin.Plugin.LookItUp.Controllers;
 [Route("LookItUp")]
 public class LookItUpController : ControllerBase
 {
+    private static readonly HttpClient ImageClient = CreateImageClient();
+    private static readonly ConcurrentDictionary<string, (byte[] Bytes, string ContentType, DateTimeOffset CachedAt)> ImageCache = new(StringComparer.Ordinal);
+
     private readonly ILookItUpService _lookItUpService;
     private readonly ILookItUpPrepareService _prepareService;
     private readonly ILibraryManager _libraryManager;
@@ -297,6 +302,93 @@ public class LookItUpController : ControllerBase
             instanceLoaded = Plugin.Instance is not null,
             targetServer = "10.11.x"
         });
+    }
+
+    /// <summary>
+    /// Proxies allow-listed Wikipedia thumbnails so the web overlay can load them under CSP img-src 'self'.
+    /// </summary>
+    [HttpGet("image")]
+    [AllowAnonymous]
+    [ResponseCache(Duration = 86400, Location = ResponseCacheLocation.Any)]
+    public async Task<IActionResult> GetImage([FromQuery] string? url, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(url)
+            || !Uri.TryCreate(url.Trim(), UriKind.Absolute, out var uri)
+            || uri.Scheme != Uri.UriSchemeHttps
+            || !IsAllowedImageHost(uri.Host))
+        {
+            return BadRequest(new { error = "url must be an https Wikipedia/Wikimedia image" });
+        }
+
+        var cacheKey = uri.AbsoluteUri;
+        if (ImageCache.TryGetValue(cacheKey, out var cached)
+            && DateTimeOffset.UtcNow - cached.CachedAt < TimeSpan.FromHours(24)
+            && cached.Bytes.Length > 0)
+        {
+            return File(cached.Bytes, cached.ContentType);
+        }
+
+        try
+        {
+            using var response = await ImageClient
+                .GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+                .ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return StatusCode((int)response.StatusCode);
+            }
+
+            var contentType = response.Content.Headers.ContentType?.MediaType;
+            if (string.IsNullOrWhiteSpace(contentType) || !contentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+            {
+                return BadRequest(new { error = "upstream was not an image" });
+            }
+
+            var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+            if (bytes.Length == 0 || bytes.Length > 2_000_000)
+            {
+                return BadRequest(new { error = "image size rejected" });
+            }
+
+            ImageCache[cacheKey] = (bytes, contentType, DateTimeOffset.UtcNow);
+            if (ImageCache.Count > 64)
+            {
+                foreach (var stale in ImageCache
+                             .OrderBy(kv => kv.Value.CachedAt)
+                             .Take(16)
+                             .Select(kv => kv.Key)
+                             .ToList())
+                {
+                    ImageCache.TryRemove(stale, out _);
+                }
+            }
+
+            return File(bytes, contentType);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            _logger.LogDebug(ex, "Look it up image proxy failed for {Url}", uri);
+            return StatusCode(StatusCodes.Status502BadGateway);
+        }
+    }
+
+    private static bool IsAllowedImageHost(string host)
+    {
+        host = host.Trim().TrimEnd('.').ToLowerInvariant();
+        return host == "upload.wikimedia.org"
+               || host.EndsWith(".wikipedia.org", StringComparison.Ordinal)
+               || host == "wikipedia.org"
+               || host.EndsWith(".wikimedia.org", StringComparison.Ordinal);
+    }
+
+    private static HttpClient CreateImageClient()
+    {
+        var client = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+        client.DefaultRequestHeaders.UserAgent.Add(
+            new ProductInfoHeaderValue("Jellyfin.Plugin.LookItUp", "1.2"));
+        client.DefaultRequestHeaders.UserAgent.Add(
+            new ProductInfoHeaderValue("(+https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up)"));
+        return client;
     }
 
     /// <summary>

@@ -1,7 +1,7 @@
 ---
 name: "Look it up"
 guid: "a8ab0fed-cac9-406d-b98b-58161bf970b8"
-version: "1.2.17.0"
+version: "1.2.18.0"
 targetAbi: "10.11.0.0"
 framework: "net9.0"
 overview: "AI-prepare subtitle references, then show short popups during playback"
@@ -13,4 +13,4 @@ owner: "lookitup"
 artifacts:
   - "Jellyfin.Plugin.LookItUp.dll"
 changelog: >
-  Never wipe a saved AI API key when the config form is saved with a blank key field.
+  Proxy Wikipedia portraits through /LookItUp/image so CSP does not block popup photos.

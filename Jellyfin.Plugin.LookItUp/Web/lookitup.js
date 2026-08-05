@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  const CLIENT_VERSION = '1.2.16.0';
+  const CLIENT_VERSION = '1.2.18.0';
   const STYLE_ID = 'lookitup-styles';
   const POPUP_ID = 'lookitup-popup';
   const POLL_MS = 200;
@@ -312,12 +312,22 @@
     return obj[pascal];
   }
 
+  function proxyImageUrl(imageUrl) {
+    const raw = String(imageUrl || '');
+    if (!/^https?:\/\//i.test(raw)) {
+      return null;
+    }
+    // Same-origin proxy — Jellyfin / reverse-proxy CSP often blocks upload.wikimedia.org.
+    return '/LookItUp/image?url=' + encodeURIComponent(raw);
+  }
+
   function showPopup(annotation) {
     const popup = ensurePopup();
     const term = String(readProp(annotation, 'term', 'Term') || '');
     const summary = String(readProp(annotation, 'summary', 'Summary') || '');
     const url = readProp(annotation, 'url', 'Url');
     const imageUrl = readProp(annotation, 'imageUrl', 'ImageUrl');
+    const proxiedImage = proxyImageUrl(imageUrl);
 
     if (!term && !summary) {
       return;
@@ -335,14 +345,20 @@
     const row = document.createElement('div');
     row.className = 'lookitup-row';
 
-    if (imageUrl && /^https?:\/\//i.test(String(imageUrl))) {
+    if (proxiedImage) {
       const img = document.createElement('img');
       img.className = 'lookitup-photo';
-      img.src = String(imageUrl);
+      img.src = proxiedImage;
       img.alt = term || '';
-      img.loading = 'lazy';
+      img.loading = 'eager';
+      img.decoding = 'async';
       img.referrerPolicy = 'no-referrer';
       img.onerror = function () {
+        console.warn('[Look it up] image failed to load', {
+          term: term,
+          imageUrl: imageUrl || null,
+          proxied: proxiedImage
+        });
         img.remove();
       };
       row.appendChild(img);
@@ -395,6 +411,7 @@
       summary: summary,
       url: url || null,
       imageUrl: imageUrl || null,
+      proxiedImage: proxiedImage || null,
       durationMs: duration,
       durationSec: Math.round(duration / 1000),
       fontSizePx: popupStyle.fontSizePx,
