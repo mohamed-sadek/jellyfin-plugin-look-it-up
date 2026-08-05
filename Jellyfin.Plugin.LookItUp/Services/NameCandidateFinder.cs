@@ -14,11 +14,13 @@ public interface INameCandidateFinder
     /// </summary>
     /// <param name="cues">Timed subtitle cues.</param>
     /// <param name="itemTitle">Media title to exclude (episode/movie name).</param>
+    /// <param name="excludeNames">Cast/character names to exclude (case-insensitive).</param>
     /// <param name="minLength">Minimum term length.</param>
     /// <param name="maxCandidates">Max results to return.</param>
     IReadOnlyList<NameCandidate> Find(
         IReadOnlyList<SubtitleCue> cues,
         string? itemTitle,
+        IReadOnlySet<string>? excludeNames,
         int minLength,
         int maxCandidates);
 }
@@ -58,6 +60,7 @@ public partial class NameCandidateFinder : INameCandidateFinder
     public IReadOnlyList<NameCandidate> Find(
         IReadOnlyList<SubtitleCue> cues,
         string? itemTitle,
+        IReadOnlySet<string>? excludeNames,
         int minLength,
         int maxCandidates)
     {
@@ -68,6 +71,7 @@ public partial class NameCandidateFinder : INameCandidateFinder
 
         minLength = Math.Max(2, minLength);
         maxCandidates = Math.Max(1, maxCandidates);
+        excludeNames ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         var titleNorm = NormalizeTitle(itemTitle);
         var tokenStats = new Dictionary<string, TokenStats>(StringComparer.OrdinalIgnoreCase);
@@ -96,7 +100,7 @@ public partial class NameCandidateFinder : INameCandidateFinder
                 var token = tokens[i];
                 if (token.IsPunctuationOnly)
                 {
-                    if (token.EndsSentence)
+                    if (token.EndsSentence || token.BreaksPhrase)
                     {
                         sentenceInitial = true;
                     }
@@ -130,7 +134,14 @@ public partial class NameCandidateFinder : INameCandidateFinder
                     }
                 }
 
-                if (token.IsTitleCaseWord || token.IsAllCapsWord)
+                // Skip ALL-CAPS speaker labels (ANNOUNCER, MAN, etc.).
+                if (token.IsAllCapsWord)
+                {
+                    sentenceInitial = true; // next word starts a new utterance
+                    continue;
+                }
+
+                if (token.IsTitleCaseWord)
                 {
                     occurrences.Add(new Occurrence
                     {
@@ -178,6 +189,7 @@ public partial class NameCandidateFinder : INameCandidateFinder
                         start,
                         tokenStats,
                         titleNorm,
+                        excludeNames,
                         minLength,
                         scoreBonus: 40,
                         reason: "cap-phrase");
@@ -190,7 +202,7 @@ public partial class NameCandidateFinder : INameCandidateFinder
         // Single tokens with mid-sentence capitalization evidence.
         foreach (var occ in occurrences)
         {
-            if (FunctionWords.Contains(occ.Surface))
+            if (FunctionWords.Contains(occ.Surface) || IsExcludedName(occ.Surface, excludeNames))
             {
                 continue;
             }
@@ -200,8 +212,6 @@ public partial class NameCandidateFinder : INameCandidateFinder
                 continue;
             }
 
-            // Strong: seen capitalized mid-sentence at least once.
-            // Weaker: never lowercase and appears capitalized more than once (often names in dialogue).
             var mid = stats.MidSentenceCapCount;
             var strong = mid > 0;
             var repeatedCapOnly = mid == 0
@@ -213,7 +223,6 @@ public partial class NameCandidateFinder : INameCandidateFinder
                 continue;
             }
 
-            // Prefer the mid-sentence occurrence as the timestamp when available.
             if (occ.SentenceInitial && mid > 0)
             {
                 continue;
@@ -227,16 +236,22 @@ public partial class NameCandidateFinder : INameCandidateFinder
                 occ,
                 tokenStats,
                 titleNorm,
+                excludeNames,
                 minLength,
                 scoreBonus: bonus,
                 reason: reason);
         }
 
+        // Unique by term (dictionary key); prefer earliest timestamp, highest score.
         return candidates.Values
             .OrderByDescending(c => c.Score)
             .ThenBy(c => c.StartMs)
             .ThenByDescending(c => c.Term.Count(ch => ch == ' '))
             .Where(c => !IsCoveredByLongerPhrase(c, candidates.Values))
+            .GroupBy(c => c.Term, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.OrderBy(c => c.StartMs).First())
+            .OrderByDescending(c => c.Score)
+            .ThenBy(c => c.StartMs)
             .Take(maxCandidates)
             .ToList();
     }
@@ -276,12 +291,18 @@ public partial class NameCandidateFinder : INameCandidateFinder
         Occurrence occ,
         Dictionary<string, TokenStats> tokenStats,
         string? titleNorm,
+        IReadOnlySet<string> excludeNames,
         int minLength,
         int scoreBonus,
         string reason)
     {
-        term = term.Trim();
+        term = WhitespaceRegex().Replace(term.Trim(), " ");
         if (term.Length < minLength)
+        {
+            return;
+        }
+
+        if (IsAllCapsTerm(term))
         {
             return;
         }
@@ -291,25 +312,9 @@ public partial class NameCandidateFinder : INameCandidateFinder
             return;
         }
 
-        if (MatchesTitle(term, titleNorm))
+        if (MatchesTitle(term, titleNorm) || IsExcludedName(term, excludeNames))
         {
             return;
-        }
-
-        // Skip pure ALL-CAPS shouting tokens (keep Title Case / mixed).
-        if (!term.Contains(' ', StringComparison.Ordinal)
-            && term.Length <= 6
-            && term.All(c => !char.IsLetter(c) || char.IsUpper(c))
-            && term.Any(char.IsLetter)
-            && term.Any(char.IsLower) == false
-            && term.Length >= 2)
-        {
-            // Short ALL-CAPS mid-sentence can still be acronyms; keep if mid-sentence evidence exists.
-            var head = term.Split(' ')[0];
-            if (!tokenStats.TryGetValue(head, out var st) || st.MidSentenceCapCount == 0)
-            {
-                return;
-            }
         }
 
         var headToken = term.Split(' ', StringSplitOptions.RemoveEmptyEntries)[0];
@@ -328,6 +333,14 @@ public partial class NameCandidateFinder : INameCandidateFinder
                 existing.Reason = reason;
             }
 
+            // Keep earliest appearance for the unique entry.
+            if (occ.StartMs < existing.StartMs)
+            {
+                existing.StartMs = occ.StartMs;
+                existing.EndMs = occ.EndMs;
+                existing.CueText = occ.CueText;
+            }
+
             return;
         }
 
@@ -341,6 +354,35 @@ public partial class NameCandidateFinder : INameCandidateFinder
             Reason = reason,
             MidSentenceHits = midHits
         };
+    }
+
+    private static bool IsAllCapsTerm(string term)
+    {
+        var letters = term.Where(char.IsLetter).ToArray();
+        return letters.Length >= 2 && letters.All(char.IsUpper);
+    }
+
+    private static bool IsExcludedName(string term, IReadOnlySet<string> excludeNames)
+    {
+        if (excludeNames.Count == 0)
+        {
+            return false;
+        }
+
+        if (excludeNames.Contains(term))
+        {
+            return true;
+        }
+
+        // "Cosmo Kramer" exclude set may contain "Kramer" — drop exact token matches only for singles;
+        // for multi-word, drop if every content token is excluded or the full phrase is excluded.
+        var parts = term.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 1)
+        {
+            return excludeNames.Contains(parts[0]);
+        }
+
+        return parts.All(excludeNames.Contains);
     }
 
     private static bool AreAdjacentContentTokens(Occurrence left, Occurrence right)
@@ -358,8 +400,8 @@ public partial class NameCandidateFinder : INameCandidateFinder
                 return false;
             }
 
-            // Hyphenated names ok; sentence break is not a phrase.
-            if (left.Tokens[i].EndsSentence)
+            // Hyphenated names ok; sentence / speaker-label breaks are not a phrase.
+            if (left.Tokens[i].EndsSentence || left.Tokens[i].BreaksPhrase)
             {
                 return false;
             }
@@ -442,6 +484,8 @@ public partial class NameCandidateFinder : INameCandidateFinder
                                || surface.EndsWith('.')
                                || surface.EndsWith('!')
                                || surface.EndsWith('?');
+            var breaksPhrase = surface is ":" or "-" or "—" or "–"
+                               || surface.EndsWith(':');
 
             // Strip trailing sentence punctuation from word surface for matching.
             var word = surface.TrimEnd('.', ',', ';', ':', '!', '?', '"', '\'', ')', ']');
@@ -453,7 +497,8 @@ public partial class NameCandidateFinder : INameCandidateFinder
                 {
                     Surface = surface,
                     IsPunctuationOnly = true,
-                    EndsSentence = endsSentence
+                    EndsSentence = endsSentence,
+                    BreaksPhrase = breaksPhrase || endsSentence
                 });
                 continue;
             }
@@ -473,14 +518,15 @@ public partial class NameCandidateFinder : INameCandidateFinder
                 IsTitleOrAllCaps = isTitle || (isAllCaps && word.Length >= 2),
                 IsLower = isLower,
                 IsPunctuationOnly = !hasLetter,
-                EndsSentence = endsSentence
+                EndsSentence = endsSentence,
+                BreaksPhrase = breaksPhrase
             });
         }
 
         return tokens;
     }
 
-    [GeneratedRegex(@"\b[\p{L}][\p{L}\p{Mn}']*\b|[.!?…]", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"\b[\p{L}][\p{L}\p{Mn}']*\b|[.!?:…]", RegexOptions.CultureInvariant)]
     private static partial Regex TokenRegex();
 
     [GeneratedRegex(@"\.{2,}|…", RegexOptions.CultureInvariant)]
@@ -537,5 +583,7 @@ public partial class NameCandidateFinder : INameCandidateFinder
         public bool IsPunctuationOnly { get; init; }
 
         public bool EndsSentence { get; init; }
+
+        public bool BreaksPhrase { get; init; }
     }
 }

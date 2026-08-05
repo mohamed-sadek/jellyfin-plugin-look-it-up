@@ -1,6 +1,7 @@
 using System.Text;
 using Jellyfin.Plugin.LookItUp.Models;
 using MediaBrowser.Controller.Entities;
+using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.MediaEncoding;
 using MediaBrowser.Model.Entities;
@@ -176,14 +177,16 @@ public class LookItUpService : ILookItUpService
         var cues = _subtitleParser.Parse(subtitle.Content, subtitle.Label);
         var max = Math.Max(1, config?.MaxAnnotationsPerItem ?? 40);
         var minLen = Math.Max(2, config?.MinEntityLength ?? 3);
-        var candidates = _nameCandidateFinder.Find(cues, item.Name, minLen, max);
+        var excludedCast = BuildCastExcludeNames(item, minLen);
+        var candidates = _nameCandidateFinder.Find(cues, item.Name, excludedCast, minLen, max);
 
         _logger.LogInformation(
-            "Look it up name candidates for {Item}: {Count} from {Subtitle} ({Cues} cues)",
+            "Look it up name candidates for {Item}: {Count} from {Subtitle} ({Cues} cues), excluded cast tokens={Excluded}",
             item.Name,
             candidates.Count,
             subtitle.Label,
-            cues.Count);
+            cues.Count,
+            excludedCast.Count);
 
         return new NameCandidatesResult
         {
@@ -191,8 +194,71 @@ public class LookItUpService : ILookItUpService
             ItemName = item.Name,
             Subtitle = subtitle.Label,
             CueCount = cues.Count,
-            Candidates = candidates
+            Candidates = candidates,
+            ExcludedCastNames = excludedCast.OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList()
         };
+    }
+
+    private HashSet<string> BuildCastExcludeNames(BaseItem item, int minLength)
+    {
+        var exclude = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        AddPeopleToExclude(exclude, _libraryManager.GetPeople(item), minLength);
+
+        if (item is Episode episode)
+        {
+            try
+            {
+                var series = episode.Series ?? (episode.SeriesId != Guid.Empty
+                    ? _libraryManager.GetItemById(episode.SeriesId)
+                    : null);
+                if (series is not null)
+                {
+                    AddPeopleToExclude(exclude, _libraryManager.GetPeople(series), minLength);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Could not load series cast for {Item}", item.Name);
+            }
+        }
+
+        return exclude;
+    }
+
+    private static void AddPeopleToExclude(
+        HashSet<string> exclude,
+        IReadOnlyList<PersonInfo> people,
+        int minLength)
+    {
+        foreach (var person in people)
+        {
+            AddNameTokens(exclude, person.Role, minLength);
+            AddNameTokens(exclude, person.Name, minLength);
+        }
+    }
+
+    private static void AddNameTokens(HashSet<string> exclude, string? value, int minLength)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return;
+        }
+
+        var cleaned = value.Trim();
+        if (cleaned.Length >= minLength)
+        {
+            exclude.Add(cleaned);
+        }
+
+        foreach (var part in cleaned.Split(
+                     [' ', '/', ',', '-', '—', '–', '(', ')'],
+                     StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (part.Length >= minLength)
+            {
+                exclude.Add(part);
+            }
+        }
     }
 
     /// <inheritdoc />

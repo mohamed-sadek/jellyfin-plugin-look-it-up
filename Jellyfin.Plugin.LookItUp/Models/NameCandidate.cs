@@ -47,6 +47,9 @@ public sealed class NameCandidatesResult
     /// <summary>Gets or sets ranked candidates that would be sent to AI.</summary>
     public IReadOnlyList<NameCandidate> Candidates { get; set; } = [];
 
+    /// <summary>Gets or sets cast/character names excluded via Jellyfin metadata.</summary>
+    public IReadOnlyList<string> ExcludedCastNames { get; set; } = [];
+
     /// <summary>Gets or sets an optional warning.</summary>
     public string? Warning { get; set; }
 }

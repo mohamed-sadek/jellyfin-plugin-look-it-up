@@ -313,6 +313,8 @@
                         'Subtitle: ' + (result.subtitle || result.Subtitle || '-'),
                         'Cues: ' + (result.cueCount ?? result.CueCount ?? 0),
                         'Count: ' + (result.count ?? result.Count ?? list.length),
+                        'Excluded cast tokens: ' + (result.excludedCastCount ?? result.ExcludedCastCount ?? 0),
+                        'Excluded sample: ' + ((result.excludedCastSample || result.ExcludedCastSample || []).slice(0, 12).join(', ') || '(none)'),
                         ''
                     ];
                     list.forEach(function (c, i) {

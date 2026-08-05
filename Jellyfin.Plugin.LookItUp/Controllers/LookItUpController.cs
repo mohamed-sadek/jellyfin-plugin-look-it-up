@@ -119,6 +119,8 @@ public class LookItUpController : ControllerBase
                 cueCount = result.CueCount,
                 count = result.Candidates.Count,
                 warning = result.Warning,
+                excludedCastCount = result.ExcludedCastNames.Count,
+                excludedCastSample = result.ExcludedCastNames.Take(30),
                 candidates = result.Candidates.Select(c => new
                 {
                     term = c.Term,
