@@ -1,7 +1,7 @@
 ﻿(function () {
   'use strict';
 
-  const CLIENT_VERSION = '1.2.23.0';
+  const CLIENT_VERSION = '1.2.24.0';
   const STYLE_ID = 'lookitup-styles';
   const POPUP_ID = 'lookitup-popup';
   const SERIES_BTN_ID = 'lookitup-prepare-series-btn';
@@ -1112,6 +1112,453 @@
     window.location.hash = '#!/' + target;
   }
 
+  // ---- Prepare page UI (driven from injected script.js — config-page inline JS is unreliable) ----
+  const PrepareUI = {
+    pluginUniqueId: 'a8ab0fed-cac9-406d-b98b-58161bf970b8',
+    rootItemId: null,
+    preview: null,
+    statusTimer: null,
+    previewGen: 0,
+    loading: false,
+    lastPage: null
+  };
+
+  function preparePageFrom(el) {
+    return el && el.closest ? el.closest('#LookItUpPreparePage') : document.querySelector('#LookItUpPreparePage');
+  }
+
+  function pq(page, sel) {
+    return page ? page.querySelector(sel) : null;
+  }
+
+  function readPrepareQueryId() {
+    try {
+      const hash = String(location.hash || '');
+      const search = String(location.search || '');
+      const m = hash.match(/[?&]id=([0-9a-fA-F-]{32,36})/i) || search.match(/[?&]id=([0-9a-fA-F-]{32,36})/i);
+      return m ? m[1] : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function ensurePrepareItemId() {
+    PrepareUI.rootItemId = readPrepareQueryId() || PrepareUI.rootItemId || seriesUiItemId;
+    return PrepareUI.rootItemId;
+  }
+
+  function formatPrepareClock(ms) {
+    const t = Math.max(0, Math.floor(Number(ms) / 1000));
+    const m = Math.floor(t / 60);
+    const s = t % 60;
+    return m + ':' + String(s).padStart(2, '0');
+  }
+
+  function prepareEpisodeLabel(item) {
+    const sn = item.seasonNumber ?? item.SeasonNumber;
+    const en = item.episodeNumber ?? item.EpisodeNumber;
+    const name = item.name || item.Name || 'Item';
+    if (sn != null && en != null) {
+      return 'S' + String(sn).padStart(2, '0') + 'E' + String(en).padStart(2, '0') + ' — ' + name;
+    }
+    return name;
+  }
+
+  function prepareCountSelected(page) {
+    return page.querySelectorAll('#prepareItemsHost input.lookitup-term:checked').length;
+  }
+
+  function prepareUpdateSummary(page) {
+    const items = (PrepareUI.preview && (PrepareUI.preview.items || PrepareUI.preview.Items)) || [];
+    let totalCand = 0;
+    items.forEach((it) => {
+      totalCand += ((it.candidates || it.Candidates) || []).length;
+    });
+    const el = pq(page, '#prepareSummary');
+    if (el) {
+      el.textContent =
+        items.length + ' item(s), ' + totalCand + ' candidate(s), ' + prepareCountSelected(page) + ' selected for AI';
+    }
+  }
+
+  function prepareSetBusy(page, busy, message) {
+    PrepareUI.loading = !!busy;
+    const btn = pq(page, '#btnLoadPreview');
+    if (btn) {
+      btn.disabled = !!busy;
+    }
+    if (message) {
+      const label = pq(page, '#prepareRootLabel');
+      if (label) {
+        label.textContent = message;
+      }
+    }
+  }
+
+  function prepareRenderPreview(page, preview) {
+    PrepareUI.preview = preview;
+    const host = pq(page, '#prepareItemsHost');
+    const label = pq(page, '#prepareRootLabel');
+    if (!host || !label) {
+      return;
+    }
+    host.innerHTML = '';
+    const rootName = preview.rootItemName || preview.RootItemName || 'Item';
+    const rootType = preview.rootItemType || preview.RootItemType || '';
+    label.textContent = rootType + ': ' + rootName;
+
+    const items = preview.items || preview.Items || [];
+    if (!items.length) {
+      host.innerHTML = '<p>' + (preview.warning || preview.Warning || 'No candidates found.') + '</p>';
+      prepareUpdateSummary(page);
+      return;
+    }
+
+    items.forEach((item) => {
+      const itemId = item.itemId || item.ItemId;
+      const section = document.createElement('div');
+      section.className = 'lookitup-ep';
+      section.style.cssText = 'margin:1.25em 0;padding:12px 14px;border-radius:10px;background:rgba(0,0,0,.06);';
+
+      const head = document.createElement('div');
+      head.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;';
+      const title = document.createElement('strong');
+      title.textContent = prepareEpisodeLabel(item);
+      head.appendChild(title);
+
+      if (item.alreadyPrepared || item.AlreadyPrepared) {
+        const badge = document.createElement('span');
+        badge.textContent = 'already prepared';
+        badge.style.opacity = '0.7';
+        head.appendChild(badge);
+      }
+
+      const warn = item.warning || item.Warning;
+      if (warn) {
+        const w = document.createElement('div');
+        w.style.cssText = 'width:100%;opacity:.8;font-size:0.92em;';
+        w.textContent = warn;
+        head.appendChild(w);
+      }
+
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'raised emby-button';
+      toggle.textContent = 'Toggle episode';
+      toggle.addEventListener('click', () => {
+        const boxes = section.querySelectorAll('input.lookitup-term');
+        const anyOff = Array.prototype.some.call(boxes, (b) => !b.checked);
+        boxes.forEach((b) => {
+          b.checked = anyOff;
+        });
+        prepareUpdateSummary(page);
+      });
+      head.appendChild(toggle);
+      section.appendChild(head);
+
+      const list = document.createElement('div');
+      const candidates = item.candidates || item.Candidates || [];
+      if (!candidates.length) {
+        const empty = document.createElement('div');
+        empty.style.opacity = '0.75';
+        empty.textContent = 'No name candidates.';
+        list.appendChild(empty);
+      }
+
+      candidates.forEach((c) => {
+        const term = c.term || c.Term || '';
+        const suggested = !!(c.suggested ?? c.Suggested);
+        const row = document.createElement('label');
+        row.style.cssText = 'display:flex;gap:10px;align-items:flex-start;padding:6px 0;cursor:pointer;';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.className = 'lookitup-term';
+        cb.checked = suggested;
+        cb.dataset.itemId = itemId;
+        cb.dataset.term = term;
+        cb.dataset.suggested = suggested ? '1' : '0';
+        cb.addEventListener('change', () => prepareUpdateSummary(page));
+
+        const body = document.createElement('div');
+        body.style.flex = '1';
+        const line1 = document.createElement('div');
+        line1.innerHTML = '<strong></strong> <span style="opacity:.7"></span>';
+        line1.querySelector('strong').textContent = term;
+        line1.querySelector('span').textContent =
+          '@' +
+          formatPrepareClock(c.startMs ?? c.StartMs) +
+          ' · score ' +
+          (c.score ?? c.Score ?? 0) +
+          (suggested ? ' · suggested' : '') +
+          ' · ' +
+          (c.reason || c.Reason || '');
+        const cue = document.createElement('div');
+        cue.style.cssText = 'opacity:.75;font-size:0.92em;margin-top:2px;';
+        cue.textContent = c.cueText || c.CueText || '';
+        body.appendChild(line1);
+        body.appendChild(cue);
+        row.appendChild(cb);
+        row.appendChild(body);
+        list.appendChild(row);
+      });
+
+      section.appendChild(list);
+      host.appendChild(section);
+    });
+
+    prepareUpdateSummary(page);
+  }
+
+  function prepareCollectSelections(page) {
+    const map = {};
+    page.querySelectorAll('#prepareItemsHost input.lookitup-term:checked').forEach((cb) => {
+      const id = cb.dataset.itemId;
+      const term = cb.dataset.term;
+      if (!id || !term) return;
+      if (!map[id]) map[id] = [];
+      map[id].push(term);
+    });
+    return Object.keys(map).map((id) => ({ itemId: id, terms: map[id] }));
+  }
+
+  function prepareRenderJobStatus(page, s) {
+    const el = pq(page, '#prepareJobStatus');
+    if (!el) return;
+    if (!s) {
+      el.textContent = 'No status.';
+      return;
+    }
+    el.textContent = [
+      'Running: ' + !!(s.IsRunning ?? s.isRunning),
+      'Progress: ' + ((s.Completed ?? s.completed) || 0) + ' / ' + ((s.Total ?? s.total) || 0),
+      'With annotations: ' + ((s.WithAnnotations ?? s.withAnnotations) || 0),
+      'Skipped: ' + ((s.Skipped ?? s.skipped) || 0),
+      'Failed: ' + ((s.Failed ?? s.failed) || 0),
+      'Current: ' + ((s.CurrentItem ?? s.currentItem) || '-'),
+      'Last error: ' + ((s.LastError ?? s.lastError) || '-'),
+      'Finished: ' + ((s.FinishedAtUtc ?? s.finishedAtUtc) || '-')
+    ].join('\n');
+  }
+
+  async function prepareRefreshStatus(page) {
+    page = page || PrepareUI.lastPage || preparePageFrom(document.body);
+    const api = getApiClient();
+    if (!api || !page) return;
+    try {
+      const s = await api.ajax({
+        url: api.getUrl('LookItUp/prepare/status'),
+        type: 'GET',
+        dataType: 'json'
+      });
+      prepareRenderJobStatus(page, s);
+      const running = !!(s.IsRunning ?? s.isRunning);
+      if (running && !PrepareUI.statusTimer) {
+        PrepareUI.statusTimer = setInterval(() => prepareRefreshStatus(page), 2000);
+      }
+      if (!running && PrepareUI.statusTimer) {
+        clearInterval(PrepareUI.statusTimer);
+        PrepareUI.statusTimer = null;
+      }
+    } catch (err) {
+      const el = pq(page, '#prepareJobStatus');
+      if (el) el.textContent = 'Status error: ' + err;
+    }
+  }
+
+  async function prepareLoadPreview(page) {
+    page = page || PrepareUI.lastPage || preparePageFrom(document.body);
+    const api = getApiClient();
+    const id = ensurePrepareItemId();
+    if (!api) {
+      prepareSetBusy(page, false, 'ApiClient not ready. Refresh the page.');
+      return;
+    }
+    if (!id) {
+      prepareSetBusy(page, false, 'Missing item id. Open this page from the Look it up button on a show or episode.');
+      return;
+    }
+
+    PrepareUI.previewGen += 1;
+    const gen = PrepareUI.previewGen;
+    const input = pq(page, '#txtNamesPerItem');
+    const n = parseInt(input && input.value, 10) || 5;
+    prepareSetBusy(page, true, 'Loading candidates…');
+    const host = pq(page, '#prepareItemsHost');
+    const summary = pq(page, '#prepareSummary');
+    if (host) host.innerHTML = '';
+    if (summary) summary.textContent = '';
+
+    try {
+      const preview = await api.ajax({
+        url: api.getUrl('LookItUp/' + id + '/prepare-preview') + '?namesPerItem=' + encodeURIComponent(n),
+        type: 'GET',
+        dataType: 'json'
+      });
+      if (gen !== PrepareUI.previewGen) return;
+      prepareSetBusy(page, false);
+      const suggested = preview.suggestedNamesPerItem || preview.SuggestedNamesPerItem || n;
+      if (input) input.value = suggested;
+      prepareRenderPreview(page, preview);
+    } catch (err) {
+      if (gen !== PrepareUI.previewGen) return;
+      prepareSetBusy(page, false, 'Failed to load preview: ' + err);
+    }
+  }
+
+  async function prepareStartSelected(page) {
+    page = page || PrepareUI.lastPage || preparePageFrom(document.body);
+    const api = getApiClient();
+    const id = ensurePrepareItemId();
+    if (!api || !id) {
+      window.Dashboard?.alert?.('Missing item id or ApiClient.');
+      return;
+    }
+    const items = prepareCollectSelections(page);
+    if (!items.length) {
+      window.Dashboard?.alert?.('Select at least one name.');
+      return;
+    }
+    if (!window.confirm('Prepare ' + prepareCountSelected(page) + ' name(s) across ' + items.length + ' item(s) with AI?')) {
+      return;
+    }
+    const status = pq(page, '#prepareJobStatus');
+    if (status) status.textContent = 'Starting prepare…';
+    try {
+      const result = await api.ajax({
+        url: api.getUrl('LookItUp/' + id + '/prepare-selected'),
+        type: 'POST',
+        dataType: 'json',
+        contentType: 'application/json',
+        data: JSON.stringify({ force: true, items: items })
+      });
+      prepareRenderJobStatus(page, result.status || result.Status || result);
+      if (!PrepareUI.statusTimer) {
+        PrepareUI.statusTimer = setInterval(() => prepareRefreshStatus(page), 2000);
+      }
+      if (!(result.started || result.Started)) {
+        window.Dashboard?.alert?.('Could not start: ' + (result.error || result.Error || 'unknown'));
+      }
+      prepareRefreshStatus(page);
+    } catch (err) {
+      window.Dashboard?.alert?.('Prepare failed: ' + err);
+    }
+  }
+
+  async function prepareStop(page) {
+    page = page || PrepareUI.lastPage || preparePageFrom(document.body);
+    const api = getApiClient();
+    PrepareUI.previewGen += 1;
+    prepareSetBusy(page, false, 'Stopped. Adjust the number and click Load candidates when ready.');
+    PrepareUI.preview = null;
+    const host = pq(page, '#prepareItemsHost');
+    const summary = pq(page, '#prepareSummary');
+    const status = pq(page, '#prepareJobStatus');
+    if (host) host.innerHTML = '';
+    if (summary) summary.textContent = '';
+    if (status) status.textContent = 'Stop requested…';
+    if (!api) return;
+    try {
+      const result = await api.ajax({
+        url: api.getUrl('LookItUp/prepare/cancel'),
+        type: 'POST',
+        dataType: 'json',
+        contentType: 'application/json',
+        data: '{}'
+      });
+      const cancelled = !!(result.cancelled ?? result.Cancelled);
+      if (status) {
+        status.textContent = cancelled
+          ? 'Prepare job cancelled.'
+          : 'Stopped (no background prepare job was running).';
+      }
+      prepareRefreshStatus(page);
+    } catch (err) {
+      if (status) status.textContent = 'Stop note: ' + err;
+    }
+  }
+
+  function prepareSelectSuggested(page) {
+    page.querySelectorAll('#prepareItemsHost input.lookitup-term').forEach((cb) => {
+      cb.checked = cb.dataset.suggested === '1';
+    });
+    prepareUpdateSummary(page);
+  }
+
+  function prepareSelectNone(page) {
+    page.querySelectorAll('#prepareItemsHost input.lookitup-term').forEach((cb) => {
+      cb.checked = false;
+    });
+    prepareUpdateSummary(page);
+  }
+
+  function initPreparePageIfPresent() {
+    const page = preparePageFrom(document.body);
+    if (!page) {
+      return;
+    }
+    PrepareUI.lastPage = page;
+    ensurePrepareItemId();
+    const label = pq(page, '#prepareRootLabel');
+    if (label && !PrepareUI.loading && !PrepareUI.preview) {
+      label.textContent = PrepareUI.rootItemId
+        ? 'Set the number below, then click Load candidates.'
+        : 'Missing item id. Open this page from the Look it up button on a show or episode.';
+    }
+    const api = getApiClient();
+    if (api) {
+      api.getPluginConfiguration(PrepareUI.pluginUniqueId)
+        .then((config) => {
+          const input = pq(page, '#txtNamesPerItem');
+          if (input && (!input.value || input.value === '5')) {
+            input.value = config.AiNamesPerPrepare || config.aiNamesPerPrepare || 5;
+          }
+        })
+        .catch(() => {});
+      prepareRefreshStatus(page);
+    }
+  }
+
+  function onPrepareDocumentClick(e) {
+    const t = e.target;
+    if (!t || !t.closest) return;
+    const page = t.closest('#LookItUpPreparePage');
+    if (!page) return;
+    PrepareUI.lastPage = page;
+
+    const btn = t.closest('#btnLoadPreview, #btnSelectSuggested, #btnSelectNone, #btnStartPrepare, #btnCancelPrepare');
+    if (!btn) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (btn.id === 'btnLoadPreview') prepareLoadPreview(page);
+    else if (btn.id === 'btnSelectSuggested') prepareSelectSuggested(page);
+    else if (btn.id === 'btnSelectNone') prepareSelectNone(page);
+    else if (btn.id === 'btnStartPrepare') prepareStartSelected(page);
+    else if (btn.id === 'btnCancelPrepare') prepareStop(page);
+  }
+
+  function startPreparePageWatcher() {
+    document.addEventListener('click', onPrepareDocumentClick, true);
+    let initTimer = null;
+    const scheduleInit = () => {
+      if (initTimer) return;
+      initTimer = setTimeout(() => {
+        initTimer = null;
+        initPreparePageIfPresent();
+      }, 100);
+    };
+    const obs = new MutationObserver(() => {
+      if (document.getElementById('LookItUpPreparePage')) {
+        scheduleInit();
+      }
+    });
+    obs.observe(document.documentElement, { childList: true, subtree: true });
+    window.addEventListener('hashchange', scheduleInit);
+    setInterval(initPreparePageIfPresent, 2000);
+    initPreparePageIfPresent();
+  }
+
   async function startSeriesPrepare(forceRebuild) {
     // Kept for status polling compatibility; primary UX is the prepare page.
     const api = getApiClient();
@@ -1240,8 +1687,12 @@
   }
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', start);
+    document.addEventListener('DOMContentLoaded', () => {
+      start();
+      startPreparePageWatcher();
+    });
   } else {
     start();
+    startPreparePageWatcher();
   }
 })();
