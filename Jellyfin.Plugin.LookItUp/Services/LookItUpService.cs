@@ -38,6 +38,11 @@ public interface ILookItUpService
     /// Returns a prepared cache entry when present and current.
     /// </summary>
     bool TryGetPrepared(Guid itemId, out ItemAnnotationCache? cache);
+
+    /// <summary>
+    /// Dry-run: extract subtitle name candidates that would be sent to AI (no AI call).
+    /// </summary>
+    Task<NameCandidatesResult> GetNameCandidatesAsync(Guid itemId, CancellationToken cancellationToken);
 }
 
 /// <summary>
@@ -63,6 +68,7 @@ public class LookItUpService : ILookItUpService
     private readonly IEntityExtractor _entityExtractor;
     private readonly IWikipediaLookupService _wikipedia;
     private readonly IAiEntityExtractor _aiExtractor;
+    private readonly INameCandidateFinder _nameCandidateFinder;
     private readonly IAnnotationStore _store;
     private readonly ILogger<LookItUpService> _logger;
 
@@ -77,6 +83,7 @@ public class LookItUpService : ILookItUpService
         IEntityExtractor entityExtractor,
         IWikipediaLookupService wikipedia,
         IAiEntityExtractor aiExtractor,
+        INameCandidateFinder nameCandidateFinder,
         IAnnotationStore store,
         ILogger<LookItUpService> logger)
     {
@@ -87,6 +94,7 @@ public class LookItUpService : ILookItUpService
         _entityExtractor = entityExtractor;
         _wikipedia = wikipedia;
         _aiExtractor = aiExtractor;
+        _nameCandidateFinder = nameCandidateFinder;
         _store = store;
         _logger = logger;
     }
@@ -134,6 +142,57 @@ public class LookItUpService : ILookItUpService
         var prepared = await PrepareItemAsync(itemId, force: true, cancellationToken)
             .ConfigureAwait(false);
         return (IReadOnlyList<ContextAnnotation>)(prepared.Cache?.Annotations ?? []);
+    }
+
+    /// <inheritdoc />
+    public async Task<NameCandidatesResult> GetNameCandidatesAsync(
+        Guid itemId,
+        CancellationToken cancellationToken)
+    {
+        var item = _libraryManager.GetItemById(itemId);
+        if (item is null)
+        {
+            return new NameCandidatesResult
+            {
+                ItemId = itemId,
+                Warning = "Item not found."
+            };
+        }
+
+        var config = Plugin.Instance?.Configuration;
+        var preferred = config?.PreferredSubtitleLanguages ?? "en";
+        var subtitle = await ResolveSubtitleContentAsync(item, preferred, cancellationToken)
+            .ConfigureAwait(false);
+        if (subtitle is null)
+        {
+            return new NameCandidatesResult
+            {
+                ItemId = itemId,
+                ItemName = item.Name,
+                Warning = "No readable text subtitles found."
+            };
+        }
+
+        var cues = _subtitleParser.Parse(subtitle.Content, subtitle.Label);
+        var max = Math.Max(1, config?.MaxAnnotationsPerItem ?? 40);
+        var minLen = Math.Max(2, config?.MinEntityLength ?? 3);
+        var candidates = _nameCandidateFinder.Find(cues, item.Name, minLen, max);
+
+        _logger.LogInformation(
+            "Look it up name candidates for {Item}: {Count} from {Subtitle} ({Cues} cues)",
+            item.Name,
+            candidates.Count,
+            subtitle.Label,
+            cues.Count);
+
+        return new NameCandidatesResult
+        {
+            ItemId = itemId,
+            ItemName = item.Name,
+            Subtitle = subtitle.Label,
+            CueCount = cues.Count,
+            Candidates = candidates
+        };
     }
 
     /// <inheritdoc />

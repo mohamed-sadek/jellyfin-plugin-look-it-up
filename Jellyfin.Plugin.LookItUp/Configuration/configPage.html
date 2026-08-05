@@ -69,6 +69,9 @@
                         <div class="fieldDescription">Use this for testing a single episode/movie. Do not use Prepare library for that.</div>
                     </div>
                     <div style="display:flex;gap:12px;flex-wrap:wrap;margin:1em 0;">
+                        <button is="emby-button" type="button" id="btnPreviewNames" class="raised emby-button">
+                            <span>Preview names (no AI)</span>
+                        </button>
                         <button is="emby-button" type="button" id="btnPrepareOne" class="raised button-submit emby-button">
                             <span>Prepare this item</span>
                         </button>
@@ -289,6 +292,48 @@
                 });
             }
 
+            function previewNames() {
+                var id = (document.querySelector('#txtPrepareItemId').value || '').trim();
+                if (!id) {
+                    Dashboard.alert('Enter an item id first.');
+                    return;
+                }
+                Dashboard.showLoadingMsg();
+                document.querySelector('#prepareStatusBox').textContent = 'Finding name candidates (no AI): ' + id + ' …';
+                ApiClient.ajax({
+                    url: ApiClient.getUrl('LookItUp/' + id + '/candidates'),
+                    type: 'GET',
+                    dataType: 'json'
+                }).then(function (result) {
+                    Dashboard.hideLoadingMsg();
+                    var list = result.candidates || result.Candidates || [];
+                    var lines = [
+                        'Name candidates (would be sent to AI later).',
+                        'Item: ' + (result.itemName || result.ItemName || id),
+                        'Subtitle: ' + (result.subtitle || result.Subtitle || '-'),
+                        'Cues: ' + (result.cueCount ?? result.CueCount ?? 0),
+                        'Count: ' + (result.count ?? result.Count ?? list.length),
+                        ''
+                    ];
+                    list.forEach(function (c, i) {
+                        lines.push(
+                            (i + 1) + '. [' + (c.start || c.Start || '') + '] ' +
+                            (c.term || c.Term || '') +
+                            '  (' + (c.reason || c.Reason || '') + ', score ' + (c.score ?? c.Score ?? '') + ')' +
+                            '\n    cue: ' + (c.cueText || c.CueText || '')
+                        );
+                    });
+                    if (result.warning || result.Warning) {
+                        lines.push('Warning: ' + (result.warning || result.Warning));
+                    }
+                    document.querySelector('#prepareStatusBox').textContent = lines.join('\n');
+                    Dashboard.alert('Found ' + list.length + ' name candidates (no AI).');
+                }).catch(function (err) {
+                    Dashboard.hideLoadingMsg();
+                    Dashboard.alert('Preview names failed: ' + err);
+                });
+            }
+
             function prepareOneItem() {
                 var id = (document.querySelector('#txtPrepareItemId').value || '').trim();
                 if (!id) {
@@ -355,6 +400,7 @@
                     });
                 });
 
+            document.querySelector('#btnPreviewNames').addEventListener('click', previewNames);
             document.querySelector('#btnPrepareOne').addEventListener('click', prepareOneItem);
             document.querySelector('#btnCancelPrepare').addEventListener('click', cancelPrepare);
             document.querySelector('#btnPrepareLibrary').addEventListener('click', function () { startPrepare(false); });
