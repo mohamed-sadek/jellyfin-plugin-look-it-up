@@ -40,8 +40,6 @@
                 rootItemId: null,
                 preview: null,
                 statusTimer: null,
-                previewRequest: null,
-                previewAbort: null,
                 previewGen: 0
             };
 
@@ -239,52 +237,28 @@
                 });
             }
 
-            function abortPreview() {
-                LookItUpPrepare.previewGen += 1;
-                if (LookItUpPrepare.previewAbort) {
-                    try { LookItUpPrepare.previewAbort.abort(); } catch (e) { /* ignore */ }
-                    LookItUpPrepare.previewAbort = null;
-                }
-                if (LookItUpPrepare.previewRequest && LookItUpPrepare.previewRequest.abort) {
-                    try { LookItUpPrepare.previewRequest.abort(); } catch (e) { /* ignore */ }
-                }
-                LookItUpPrepare.previewRequest = null;
-                try { Dashboard.hideLoadingMsg(); } catch (e) { /* ignore */ }
-            }
-
             function loadPreview() {
                 var id = LookItUpPrepare.rootItemId;
                 if (!id) {
                     qs('#prepareRootLabel').textContent = 'Missing item id. Open this page from the Look it up button on a show or episode.';
                     return;
                 }
-                abortPreview();
+                // Invalidate any in-flight response without AbortSignal (ApiClient may not support it).
+                LookItUpPrepare.previewGen += 1;
                 var gen = LookItUpPrepare.previewGen;
                 var n = parseInt(qs('#txtNamesPerItem').value, 10) || 5;
-                qs('#prepareRootLabel').textContent = 'Loading candidates… (embedded subtitles can take a while; use Stop to cancel)';
+                qs('#prepareRootLabel').textContent = 'Loading candidates…';
                 qs('#prepareItemsHost').innerHTML = '';
                 qs('#prepareSummary').textContent = '';
 
-                var controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
-                LookItUpPrepare.previewAbort = controller;
-
-                var reqOpts = {
+                ApiClient.ajax({
                     url: ApiClient.getUrl('LookItUp/' + id + '/prepare-preview') + '?namesPerItem=' + encodeURIComponent(n),
                     type: 'GET',
                     dataType: 'json'
-                };
-                if (controller) {
-                    reqOpts.signal = controller.signal;
-                }
-                var req = ApiClient.ajax(reqOpts);
-                LookItUpPrepare.previewRequest = req;
-
-                Promise.resolve(req).then(function (preview) {
+                }).then(function (preview) {
                     if (gen !== LookItUpPrepare.previewGen) {
                         return;
                     }
-                    LookItUpPrepare.previewRequest = null;
-                    LookItUpPrepare.previewAbort = null;
                     var suggested = preview.suggestedNamesPerItem || preview.SuggestedNamesPerItem || n;
                     qs('#txtNamesPerItem').value = suggested;
                     renderPreview(preview);
@@ -292,14 +266,7 @@
                     if (gen !== LookItUpPrepare.previewGen) {
                         return;
                     }
-                    LookItUpPrepare.previewRequest = null;
-                    LookItUpPrepare.previewAbort = null;
-                    var msg = String((err && (err.name || err.message || err.statusText)) || err || '');
-                    if (/abort|cancel/i.test(msg) || (err && err.name === 'AbortError')) {
-                        qs('#prepareRootLabel').textContent = 'Candidate load cancelled.';
-                        return;
-                    }
-                    qs('#prepareRootLabel').textContent = 'Failed to load preview: ' + msg;
+                    qs('#prepareRootLabel').textContent = 'Failed to load preview: ' + err;
                 });
             }
 
@@ -335,7 +302,7 @@
             }
 
             function stopAll() {
-                abortPreview();
+                LookItUpPrepare.previewGen += 1;
                 qs('#prepareRootLabel').textContent = 'Stopped. Click Reload candidates to try again.';
                 qs('#prepareJobStatus').textContent = 'Stop requested…';
                 LookItUpPrepare.preview = null;
@@ -351,92 +318,80 @@
                     var cancelled = !!(result.cancelled ?? result.Cancelled);
                     qs('#prepareJobStatus').textContent = cancelled
                         ? 'Stop requested — prepare job cancelled.'
-                        : 'Stop: preview aborted (no background prepare job was running).';
+                        : 'Stop: no background prepare job was running.';
                     refreshJobStatus();
                 }).catch(function (err) {
                     qs('#prepareJobStatus').textContent =
-                        'Preview aborted. Cancel API failed: ' + err + ' (safe to ignore if nothing was preparing)';
+                        'Cancel API failed: ' + err + ' (safe to ignore if nothing was preparing)';
                 });
             }
 
-            function onPageClick(e) {
-                var t = e.target;
-                if (!t || !t.closest) return;
-                var btn = t.closest('#btnReloadPreview, #btnSelectSuggested, #btnSelectNone, #btnStartPrepare, #btnCancelPrepare, [data-action="toggle-episode"]');
-                if (!btn) return;
-                var id = btn.id;
-                var action = btn.getAttribute('data-action');
-                e.preventDefault();
-                e.stopPropagation();
-                if (id === 'btnReloadPreview') {
-                    loadPreview();
-                } else if (id === 'btnSelectSuggested') {
-                    document.querySelectorAll('#prepareItemsHost input.lookitup-term').forEach(function (cb) {
-                        cb.checked = cb.dataset.suggested === '1';
-                    });
-                    updateSummary();
-                } else if (id === 'btnSelectNone') {
-                    document.querySelectorAll('#prepareItemsHost input.lookitup-term').forEach(function (cb) {
-                        cb.checked = false;
-                    });
-                    updateSummary();
-                } else if (id === 'btnStartPrepare') {
-                    startSelected();
-                } else if (id === 'btnCancelPrepare') {
-                    stopAll();
-                } else if (action === 'toggle-episode') {
-                    var section = btn.closest('.lookitup-ep');
-                    if (!section) return;
-                    var boxes = section.querySelectorAll('input.lookitup-term');
-                    var anyOff = Array.prototype.some.call(boxes, function (b) { return !b.checked; });
-                    boxes.forEach(function (b) { b.checked = anyOff; });
-                    updateSummary();
-                }
+            function bindOnce(el, handler) {
+                if (!el) return;
+                el.onclick = handler;
             }
 
             document.querySelector('#LookItUpPreparePage')
                 .addEventListener('pageshow', function () {
                     LookItUpPrepare.rootItemId = readQueryId();
+                    bindOnce(qs('#btnCancelPrepare'), function (e) {
+                        e.preventDefault();
+                        stopAll();
+                    });
+                    bindOnce(qs('#btnReloadPreview'), function (e) {
+                        e.preventDefault();
+                        loadPreview();
+                    });
+                    bindOnce(qs('#btnStartPrepare'), function (e) {
+                        e.preventDefault();
+                        startSelected();
+                    });
+                    bindOnce(qs('#btnSelectSuggested'), function (e) {
+                        e.preventDefault();
+                        document.querySelectorAll('#prepareItemsHost input.lookitup-term').forEach(function (cb) {
+                            cb.checked = cb.dataset.suggested === '1';
+                        });
+                        updateSummary();
+                    });
+                    bindOnce(qs('#btnSelectNone'), function (e) {
+                        e.preventDefault();
+                        document.querySelectorAll('#prepareItemsHost input.lookitup-term').forEach(function (cb) {
+                            cb.checked = false;
+                        });
+                        updateSummary();
+                    });
                     var page = qs('#LookItUpPreparePage');
-                    // Bind to this DOM node so re-created pages get a fresh listener.
-                    if (page && !page.__lookitupBound) {
-                        page.addEventListener('click', onPageClick, true);
+                    if (page && !page.__lookitupToggleBound) {
+                        page.addEventListener('click', function (e) {
+                            var t = e.target;
+                            if (!t || !t.closest) return;
+                            var btn = t.closest('[data-action="toggle-episode"]');
+                            if (!btn) return;
+                            e.preventDefault();
+                            var section = btn.closest('.lookitup-ep');
+                            if (!section) return;
+                            var boxes = section.querySelectorAll('input.lookitup-term');
+                            var anyOff = Array.prototype.some.call(boxes, function (b) { return !b.checked; });
+                            boxes.forEach(function (b) { b.checked = anyOff; });
+                            updateSummary();
+                        });
                         page.addEventListener('change', function (e) {
                             if (e.target && e.target.classList && e.target.classList.contains('lookitup-term')) {
                                 updateSummary();
                             }
                         });
-                        page.__lookitupBound = true;
-                    }
-                    // Direct handlers — Jellyfin may replace button nodes between visits.
-                    var stopBtn = qs('#btnCancelPrepare');
-                    if (stopBtn) {
-                        stopBtn.onclick = function (e) {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            stopAll();
-                        };
-                    }
-                    var reloadBtn = qs('#btnReloadPreview');
-                    if (reloadBtn) {
-                        reloadBtn.onclick = function (e) {
-                            e.preventDefault();
-                            loadPreview();
-                        };
-                    }
-                    var startBtn = qs('#btnStartPrepare');
-                    if (startBtn) {
-                        startBtn.onclick = function (e) {
-                            e.preventDefault();
-                            startSelected();
-                        };
+                        page.__lookitupToggleBound = true;
                     }
                     ApiClient.getPluginConfiguration(LookItUpPrepare.pluginUniqueId).then(function (config) {
-                        qs('#txtNamesPerItem').value = config.AiNamesPerPrepare || config.aiNamesPerPrepare || 5;
+                        if (!qs('#txtNamesPerItem').value) {
+                            qs('#txtNamesPerItem').value = config.AiNamesPerPrepare || config.aiNamesPerPrepare || 5;
+                        }
                         loadPreview();
                         refreshJobStatus();
                     }).catch(function () {
-                        qs('#txtNamesPerItem').value = 5;
+                        if (!qs('#txtNamesPerItem').value) {
+                            qs('#txtNamesPerItem').value = 5;
+                        }
                         loadPreview();
                         refreshJobStatus();
                     });

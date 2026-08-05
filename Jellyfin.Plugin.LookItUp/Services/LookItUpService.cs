@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Text;
 using Jellyfin.Data.Enums;
 using Jellyfin.Plugin.LookItUp.Models;
@@ -82,7 +83,7 @@ public class LookItUpService : ILookItUpService
 
     private readonly ILibraryManager _libraryManager;
     private readonly IMediaSourceManager _mediaSourceManager;
-    private readonly ISubtitleEncoder _subtitleEncoder;
+    private readonly IMediaEncoder _mediaEncoder;
     private readonly ISubtitleParser _subtitleParser;
     private readonly IEntityExtractor _entityExtractor;
     private readonly IWikipediaLookupService _wikipedia;
@@ -99,7 +100,7 @@ public class LookItUpService : ILookItUpService
     public LookItUpService(
         ILibraryManager libraryManager,
         IMediaSourceManager mediaSourceManager,
-        ISubtitleEncoder subtitleEncoder,
+        IMediaEncoder mediaEncoder,
         ISubtitleParser subtitleParser,
         IEntityExtractor entityExtractor,
         IWikipediaLookupService wikipedia,
@@ -111,7 +112,7 @@ public class LookItUpService : ILookItUpService
     {
         _libraryManager = libraryManager;
         _mediaSourceManager = mediaSourceManager;
-        _subtitleEncoder = subtitleEncoder;
+        _mediaEncoder = mediaEncoder;
         _subtitleParser = subtitleParser;
         _entityExtractor = entityExtractor;
         _wikipedia = wikipedia;
@@ -1196,6 +1197,8 @@ public class LookItUpService : ILookItUpService
     {
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             IReadOnlyList<MediaBrowser.Model.Dto.MediaSourceInfo> sources;
             try
             {
@@ -1227,6 +1230,7 @@ public class LookItUpService : ILookItUpService
 
             foreach (var (stream, score) in candidates)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 try
                 {
                     _logger.LogInformation(
@@ -1237,19 +1241,16 @@ public class LookItUpService : ILookItUpService
                         score,
                         item.Name);
 
-                    await using var streamData = await _subtitleEncoder.GetSubtitles(
-                            item,
-                            mediaSource.Id,
-                            stream.Index,
-                            "srt",
-                            startTimeTicks: 0,
-                            endTimeTicks: 0,
-                            preserveOriginalTimestamps: true,
-                            cancellationToken)
-                        .ConfigureAwait(false);
+                    // Prefer our own single-stream ffmpeg. Jellyfin's ISubtitleEncoder.GetSubtitles
+                    // demuxes ALL extractable tracks and can block for many minutes (ignores cancel on 10.11).
+                    if (string.IsNullOrWhiteSpace(item.Path) || !File.Exists(item.Path))
+                    {
+                        _logger.LogWarning("No media path for embedded extract on {Item}", item.Name);
+                        continue;
+                    }
 
-                    using var reader = new StreamReader(streamData, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
-                    var content = await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
+                    var content = await ExtractSubtitleStreamWithFfmpegAsync(item.Path, stream.Index, cancellationToken)
+                        .ConfigureAwait(false);
                     if (string.IsNullOrWhiteSpace(content))
                     {
                         continue;
@@ -1257,6 +1258,10 @@ public class LookItUpService : ILookItUpService
 
                     var label = $"embedded:{stream.Index}:{stream.Codec}:{stream.Language ?? "und"}";
                     return new SubtitleContent(content, label);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
                 }
                 catch (Exception ex)
                 {
@@ -1268,12 +1273,164 @@ public class LookItUpService : ILookItUpService
                 }
             }
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Embedded subtitle extraction failed for {Item}", item.Name);
         }
 
         return null;
+    }
+
+    private async Task<string?> ExtractSubtitleStreamWithFfmpegAsync(
+        string mediaPath,
+        int streamIndex,
+        CancellationToken cancellationToken)
+    {
+        var ffmpeg = _mediaEncoder.EncoderPath;
+        if (string.IsNullOrWhiteSpace(ffmpeg))
+        {
+            _logger.LogWarning("ffmpeg path is not configured; cannot extract embedded subtitles quickly");
+            return null;
+        }
+
+        var outPath = Path.Combine(Path.GetTempPath(), "lookitup-" + Guid.NewGuid().ToString("N") + ".srt");
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = ffmpeg,
+                RedirectStandardError = true,
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            // Single stream only — avoids Jellyfin's ExtractAllExtractableSubtitles hang.
+            foreach (var arg in new[]
+                     {
+                         "-hide_banner", "-nostdin", "-y",
+                         "-i", mediaPath,
+                         "-map", "0:" + streamIndex,
+                         "-an", "-vn",
+                         "-c:s", "srt",
+                         outPath
+                     })
+            {
+                psi.ArgumentList.Add(arg);
+            }
+
+            using var process = new Process { StartInfo = psi };
+            if (!process.Start())
+            {
+                return null;
+            }
+
+            var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
+            var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
+
+            await using var killReg = cancellationToken.Register(() =>
+            {
+                try
+                {
+                    if (!process.HasExited)
+                    {
+                        process.Kill(entireProcessTree: true);
+                    }
+                }
+                catch
+                {
+                    // ignored
+                }
+            });
+
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(90));
+
+            try
+            {
+                await process.WaitForExitAsync(timeoutCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                try
+                {
+                    if (!process.HasExited)
+                    {
+                        process.Kill(entireProcessTree: true);
+                    }
+                }
+                catch
+                {
+                    // ignored
+                }
+
+                throw;
+            }
+
+            string stderr;
+            try
+            {
+                stderr = await stderrTask.ConfigureAwait(false);
+            }
+            catch
+            {
+                stderr = string.Empty;
+            }
+
+            try
+            {
+                await stdoutTask.ConfigureAwait(false);
+            }
+            catch
+            {
+                // ignored
+            }
+
+            if (process.ExitCode != 0)
+            {
+                _logger.LogWarning(
+                    "ffmpeg subtitle extract failed (exit {Code}) for stream #{Index}: {Err}",
+                    process.ExitCode,
+                    streamIndex,
+                    Truncate(stderr, 400));
+                return null;
+            }
+
+            if (!File.Exists(outPath))
+            {
+                return null;
+            }
+
+            var text = await File.ReadAllTextAsync(outPath, cancellationToken).ConfigureAwait(false);
+            return string.IsNullOrWhiteSpace(text) ? null : text;
+        }
+        finally
+        {
+            try
+            {
+                if (File.Exists(outPath))
+                {
+                    File.Delete(outPath);
+                }
+            }
+            catch
+            {
+                // ignored
+            }
+        }
+    }
+
+    private static string Truncate(string? value, int max)
+    {
+        if (string.IsNullOrEmpty(value) || value.Length <= max)
+        {
+            return value ?? string.Empty;
+        }
+
+        return value[..max] + "…";
     }
 
     private string? FindExternalSubtitlePath(BaseItem item, HashSet<string> preferred)
