@@ -99,7 +99,8 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         var limit = Math.Clamp(config.AiNamesPerPrepare, 1, 20);
         var batch = candidates.Take(limit).ToList();
         var mentions = new List<AiEntityMention>();
-        string? lastError = null;
+        var outcomes = new List<string>(batch.Count);
+        var failed = 0;
         var rejected = 0;
 
         _logger.LogInformation(
@@ -119,54 +120,87 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
 
             var candidate = batch[i];
             _logger.LogInformation(
-                "Look it up AI verify {Index}/{Total}: {Term} @ {StartMs}ms",
+                "Look it up AI verify {Index}/{Total}: {Term} @ {StartMs}ms cue={Cue}",
                 i + 1,
                 batch.Count,
                 candidate.Term,
-                candidate.StartMs);
+                candidate.StartMs,
+                Truncate(candidate.CueText, 120));
 
-            var result = await VerifyOneAsync(
-                    itemName,
-                    candidate,
-                    config,
-                    model,
-                    baseUrl,
-                    cancellationToken)
-                .ConfigureAwait(false);
-
-            if (!string.IsNullOrWhiteSpace(result.Error))
+            // One candidate must never abort the rest of the batch.
+            AiEntityMention? mention = null;
+            string? error = null;
+            string? rejectReason = null;
+            try
             {
-                lastError = result.Error;
+                var result = await VerifyOneAsync(
+                        itemName,
+                        candidate,
+                        config,
+                        model,
+                        baseUrl,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                mention = result.Mention;
+                error = result.Error;
+                rejectReason = result.RejectReason;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                error = $"exception: {ex.Message}";
+                _logger.LogWarning(
+                    ex,
+                    "Look it up AI verify threw for {Term}; continuing with remaining names",
+                    candidate.Term);
+            }
+
+            if (!string.IsNullOrWhiteSpace(error))
+            {
+                failed++;
+                outcomes.Add($"{candidate.Term}: FAIL ({error})");
+                _logger.LogWarning(
+                    "Look it up AI verify failed for {Term}; continuing ({Done}/{Total})",
+                    candidate.Term,
+                    i + 1,
+                    batch.Count);
                 continue;
             }
 
-            if (result.Mention is null)
+            if (mention is null)
             {
                 rejected++;
+                outcomes.Add($"{candidate.Term}: reject ({rejectReason ?? "keep=false"})");
                 continue;
             }
 
-            mentions.Add(result.Mention);
+            mentions.Add(mention);
+            outcomes.Add($"{candidate.Term}: keep");
         }
+
+        var summary =
+            $"AI verify {mentions.Count} kept / {rejected} rejected / {failed} failed of {batch.Count}. " +
+            string.Join("; ", outcomes);
+
+        _logger.LogInformation("Look it up AI batch result for {Item}: {Summary}", itemName, summary);
 
         if (mentions.Count == 0)
         {
-            var warning = lastError
-                          ?? $"AI kept 0/{batch.Count} names (rejected {rejected}).";
-            _logger.LogWarning("Look it up AI produced 0 mentions for {Item}: {Warning}", itemName, warning);
-            return new AiExtractionResult { Warning = warning };
+            _logger.LogWarning("Look it up AI produced 0 mentions for {Item}: {Summary}", itemName, summary);
+            return new AiExtractionResult { Warning = summary };
         }
 
         return new AiExtractionResult
         {
             Mentions = mentions.OrderBy(m => m.StartMs).ToList(),
-            Warning = lastError is null
-                ? null
-                : $"Partial AI errors; kept {mentions.Count}/{batch.Count}. Last: {lastError}"
+            Warning = failed > 0 ? summary : null
         };
     }
 
-    private async Task<(AiEntityMention? Mention, string? Error)> VerifyOneAsync(
+    private async Task<(AiEntityMention? Mention, string? Error, string? RejectReason)> VerifyOneAsync(
         string itemName,
         NameCandidate candidate,
         PluginConfiguration config,
@@ -204,7 +238,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             {
                 ["model"] = model,
                 ["temperature"] = 0.1,
-                ["max_tokens"] = 200,
+                ["max_tokens"] = 400,
                 ["messages"] = new object[]
                 {
                     new { role = "system", content = system },
@@ -218,55 +252,85 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
 
             try
             {
+                _logger.LogInformation(
+                    "Look it up AI request {Term} attempt {Attempt}/{Max} → POST {Url} model={Model}",
+                    candidate.Term,
+                    attempt,
+                    maxAttempts,
+                    url,
+                    model);
+
                 using var response = await Http.SendAsync(request, cancellationToken).ConfigureAwait(false);
                 var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+
+                _logger.LogInformation(
+                    "Look it up AI response {Term} attempt {Attempt}: HTTP {Status} body={Body}",
+                    candidate.Term,
+                    attempt,
+                    (int)response.StatusCode,
+                    Truncate(body, 2000));
 
                 if ((int)response.StatusCode == 429)
                 {
                     var delay = ParseRetryDelay(body) ?? TimeSpan.FromSeconds(2 * attempt);
-                    lastError = $"AI HTTP 429 for {candidate.Term}: waiting {delay.TotalSeconds:0.0}s";
-                    _logger.LogWarning("{Error}", lastError);
+                    lastError = $"HTTP 429 (retry in {delay.TotalSeconds:0.0}s)";
+                    _logger.LogWarning(
+                        "Look it up AI rate-limited for {Term}: {Error}",
+                        candidate.Term,
+                        lastError);
                     await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
 
                 if (!response.IsSuccessStatusCode)
                 {
-                    lastError =
-                        $"AI HTTP {(int)response.StatusCode} for {candidate.Term}: {Truncate(body, 200)}";
-                    _logger.LogWarning("{Error}", lastError);
-                    return (null, lastError);
+                    lastError = $"HTTP {(int)response.StatusCode}: {Truncate(body, 200)}";
+                    // Non-retryable HTTP errors stop this candidate only.
+                    return (null, lastError, null);
                 }
 
                 var parsed = TryParseVerifyResponse(body);
                 if (!parsed.Ok)
                 {
-                    lastError = $"AI parse failed for {candidate.Term}: {parsed.Error}";
-                    _logger.LogWarning("{Error}. Body: {Snippet}", lastError, Truncate(body, 180));
+                    lastError = parsed.Error ?? "parse failed";
+                    _logger.LogWarning(
+                        "Look it up AI parse failed for {Term} attempt {Attempt}: {Error}; finish={Finish}; message={Message}",
+                        candidate.Term,
+                        attempt,
+                        lastError,
+                        parsed.FinishReason ?? "?",
+                        Truncate(parsed.RawMessageJson ?? string.Empty, 500));
                     await Task.Delay(400, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
 
                 if (!parsed.Keep)
                 {
+                    var reason = parsed.Reason ?? "keep=false";
                     _logger.LogInformation(
                         "Look it up AI rejected {Term}: {Reason}",
                         candidate.Term,
-                        parsed.Reason ?? "keep=false");
-                    return (null, null);
+                        reason);
+                    return (null, null, reason);
                 }
 
                 var term = string.IsNullOrWhiteSpace(parsed.Term) ? candidate.Term : parsed.Term!.Trim();
                 var summary = (parsed.Summary ?? string.Empty).Trim();
                 if (summary.Length == 0)
                 {
-                    return (null, $"AI kept {term} but returned empty summary.");
+                    return (null, $"kept {term} but empty summary", null);
                 }
 
                 if (!summary.StartsWith(term, StringComparison.OrdinalIgnoreCase))
                 {
                     summary = term + ": " + summary;
                 }
+
+                _logger.LogInformation(
+                    "Look it up AI kept {Term} → {Canonical}: {Summary}",
+                    candidate.Term,
+                    term,
+                    Truncate(summary, 160));
 
                 return (new AiEntityMention
                 {
@@ -275,7 +339,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                     Summary = summary.Length > 160 ? summary[..160] : summary,
                     StartMs = candidate.StartMs,
                     EndMs = Math.Max(candidate.EndMs, candidate.StartMs + 3000)
-                }, null);
+                }, null, null);
             }
             catch (OperationCanceledException)
             {
@@ -283,40 +347,62 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             }
             catch (Exception ex)
             {
-                lastError = $"AI request failed for {candidate.Term}: {ex.Message}";
-                _logger.LogWarning(ex, "{Error}", lastError);
+                lastError = ex.Message;
+                _logger.LogWarning(ex, "Look it up AI request exception for {Term} attempt {Attempt}", candidate.Term, attempt);
                 if (attempt == maxAttempts)
                 {
-                    return (null, lastError);
+                    return (null, lastError, null);
                 }
 
                 await Task.Delay(600 * attempt, cancellationToken).ConfigureAwait(false);
             }
         }
 
-        return (null, lastError ?? $"AI verify failed for {candidate.Term}.");
+        return (null, lastError ?? "verify failed", null);
     }
 
     private static VerifyParseResult TryParseVerifyResponse(string completionBody)
     {
-        if (string.IsNullOrWhiteSpace(completionBody) || completionBody.TrimStart()[0] != '{')
-        {
-            // Chat completions wrapper expected.
-        }
-
         try
         {
+            if (string.IsNullOrWhiteSpace(completionBody))
+            {
+                return VerifyParseResult.Fail("empty HTTP body");
+            }
+
             using var doc = JsonDocument.Parse(completionBody);
             if (!doc.RootElement.TryGetProperty("choices", out var choices) || choices.GetArrayLength() == 0)
             {
                 return VerifyParseResult.Fail("missing choices");
             }
 
-            var message = choices[0].GetProperty("message");
+            var choice = choices[0];
+            var finishReason = choice.TryGetProperty("finish_reason", out var fr)
+                ? fr.GetString()
+                : null;
+
+            if (!choice.TryGetProperty("message", out var message)
+                || message.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+            {
+                return VerifyParseResult.Fail("missing message", finishReason, null);
+            }
+
+            var rawMessage = message.GetRawText();
             var content = ReadMessageContent(message);
+
+            // Reasoning models may put JSON only in reasoning / leave content blank when max_tokens is tight.
             if (string.IsNullOrWhiteSpace(content))
             {
-                return VerifyParseResult.Fail("empty content");
+                content = ReadAlternateText(message, "reasoning")
+                          ?? ReadAlternateText(message, "reasoning_content");
+            }
+
+            if (string.IsNullOrWhiteSpace(content))
+            {
+                return VerifyParseResult.Fail(
+                    "empty content" + (finishReason is null ? string.Empty : $" (finish_reason={finishReason})"),
+                    finishReason,
+                    rawMessage);
             }
 
             content = StripCodeFence(content.Trim());
@@ -324,14 +410,17 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             var end = content.LastIndexOf('}');
             if (start < 0 || end <= start)
             {
-                return VerifyParseResult.Fail("no JSON object in content: " + Truncate(content, 80));
+                return VerifyParseResult.Fail(
+                    "no JSON object in content: " + Truncate(content, 80),
+                    finishReason,
+                    rawMessage);
             }
 
             content = content[start..(end + 1)];
             var parsed = JsonSerializer.Deserialize<VerifyResponse>(content, JsonOptions);
             if (parsed is null)
             {
-                return VerifyParseResult.Fail("deserialize null");
+                return VerifyParseResult.Fail("deserialize null", finishReason, rawMessage);
             }
 
             return new VerifyParseResult
@@ -340,13 +429,34 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 Keep = parsed.Keep,
                 Term = parsed.Term,
                 Summary = parsed.Summary,
-                Reason = parsed.Reason
+                Reason = parsed.Reason,
+                FinishReason = finishReason,
+                RawMessageJson = rawMessage
             };
         }
         catch (JsonException ex)
         {
             return VerifyParseResult.Fail(ex.Message);
         }
+        catch (Exception ex)
+        {
+            return VerifyParseResult.Fail(ex.Message);
+        }
+    }
+
+    private static string? ReadAlternateText(JsonElement message, string propertyName)
+    {
+        if (!message.TryGetProperty(propertyName, out var value))
+        {
+            return null;
+        }
+
+        return value.ValueKind switch
+        {
+            JsonValueKind.String => value.GetString(),
+            JsonValueKind.Null => null,
+            _ => value.GetRawText()
+        };
     }
 
     private static string? ReadMessageContent(JsonElement message)
@@ -538,6 +648,20 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
 
         public string? Error { get; init; }
 
-        public static VerifyParseResult Fail(string error) => new() { Ok = false, Error = error };
+        public string? FinishReason { get; init; }
+
+        public string? RawMessageJson { get; init; }
+
+        public static VerifyParseResult Fail(
+            string error,
+            string? finishReason = null,
+            string? rawMessageJson = null) =>
+            new()
+            {
+                Ok = false,
+                Error = error,
+                FinishReason = finishReason,
+                RawMessageJson = rawMessageJson
+            };
     }
 }
