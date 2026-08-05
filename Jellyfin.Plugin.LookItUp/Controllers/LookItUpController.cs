@@ -70,6 +70,7 @@ public class LookItUpController : ControllerBase
                 preparedAtUtc = cache?.ScannedAtUtc,
                 cacheVersion = cache?.Version ?? 0,
                 popupDurationMs = config?.PopupDurationMs ?? 3000,
+                popup = BuildPopupSettings(config),
                 count = annotations.Count,
                 annotations,
                 hint = prepared || annotations.Count > 0
@@ -87,6 +88,21 @@ public class LookItUpController : ControllerBase
                 itemId
             });
         }
+    }
+
+    private static object BuildPopupSettings(Configuration.PluginConfiguration? config)
+    {
+        return new
+        {
+            durationMs = Math.Clamp(config?.PopupDurationMs ?? 3000, 1000, 30000),
+            fontSizePx = Math.Clamp(config?.PopupFontSizePx ?? 16, 10, 48),
+            textColor = string.IsNullOrWhiteSpace(config?.PopupTextColor) ? "#f7fafc" : config!.PopupTextColor.Trim(),
+            backgroundColor = string.IsNullOrWhiteSpace(config?.PopupBackgroundColor)
+                ? "rgba(8, 12, 20, 0.96)"
+                : config!.PopupBackgroundColor.Trim(),
+            placement = string.IsNullOrWhiteSpace(config?.PopupPlacement) ? "BottomCenter" : config!.PopupPlacement.Trim(),
+            edgeOffsetPct = Math.Clamp(config?.PopupEdgeOffsetPct ?? 10, 2, 40)
+        };
     }
 
     /// <summary>

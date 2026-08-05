@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  const CLIENT_VERSION = '1.2.12.0';
+  const CLIENT_VERSION = '1.2.14.0';
   const STYLE_ID = 'lookitup-styles';
   const POPUP_ID = 'lookitup-popup';
   const POLL_MS = 200;
@@ -26,6 +26,13 @@
   let shownAtMs = 0;
   let hideTimer = null;
   let popupDurationMs = DEFAULT_POPUP_MS;
+  let popupStyle = {
+    fontSizePx: 16,
+    textColor: '#f7fafc',
+    backgroundColor: 'rgba(8, 12, 20, 0.96)',
+    placement: 'BottomCenter',
+    edgeOffsetPct: 10
+  };
   let missingItemTicks = 0;
   let lastResolvedLogId = null;
   let loadInFlight = false;
@@ -35,6 +42,56 @@
   // Terms already shown for their current cue window (don't re-show after auto-hide).
   const shownThisPass = new Set();
 
+  function sanitizeCssColor(value, fallback) {
+    const raw = String(value || '').trim();
+    if (!raw || raw.length > 64) {
+      return fallback;
+    }
+    // Allow hex, rgb/rgba, hsl/hsla, and simple named colors — block url() / expressions.
+    if (/[;{}]|url\s*\(|expression\s*\(|javascript:/i.test(raw)) {
+      return fallback;
+    }
+    return raw;
+  }
+
+  function placementCss(placement, edgePct) {
+    const edge = Math.min(40, Math.max(2, Number(edgePct) || 10));
+    const edgeCss = edge + 'vh';
+    const sideCss = Math.max(2, Math.round(edge * 0.4)) + 'vw';
+    const key = String(placement || 'BottomCenter').replace(/[\s_-]/g, '').toLowerCase();
+
+    switch (key) {
+      case 'bottomleft':
+        return { top: 'auto', right: 'auto', bottom: edgeCss, left: sideCss, transform: 'none' };
+      case 'bottomright':
+        return { top: 'auto', right: sideCss, bottom: edgeCss, left: 'auto', transform: 'none' };
+      case 'topcenter':
+        return { top: edgeCss, right: 'auto', bottom: 'auto', left: '50%', transform: 'translateX(-50%)' };
+      case 'topleft':
+        return { top: edgeCss, right: 'auto', bottom: 'auto', left: sideCss, transform: 'none' };
+      case 'topright':
+        return { top: edgeCss, right: sideCss, bottom: 'auto', left: 'auto', transform: 'none' };
+      case 'center':
+        return { top: '50%', right: 'auto', bottom: 'auto', left: '50%', transform: 'translate(-50%, -50%)' };
+      case 'bottomcenter':
+      default:
+        return { top: 'auto', right: 'auto', bottom: edgeCss, left: '50%', transform: 'translateX(-50%)' };
+    }
+  }
+
+  function applyPopupSettings(raw) {
+    const src = raw || {};
+    popupDurationMs = Math.min(30000, Math.max(1000, Number(src.durationMs || src.DurationMs || popupDurationMs) || DEFAULT_POPUP_MS));
+    popupStyle = {
+      fontSizePx: Math.min(48, Math.max(10, Number(src.fontSizePx || src.FontSizePx) || 16)),
+      textColor: sanitizeCssColor(src.textColor || src.TextColor, '#f7fafc'),
+      backgroundColor: sanitizeCssColor(src.backgroundColor || src.BackgroundColor, 'rgba(8, 12, 20, 0.96)'),
+      placement: String(src.placement || src.Placement || 'BottomCenter'),
+      edgeOffsetPct: Math.min(40, Math.max(2, Number(src.edgeOffsetPct || src.EdgeOffsetPct) || 10))
+    };
+    ensureStyles();
+  }
+
   function ensureStyles() {
     let style = document.getElementById(STYLE_ID);
     if (!style) {
@@ -43,21 +100,29 @@
       document.head.appendChild(style);
     }
 
+    const pos = placementCss(popupStyle.placement, popupStyle.edgeOffsetPct);
+    const fontPx = popupStyle.fontSizePx;
+    const titlePx = Math.round(fontPx * 1.1);
+    const text = popupStyle.textColor;
+    const bg = popupStyle.backgroundColor;
+
     style.textContent = `
       #${POPUP_ID} {
         position: fixed !important;
-        left: 50% !important;
-        bottom: max(10vh, 72px) !important;
-        transform: translateX(-50%) !important;
+        top: ${pos.top} !important;
+        right: ${pos.right} !important;
+        bottom: ${pos.bottom} !important;
+        left: ${pos.left} !important;
+        transform: ${pos.transform} !important;
         z-index: 2147483647 !important;
         max-width: min(560px, 92vw) !important;
         width: max-content !important;
         padding: 16px 20px !important;
         border-radius: 14px !important;
         border: 1px solid rgba(255, 255, 255, 0.22) !important;
-        background: rgba(8, 12, 20, 0.96) !important;
-        color: #f7fafc !important;
-        font: 600 16px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif !important;
+        background: ${bg} !important;
+        color: ${text} !important;
+        font: 600 ${fontPx}px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif !important;
         box-shadow: 0 16px 48px rgba(0, 0, 0, 0.65) !important;
         opacity: 0;
         visibility: hidden;
@@ -74,21 +139,23 @@
       #${POPUP_ID} .lookitup-term {
         display: block !important;
         font-weight: 800 !important;
-        font-size: 17px !important;
+        font-size: ${titlePx}px !important;
         margin-bottom: 6px !important;
-        color: #ffffff !important;
+        color: ${text} !important;
       }
       #${POPUP_ID} .lookitup-body {
         display: block !important;
         font-weight: 500 !important;
-        color: #e8eef7 !important;
+        color: ${text} !important;
+        opacity: 0.92 !important;
       }
       #${POPUP_ID} a {
-        color: #9ecbff !important;
-        text-decoration: none !important;
+        color: ${text} !important;
+        text-decoration: underline !important;
+        opacity: 0.85 !important;
       }
       #${POPUP_ID} a:hover {
-        text-decoration: underline !important;
+        opacity: 1 !important;
       }
     `;
   }
@@ -195,10 +262,8 @@
     popup.classList.remove('visible');
     void popup.offsetWidth;
     popup.classList.add('visible');
-
-    popup.style.cssText +=
-      ';position:fixed!important;left:50%!important;bottom:max(10vh,72px)!important;' +
-      'transform:translateX(-50%)!important;z-index:2147483647!important;opacity:1!important;visibility:visible!important;';
+    // Clear any old inline placement overrides so CSS from settings wins.
+    popup.style.cssText = '';
 
     if (hideTimer) {
       clearTimeout(hideTimer);
@@ -484,7 +549,18 @@
       }
 
       const rawDuration = Number(data.popupDurationMs || data.PopupDurationMs || DEFAULT_POPUP_MS);
-      popupDurationMs = Math.min(30000, Math.max(1000, rawDuration || DEFAULT_POPUP_MS));
+      const popupCfg = data.popup || data.Popup || {
+        durationMs: rawDuration,
+        fontSizePx: 16,
+        textColor: '#f7fafc',
+        backgroundColor: 'rgba(8, 12, 20, 0.96)',
+        placement: 'BottomCenter',
+        edgeOffsetPct: 10
+      };
+      if (popupCfg.durationMs == null && popupCfg.DurationMs == null) {
+        popupCfg.durationMs = rawDuration;
+      }
+      applyPopupSettings(popupCfg);
       const rawList = data.annotations || data.Annotations || [];
       annotations = normalizeAnnotations(rawList);
       if (data.prepared === false && annotations.length === 0) {
@@ -496,6 +572,8 @@
       console.info('[Look it up] loaded', annotations.length, 'annotations for', itemId, {
         raw: rawList.length,
         durationMs: popupDurationMs,
+        placement: popupStyle.placement,
+        fontSizePx: popupStyle.fontSizePx,
         prepared: data.prepared,
         preparedAtUtc: data.preparedAtUtc || data.PreparedAtUtc || null
       });

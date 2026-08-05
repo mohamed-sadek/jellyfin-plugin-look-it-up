@@ -1,7 +1,7 @@
 ---
 name: "Look it up"
 guid: "a8ab0fed-cac9-406d-b98b-58161bf970b8"
-version: "1.2.13.0"
+version: "1.2.14.0"
 targetAbi: "10.11.0.0"
 framework: "net9.0"
 overview: "AI-prepare subtitle references, then show short popups during playback"
@@ -13,4 +13,4 @@ owner: "lookitup"
 artifacts:
   - "Jellyfin.Plugin.LookItUp.dll"
 changelog: >
-  Re-anchor AI names to the earliest subtitle mention (Jon Voight at ~0:59, not later LeBaron line).
+  Configurable popup style (font, colors, placement, duration); longer AI summaries (280 chars, word-safe trim).

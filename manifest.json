@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "1.2.14.0",
+        "changelog": "Configurable popup style (font, colors, placement, duration); longer AI summaries (280 chars, word-safe trim)",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.14.0/look-it-up_1.2.14.0.zip",
+        "checksum": "b2be56ce7299dbea0380cac8c36ef21f",
+        "timestamp": "2026-08-05T09:30:00Z"
+      },
+      {
         "version": "1.2.13.0",
         "changelog": "Re-anchor AI names to the earliest subtitle mention (Jon Voight at ~0:59, not later LeBaron line)",
         "targetAbi": "10.11.0.0",

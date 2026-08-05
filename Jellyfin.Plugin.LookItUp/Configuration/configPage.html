@@ -118,9 +118,46 @@
                         <input id="txtMinEntityLength" type="number" is="emby-input" min="2" max="40" />
                     </div>
 
+                    <div class="sectionTitleContainer flex align-items-center" style="margin-top:1.5em;">
+                        <h2 class="sectionTitle">Popup appearance</h2>
+                    </div>
+                    <p>These apply at playback time (saved in plugin config; no need to re-prepare).</p>
+
                     <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="txtPopupDuration">Popup duration (ms)</label>
+                        <label class="inputLabel inputLabelUnfocused" for="txtPopupDuration">How long it stays (ms)</label>
                         <input id="txtPopupDuration" type="number" is="emby-input" min="1000" max="30000" step="500" />
+                        <div class="fieldDescription">1–30 seconds. Example: 5000 = five seconds.</div>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="txtPopupFontSize">Font size (px)</label>
+                        <input id="txtPopupFontSize" type="number" is="emby-input" min="10" max="48" />
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="txtPopupTextColor">Text color</label>
+                        <input id="txtPopupTextColor" type="text" is="emby-input" placeholder="#f7fafc" />
+                        <div class="fieldDescription">Any CSS color, e.g. <code>#f7fafc</code> or <code>white</code>.</div>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="txtPopupBgColor">Background color</label>
+                        <input id="txtPopupBgColor" type="text" is="emby-input" placeholder="rgba(8, 12, 20, 0.96)" />
+                        <div class="fieldDescription">Use rgba for translucency, e.g. <code>rgba(8, 12, 20, 0.96)</code>.</div>
+                    </div>
+                    <div class="selectContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="selPopupPlacement">Placement</label>
+                        <select id="selPopupPlacement" is="emby-select" class="emby-select-withcolor emby-select">
+                            <option value="BottomCenter">Bottom center</option>
+                            <option value="BottomLeft">Bottom left</option>
+                            <option value="BottomRight">Bottom right</option>
+                            <option value="TopCenter">Top center</option>
+                            <option value="TopLeft">Top left</option>
+                            <option value="TopRight">Top right</option>
+                            <option value="Center">Center</option>
+                        </select>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="txtPopupEdgeOffset">Edge offset (%)</label>
+                        <input id="txtPopupEdgeOffset" type="number" is="emby-input" min="2" max="40" />
+                        <div class="fieldDescription">Distance from the top/bottom edge of the screen (viewport %).</div>
                     </div>
 
                     <div class="sectionTitleContainer flex align-items-center" style="margin-top:1.5em;">
@@ -421,7 +458,12 @@
                         document.querySelector('#txtPreferredSubtitleLanguages').value = config.PreferredSubtitleLanguages || 'en';
                         document.querySelector('#txtMaxAnnotations').value = config.MaxAnnotationsPerItem;
                         document.querySelector('#txtMinEntityLength').value = config.MinEntityLength;
-                        document.querySelector('#txtPopupDuration').value = config.PopupDurationMs;
+                        document.querySelector('#txtPopupDuration').value = config.PopupDurationMs || 3000;
+                        document.querySelector('#txtPopupFontSize').value = config.PopupFontSizePx || 16;
+                        document.querySelector('#txtPopupTextColor').value = config.PopupTextColor || '#f7fafc';
+                        document.querySelector('#txtPopupBgColor').value = config.PopupBackgroundColor || 'rgba(8, 12, 20, 0.96)';
+                        document.querySelector('#selPopupPlacement').value = config.PopupPlacement || 'BottomCenter';
+                        document.querySelector('#txtPopupEdgeOffset').value = config.PopupEdgeOffsetPct || 10;
                         var provider = config.AiProvider || 'Groq';
                         document.querySelector('#selAiProvider').value = provider;
                         document.querySelector('#txtAiApiKey').value = '';
@@ -466,7 +508,12 @@
                         config.PreferredSubtitleLanguages = document.querySelector('#txtPreferredSubtitleLanguages').value;
                         config.MaxAnnotationsPerItem = parseInt(document.querySelector('#txtMaxAnnotations').value, 10);
                         config.MinEntityLength = parseInt(document.querySelector('#txtMinEntityLength').value, 10);
-                        config.PopupDurationMs = parseInt(document.querySelector('#txtPopupDuration').value, 10);
+                        config.PopupDurationMs = parseInt(document.querySelector('#txtPopupDuration').value, 10) || 3000;
+                        config.PopupFontSizePx = parseInt(document.querySelector('#txtPopupFontSize').value, 10) || 16;
+                        config.PopupTextColor = document.querySelector('#txtPopupTextColor').value || '#f7fafc';
+                        config.PopupBackgroundColor = document.querySelector('#txtPopupBgColor').value || 'rgba(8, 12, 20, 0.96)';
+                        config.PopupPlacement = document.querySelector('#selPopupPlacement').value || 'BottomCenter';
+                        config.PopupEdgeOffsetPct = parseInt(document.querySelector('#txtPopupEdgeOffset').value, 10) || 10;
                         config.AiProvider = document.querySelector('#selAiProvider').value || 'Groq';
                         config.AiModel = document.querySelector('#txtAiModel').value || 'openai/gpt-oss-20b';
                         config.AiBaseUrl = document.querySelector('#txtAiBaseUrl').value || 'https://api.groq.com/openai/v1';

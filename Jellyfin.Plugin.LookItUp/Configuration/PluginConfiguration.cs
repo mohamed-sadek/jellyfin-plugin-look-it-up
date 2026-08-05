@@ -17,6 +17,11 @@ public class PluginConfiguration : BasePluginConfiguration
         MaxAnnotationsPerItem = 40;
         MinEntityLength = 3;
         PopupDurationMs = 3000;
+        PopupFontSizePx = 16;
+        PopupTextColor = "#f7fafc";
+        PopupBackgroundColor = "rgba(8, 12, 20, 0.96)";
+        PopupPlacement = "BottomCenter";
+        PopupEdgeOffsetPct = 10;
         PreferredSubtitleLanguages = "en";
         ScanOnPlayback = false;
         WriteSidecarFiles = true;
@@ -44,6 +49,24 @@ public class PluginConfiguration : BasePluginConfiguration
 
     /// <summary>Gets or sets popup duration in ms.</summary>
     public int PopupDurationMs { get; set; }
+
+    /// <summary>Gets or sets popup body font size in pixels.</summary>
+    public int PopupFontSizePx { get; set; }
+
+    /// <summary>Gets or sets popup text color (CSS color).</summary>
+    public string PopupTextColor { get; set; }
+
+    /// <summary>Gets or sets popup background color (CSS color, including rgba).</summary>
+    public string PopupBackgroundColor { get; set; }
+
+    /// <summary>
+    /// Gets or sets popup placement:
+    /// BottomCenter, BottomLeft, BottomRight, TopCenter, TopLeft, TopRight, Center.
+    /// </summary>
+    public string PopupPlacement { get; set; }
+
+    /// <summary>Gets or sets distance from the screen edge as a viewport percent (for top/bottom/side placements).</summary>
+    public int PopupEdgeOffsetPct { get; set; }
 
     /// <summary>Gets or sets preferred subtitle language codes.</summary>
     public string PreferredSubtitleLanguages { get; set; }

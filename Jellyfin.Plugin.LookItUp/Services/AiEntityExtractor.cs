@@ -308,17 +308,19 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                     summary = term + ": " + summary;
                 }
 
+                summary = ClampSummary(summary, 280);
+
                 _logger.LogInformation(
                     "Look it up AI kept {Term} → {Canonical}: {Summary}",
                     candidate.Term,
                     term,
-                    Truncate(summary, 160));
+                    Truncate(summary, 200));
 
                 return (new AiEntityMention
                 {
                     Term = term,
                     Kind = "other",
-                    Summary = summary.Length > 160 ? summary[..160] : summary,
+                    Summary = summary,
                     StartMs = candidate.StartMs,
                     EndMs = Math.Max(candidate.EndMs, candidate.StartMs + 3000)
                 }, null, null);
@@ -357,8 +359,9 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 "Return a JSON object about this subtitle name candidate.\n" +
                 "keep=true only for a real person/place/film/brand/cultural reference worth a short popup.\n" +
                 "Otherwise keep=false.\n" +
-                "Schema: {\"keep\":true,\"term\":\"Jon Voight\",\"summary\":\"American actor.\"}\n" +
+                "Schema: {\"keep\":true,\"term\":\"Jon Voight\",\"summary\":\"American actor known for Midnight Cowboy and Deliverance.\"}\n" +
                 "or {\"keep\":false,\"reason\":\"not a notable name\"}\n" +
+                "Summary: one or two short sentences, up to ~200 characters.\n" +
                 "Show: " + itemName + "\n" +
                 "Candidate: " + candidate.Term + "\n" +
                 "Line: " + candidate.CueText;
@@ -662,6 +665,30 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         }
 
         return trimmed.Trim();
+    }
+
+    private static string ClampSummary(string summary, int maxChars)
+    {
+        if (string.IsNullOrEmpty(summary) || summary.Length <= maxChars)
+        {
+            return summary;
+        }
+
+        var slice = summary[..maxChars];
+        var lastSentence = Math.Max(slice.LastIndexOf(". "), slice.LastIndexOf("! "));
+        lastSentence = Math.Max(lastSentence, slice.LastIndexOf("? "));
+        if (lastSentence >= maxChars / 2)
+        {
+            return slice[..(lastSentence + 1)].TrimEnd();
+        }
+
+        var lastSpace = slice.LastIndexOf(' ');
+        if (lastSpace >= maxChars / 2)
+        {
+            return slice[..lastSpace].TrimEnd() + "…";
+        }
+
+        return slice.TrimEnd() + "…";
     }
 
     private static string Truncate(string value, int max)
