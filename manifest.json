@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "1.2.12.0",
+        "changelog": "Fix playback popups: stop force-rescan on first play, widen cue windows to 8s, show clock times in console",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.12.0/look-it-up_1.2.12.0.zip",
+        "checksum": "d88cb22baaae7c69467fc4c94a764187",
+        "timestamp": "2026-08-05T09:20:00Z"
+      },
+      {
         "version": "1.2.11.0",
         "changelog": "Easier AI provider switching (Groq / OpenAI / OpenRouter / Ollama presets) when Groq is flaky",
         "targetAbi": "10.11.0.0",

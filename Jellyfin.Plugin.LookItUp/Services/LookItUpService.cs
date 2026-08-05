@@ -349,7 +349,7 @@ public class LookItUpService : ILookItUpService
                         warning);
                 }
 
-                var popupMs = Math.Max(config.PopupDurationMs, 3000);
+                var popupMs = Math.Max(config.PopupDurationMs, 8000);
                 annotations = aiResult.Mentions
                     .Select(m => new ContextAnnotation
                     {

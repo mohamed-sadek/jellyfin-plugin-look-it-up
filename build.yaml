@@ -1,7 +1,7 @@
 ---
 name: "Look it up"
 guid: "a8ab0fed-cac9-406d-b98b-58161bf970b8"
-version: "1.2.11.0"
+version: "1.2.12.0"
 targetAbi: "10.11.0.0"
 framework: "net9.0"
 overview: "AI-prepare subtitle references, then show short popups during playback"
@@ -13,4 +13,4 @@ owner: "lookitup"
 artifacts:
   - "Jellyfin.Plugin.LookItUp.dll"
 changelog: >
-  Easier AI provider switching (Groq / OpenAI / OpenRouter / Ollama presets) when Groq is flaky.
+  Fix playback popups: stop force-rescan on first play, widen cue windows to 8s, show clock times in console.

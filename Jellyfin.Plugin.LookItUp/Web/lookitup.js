@@ -1,11 +1,12 @@
 (function () {
   'use strict';
 
-  const CLIENT_VERSION = '1.1.0.0';
+  const CLIENT_VERSION = '1.2.12.0';
   const STYLE_ID = 'lookitup-styles';
   const POPUP_ID = 'lookitup-popup';
   const POLL_MS = 200;
-  const DEFAULT_POPUP_MS = 2000;
+  const DEFAULT_POPUP_MS = 3000;
+  const MIN_MATCH_WINDOW_MS = 8000;
   const JUNK_TERMS = new Set([
     'all', 'new', 'seem', 'consumer', 'yeah', 'heh', 'done', 'away', 'let', 'now',
     'take', 'lie', 'thud', 'street', 'pop', 'car', 'limited', 'tim', 'vic', 'mom',
@@ -468,25 +469,13 @@
     console.info('[Look it up] fetching annotations for', itemId);
 
     try {
-      // Rescan when server plugin updates (cache key includes server version).
-      let serverVer = 'unknown';
-      try {
-        const st = await api.ajax({ url: api.getUrl('LookItUp/status'), type: 'GET', dataType: 'json' });
-        serverVer = (st && (st.version || st.Version)) || 'unknown';
-      } catch (_) {
-        /* ignore */
-      }
-      const forceKey = 'lookitup-force-' + itemId + '-' + serverVer;
-      const force = !sessionStorage.getItem(forceKey);
-      const url = api.getUrl(`LookItUp/${itemId}`) + (force ? '?force=true' : '');
+      // Never force-rescan during playback — that re-runs AI and often misses cue windows.
+      const url = api.getUrl(`LookItUp/${itemId}`);
       const data = await api.ajax({
         url,
         type: 'GET',
         dataType: 'json'
       });
-      if (force) {
-        sessionStorage.setItem(forceKey, '1');
-      }
 
       if (!data || data.enabled === false || data.Enabled === false) {
         annotations = [];
@@ -494,14 +483,13 @@
         return;
       }
 
-      // Hard-cap at 2s even if server config is still 5000.
       const rawDuration = Number(data.popupDurationMs || data.PopupDurationMs || DEFAULT_POPUP_MS);
-      popupDurationMs = Math.min(DEFAULT_POPUP_MS, Math.max(1000, rawDuration || DEFAULT_POPUP_MS));
+      popupDurationMs = Math.min(30000, Math.max(1000, rawDuration || DEFAULT_POPUP_MS));
       const rawList = data.annotations || data.Annotations || [];
       annotations = normalizeAnnotations(rawList);
       if (data.prepared === false && annotations.length === 0) {
         console.warn(
-          '[Look it up] no prepared annotations for this item. Run Prepare library on the plugin page (or Scheduled Tasks).',
+          '[Look it up] no prepared annotations for this item. Run Prepare on the plugin page.',
           data.hint || ''
         );
       }
@@ -517,6 +505,7 @@
           term: a.term,
           startMs: a.startMs,
           endMs: a.endMs,
+          at: formatClock(a.startMs),
           hasSummary: !!a.summary
         }))
       );
@@ -542,6 +531,17 @@
     }
   }
 
+  function formatClock(ms) {
+    const totalSec = Math.max(0, Math.floor(Number(ms) / 1000));
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    return m + ':' + String(s).padStart(2, '0');
+  }
+
+  function annotationWindowEnd(a) {
+    return Math.max(a.endMs, a.startMs + MIN_MATCH_WINDOW_MS, a.startMs + popupDurationMs);
+  }
+
   function tryShowForCurrentTime() {
     ensurePopup();
     const now = getCurrentTimeMs();
@@ -550,7 +550,7 @@
     }
 
     const matches = annotations
-      .filter((a) => now >= a.startMs && now <= a.endMs)
+      .filter((a) => now >= a.startMs && now <= annotationWindowEnd(a))
       .sort((a, b) => {
         const aw = (a.term.match(/\s+/g) || []).length;
         const bw = (b.term.match(/\s+/g) || []).length;
@@ -582,7 +582,8 @@
       console.info('[Look it up] cue match → search/popup', {
         term: active.term,
         playbackMs: now,
-        window: [active.startMs, active.endMs],
+        at: formatClock(now),
+        window: [active.startMs, annotationWindowEnd(active)],
         durationMs: popupDurationMs
       });
     }
@@ -634,18 +635,21 @@
     const now = getCurrentTimeMs();
     if (Date.now() - lastDiagAt > 4000 && annotations.length) {
       lastDiagAt = Date.now();
-      const activeNow = annotations.filter((a) => now != null && now >= a.startMs && now <= a.endMs);
+      const activeNow = annotations.filter((a) => now != null && now >= a.startMs && now <= annotationWindowEnd(a));
       const next = annotations.find((a) => a.startMs >= (now || 0)) || annotations[0];
-      const prev = [...annotations].reverse().find((a) => a.endMs < (now || 0));
+      const prev = [...annotations].reverse().find((a) => annotationWindowEnd(a) < (now || 0));
       console.info('[Look it up] playback tick', {
+        client: CLIENT_VERSION,
         playbackMs: now,
+        at: now != null ? formatClock(now) : null,
         annotations: annotations.length,
         activeNow: activeNow.map((a) => a.term),
         inCueGap: activeNow.length === 0,
         prevTerm: prev && prev.term,
-        prevEndedMs: prev && prev.endMs,
+        prevEndedMs: prev && annotationWindowEnd(prev),
         nextTerm: next && next.term,
         nextAtMs: next && next.startMs,
+        nextAt: next && formatClock(next.startMs),
         nextInSec: next && now != null ? Math.max(0, Math.round((next.startMs - now) / 1000)) : null,
         popupVisible: !!document.getElementById(POPUP_ID)?.classList.contains('visible')
       });
