@@ -31,7 +31,7 @@ public class LookItUpPrepareTask : IScheduledTask
 
     /// <inheritdoc />
     public string Description =>
-        "Scans movies/episodes for text subtitles, looks up names on Wikipedia, and stores timed annotations for playback.";
+        "Prepares Look it up annotations overnight: finds/downloads subtitles, verifies names with AI under rate limits, retries failures.";
 
     /// <inheritdoc />
     public string Category => "Look it up";
@@ -49,7 +49,14 @@ public class LookItUpPrepareTask : IScheduledTask
     /// <inheritdoc />
     public IEnumerable<TaskTriggerInfo> GetDefaultTriggers()
     {
-        // Manual by default — user can add a schedule in the dashboard.
-        return [];
+        // Daily at 02:00 local — editable in Dashboard → Scheduled Tasks.
+        return
+        [
+            new TaskTriggerInfo
+            {
+                Type = TaskTriggerInfoType.DailyTrigger,
+                TimeOfDayTicks = TimeSpan.FromHours(2).Ticks
+            }
+        ];
     }
 }

@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using Jellyfin.Data.Enums;
 using Jellyfin.Plugin.LookItUp.Models;
 using MediaBrowser.Common.Configuration;
@@ -63,6 +65,21 @@ public interface ILookItUpService
         Guid rootItemId,
         int? suggestedNamesPerItem,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Enables or disables popups for an item without deleting annotations.
+    /// </summary>
+    bool TrySetDisabled(Guid itemId, bool disabled, out ItemAnnotationCache? cache);
+
+    /// <summary>
+    /// Returns true when the cache counts as successfully prepared (skip-safe).
+    /// </summary>
+    bool IsSuccessfullyPrepared(ItemAnnotationCache cache);
+
+    /// <summary>
+    /// Deletes all generated Look it up files (plugin caches, downloaded subs, media sidecars, prepare queue).
+    /// </summary>
+    ClearGeneratedDataResult ClearGeneratedData();
 }
 
 /// <summary>
@@ -74,12 +91,16 @@ public class LookItUpService : ILookItUpService
     /// <summary>
     /// Bump when scan logic changes so stale caches are ignored.
     /// </summary>
-    public const int CurrentCacheVersion = 8;
+    public const int CurrentCacheVersion = 9;
 
     private static readonly HashSet<string> TextSubtitleCodecs = new(StringComparer.OrdinalIgnoreCase)
     {
         "subrip", "srt", "ass", "ssa", "webvtt", "vtt", "mov_text", "text", "microdvd", "mpl2", "sami", "stl", "ttml", "dfxp"
     };
+
+    private static readonly Regex SeasonEpisodeRegex = new(
+        @"[Ss](?<s>\d{1,2})[Ee](?<e>\d{1,3})",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private readonly ILibraryManager _libraryManager;
     private readonly IMediaSourceManager _mediaSourceManager;
@@ -89,9 +110,12 @@ public class LookItUpService : ILookItUpService
     private readonly IWikipediaLookupService _wikipedia;
     private readonly IAiEntityExtractor _aiExtractor;
     private readonly INameCandidateFinder _nameCandidateFinder;
+    private readonly IOpenSubtitlesClient _openSubtitles;
     private readonly IAnnotationStore _store;
+    private readonly IPrepareQueueStore _prepareQueueStore;
     private readonly ILogger<LookItUpService> _logger;
     private readonly string _subtitleCacheDir;
+    private readonly string _openSubtitlesDir;
     private readonly ConcurrentDictionary<Guid, SubtitleContent> _subtitleMemory = new();
 
     /// <summary>
@@ -106,7 +130,9 @@ public class LookItUpService : ILookItUpService
         IWikipediaLookupService wikipedia,
         IAiEntityExtractor aiExtractor,
         INameCandidateFinder nameCandidateFinder,
+        IOpenSubtitlesClient openSubtitles,
         IAnnotationStore store,
+        IPrepareQueueStore prepareQueueStore,
         IApplicationPaths appPaths,
         ILogger<LookItUpService> logger)
     {
@@ -118,16 +144,20 @@ public class LookItUpService : ILookItUpService
         _wikipedia = wikipedia;
         _aiExtractor = aiExtractor;
         _nameCandidateFinder = nameCandidateFinder;
+        _openSubtitles = openSubtitles;
         _store = store;
+        _prepareQueueStore = prepareQueueStore;
         _logger = logger;
 
         var root = appPaths.PluginConfigurationsPath
                    ?? appPaths.ProgramDataPath
                    ?? Path.GetTempPath();
         _subtitleCacheDir = Path.Combine(root, "LookItUp", "subtitles");
+        _openSubtitlesDir = Path.Combine(root, "LookItUp", "opensubtitles");
         try
         {
             Directory.CreateDirectory(_subtitleCacheDir);
+            Directory.CreateDirectory(_openSubtitlesDir);
         }
         catch (Exception ex)
         {
@@ -152,6 +182,145 @@ public class LookItUpService : ILookItUpService
     }
 
     /// <inheritdoc />
+    public bool IsSuccessfullyPrepared(ItemAnnotationCache cache)
+    {
+        if (cache.Version < CurrentCacheVersion)
+        {
+            return false;
+        }
+
+        if (cache.Annotations.Count > 0)
+        {
+            return true;
+        }
+
+        // Empty-but-valid: no name candidates. Empty no-subtitles stays retryable.
+        return string.Equals(cache.PrepareOutcome, "no-candidates", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <inheritdoc />
+    public bool TrySetDisabled(Guid itemId, bool disabled, out ItemAnnotationCache? cache)
+    {
+        cache = _store.Get(itemId);
+        if (cache is null)
+        {
+            return false;
+        }
+
+        cache.Disabled = disabled;
+        _store.Save(cache);
+        return true;
+    }
+
+    /// <inheritdoc />
+    public ClearGeneratedDataResult ClearGeneratedData()
+    {
+        var result = new ClearGeneratedDataResult
+        {
+            CacheFilesDeleted = _store.ClearAll(),
+            SubtitleCacheFilesDeleted = DeleteFilesInDirectory(_subtitleCacheDir),
+            OpenSubtitlesFilesDeleted = DeleteFilesInDirectory(_openSubtitlesDir),
+            SidecarFilesDeleted = DeleteLibrarySidecars()
+        };
+
+        _subtitleMemory.Clear();
+        _prepareQueueStore.Clear();
+        result.PrepareQueueCleared = true;
+
+        _logger.LogInformation(
+            "Cleared Look it up generated files: cache={Cache}, subtitles={Subs}, opensubtitles={Os}, sidecars={Sidecars}",
+            result.CacheFilesDeleted,
+            result.SubtitleCacheFilesDeleted,
+            result.OpenSubtitlesFilesDeleted,
+            result.SidecarFilesDeleted);
+
+        return result;
+    }
+
+    private int DeleteLibrarySidecars()
+    {
+        var removed = 0;
+        try
+        {
+            var items = _libraryManager.GetItemList(new InternalItemsQuery
+            {
+                Recursive = true,
+                IncludeItemTypes = [BaseItemKind.Movie, BaseItemKind.Episode],
+                IsVirtualItem = false,
+                MediaTypes = [MediaType.Video]
+            });
+
+            foreach (var item in items)
+            {
+                if (string.IsNullOrWhiteSpace(item.Path))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    var dir = Path.GetDirectoryName(item.Path);
+                    var stem = Path.GetFileNameWithoutExtension(item.Path);
+                    if (string.IsNullOrWhiteSpace(dir) || string.IsNullOrWhiteSpace(stem))
+                    {
+                        continue;
+                    }
+
+                    var sidecar = Path.Combine(dir, stem + ".lookitup.json");
+                    if (!File.Exists(sidecar))
+                    {
+                        continue;
+                    }
+
+                    File.Delete(sidecar);
+                    removed++;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Could not delete Look it up sidecar for {Item}", item.Name);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed scanning library for Look it up sidecars");
+        }
+
+        return removed;
+    }
+
+    private int DeleteFilesInDirectory(string directory)
+    {
+        var removed = 0;
+        try
+        {
+            if (!Directory.Exists(directory))
+            {
+                return 0;
+            }
+
+            foreach (var file in Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly))
+            {
+                try
+                {
+                    File.Delete(file);
+                    removed++;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to delete Look it up file {Path}", file);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed clearing directory {Dir}", directory);
+        }
+
+        return removed;
+    }
+
+    /// <inheritdoc />
     public async Task<IReadOnlyList<ContextAnnotation>> GetAnnotationsAsync(
         Guid itemId,
         bool forceRescan,
@@ -165,6 +334,11 @@ public class LookItUpService : ILookItUpService
 
         if (!forceRescan && TryGetPrepared(itemId, out var cached) && cached is not null)
         {
+            if (cached.Disabled)
+            {
+                return Array.Empty<ContextAnnotation>();
+            }
+
             return cached.Annotations;
         }
 
@@ -177,6 +351,11 @@ public class LookItUpService : ILookItUpService
 
         var prepared = await PrepareItemAsync(itemId, force: true, cancellationToken)
             .ConfigureAwait(false);
+        if (prepared.Cache?.Disabled == true)
+        {
+            return Array.Empty<ContextAnnotation>();
+        }
+
         return (IReadOnlyList<ContextAnnotation>)(prepared.Cache?.Annotations ?? []);
     }
 
@@ -447,12 +626,17 @@ public class LookItUpService : ILookItUpService
                 if (series is not null)
                 {
                     AddPeopleToExclude(exclude, _libraryManager.GetPeople(series), minLength);
+                    AddNameTokens(exclude, series.Name, minLength);
                 }
             }
             catch (Exception ex)
             {
                 _logger.LogDebug(ex, "Could not load series cast for {Item}", item.Name);
             }
+        }
+        else if (item is Season season)
+        {
+            AddNameTokens(exclude, season.SeriesName, minLength);
         }
 
         return exclude;
@@ -785,7 +969,14 @@ public class LookItUpService : ILookItUpService
                 return new PrepareItemResult { Warning = "Plugin disabled." };
             }
 
-            if (!force && TryGetPrepared(itemId, out var existing) && existing is not null)
+            var priorDisabled = false;
+            if (_store.Get(itemId) is { } prior)
+            {
+                priorDisabled = prior.Disabled;
+            }
+
+            if (!force && TryGetPrepared(itemId, out var existing) && existing is not null
+                && IsSuccessfullyPrepared(existing))
             {
                 return new PrepareItemResult { Cache = existing, Mode = "cache" };
             }
@@ -797,12 +988,30 @@ public class LookItUpService : ILookItUpService
                 return new PrepareItemResult { Warning = "Item not found." };
             }
 
-            var subtitle = await ResolveSubtitleContentAsync(item, config.PreferredSubtitleLanguages, cancellationToken)
-                .ConfigureAwait(false);
+            SubtitleContent? subtitle;
+            try
+            {
+                subtitle = await ResolveSubtitleContentAsync(item, config.PreferredSubtitleLanguages, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OpenSubtitlesRateLimitedException ex)
+            {
+                return new PrepareItemResult { Warning = ex.Message };
+            }
+
             if (subtitle is null)
             {
                 _logger.LogInformation("No readable text subtitles found for {Item}", item.Name);
-                var empty = SaveCache(itemId, null, []);
+                var empty = SaveCache(
+                    item,
+                    annotations: [],
+                    subtitlePath: null,
+                    subtitleSource: null,
+                    matchedBy: null,
+                    movieHash: null,
+                    durationOk: true,
+                    outcome: "no-subtitles",
+                    disabled: priorDisabled);
                 MaybeWriteSidecar(item, empty, config.WriteSidecarFiles);
                 return new PrepareItemResult
                 {
@@ -813,12 +1022,22 @@ public class LookItUpService : ILookItUpService
             }
 
             var cues = _subtitleParser.Parse(subtitle.Content, subtitle.Label);
+            var durationOk = PassesDurationCheck(item, cues);
+            if (!durationOk)
+            {
+                _logger.LogWarning(
+                    "Subtitle duration check failed for {Item} ({Label}); continuing with caution",
+                    item.Name,
+                    subtitle.Label);
+            }
+
             var max = Math.Max(1, config.MaxAnnotationsPerItem);
             List<ContextAnnotation> annotations;
             string mode;
             string? warning = null;
             string? aiBaseUrl = null;
             string? aiModel = null;
+            string outcome = "success";
 
             if (_aiExtractor.IsConfigured(config))
             {
@@ -828,12 +1047,14 @@ public class LookItUpService : ILookItUpService
 
                 var minLen = Math.Max(2, config.MinEntityLength);
                 var excludedCast = BuildCastExcludeNames(item, minLen);
-                var nameLimit = Math.Clamp(config.AiNamesPerPrepare, 1, 20);
-                // Pull a wide local pool so user-selected terms are findable / reconstructable.
+                // 0 = unlimited (safety-capped later in AI extractor).
+                var nameLimit = config.AiNamesPerPrepare <= 0
+                    ? 200
+                    : Math.Clamp(config.AiNamesPerPrepare, 1, 200);
                 const int prepareCandidateCap = 500;
                 var rankedLimit = selectedTerms is { Count: > 0 }
                     ? Math.Max(prepareCandidateCap, selectedTerms.Count)
-                    : Math.Max(max, nameLimit * 4);
+                    : prepareCandidateCap;
                 var ranked = _nameCandidateFinder
                     .Find(cues, item.Name, excludedCast, minLen, rankedLimit)
                     .ToList();
@@ -841,7 +1062,6 @@ public class LookItUpService : ILookItUpService
                 List<NameCandidate> nameCandidates;
                 if (selectedTerms is { Count: > 0 })
                 {
-                    // Explicit UI selection overrides AiNamesPerPrepare and MaxAnnotations for verification.
                     nameCandidates = FilterCandidatesBySelectedTerms(ranked, selectedTerms, cues);
                     if (nameCandidates.Count == 0)
                     {
@@ -856,7 +1076,31 @@ public class LookItUpService : ILookItUpService
                 }
                 else
                 {
-                    nameCandidates = SelectAiBatch(ranked, nameLimit);
+                    // Send all ranked candidates (capped by nameLimit / AI safety).
+                    nameCandidates = ranked.Take(nameLimit).ToList();
+                }
+
+                if (nameCandidates.Count == 0)
+                {
+                    var noCand = SaveCache(
+                        item,
+                        annotations: [],
+                        subtitlePath: subtitle.Label,
+                        subtitleSource: subtitle.Source,
+                        matchedBy: subtitle.MatchedBy,
+                        movieHash: subtitle.MovieHash,
+                        durationOk: durationOk,
+                        outcome: "no-candidates",
+                        disabled: priorDisabled);
+                    MaybeWriteSidecar(item, noCand, config.WriteSidecarFiles);
+                    return new PrepareItemResult
+                    {
+                        Cache = noCand,
+                        Mode = "ai",
+                        AiBaseUrl = aiBaseUrl,
+                        AiModel = aiModel,
+                        Warning = "No local name candidates to verify."
+                    };
                 }
 
                 _logger.LogInformation(
@@ -974,14 +1218,34 @@ public class LookItUpService : ILookItUpService
                     .ConfigureAwait(false);
             }
 
-            var cache = SaveCache(itemId, subtitle.Label, annotations);
+            if (annotations.Count == 0 && string.IsNullOrWhiteSpace(warning))
+            {
+                outcome = "no-candidates";
+            }
+            else if (annotations.Count == 0 && !string.IsNullOrWhiteSpace(warning))
+            {
+                outcome = "failed";
+            }
+
+            var cache = SaveCache(
+                item,
+                annotations,
+                subtitle.Label,
+                subtitle.Source,
+                subtitle.MatchedBy,
+                subtitle.MovieHash,
+                durationOk,
+                outcome,
+                priorDisabled);
             MaybeWriteSidecar(item, cache, config.WriteSidecarFiles);
 
             _logger.LogInformation(
-                "Look it up prepared {Item}: {Count} annotations from {Subtitle}",
+                "Look it up prepared {Item}: {Count} annotations from {Subtitle} matchedBy={MatchedBy} durationOk={DurationOk}",
                 item.Name,
                 annotations.Count,
-                subtitle.Label);
+                subtitle.Label,
+                subtitle.MatchedBy,
+                durationOk);
 
             return new PrepareItemResult
             {
@@ -1072,18 +1336,76 @@ public class LookItUpService : ILookItUpService
             .ToList();
     }
 
-    private ItemAnnotationCache SaveCache(Guid itemId, string? label, List<ContextAnnotation> annotations)
+    private ItemAnnotationCache SaveCache(
+        BaseItem item,
+        List<ContextAnnotation> annotations,
+        string? subtitlePath,
+        string? subtitleSource,
+        string? matchedBy,
+        string? movieHash,
+        bool durationOk,
+        string outcome,
+        bool disabled)
     {
+        string? seriesName = null;
+        int? season = null;
+        int? episode = null;
+        if (item is Episode ep)
+        {
+            seriesName = ep.SeriesName;
+            season = ep.ParentIndexNumber;
+            episode = ep.IndexNumber;
+        }
+
         var cache = new ItemAnnotationCache
         {
-            ItemId = itemId,
+            ItemId = item.Id,
             Version = CurrentCacheVersion,
             ScannedAtUtc = DateTime.UtcNow,
-            SubtitlePath = label,
+            SubtitlePath = subtitlePath,
+            SubtitleSource = subtitleSource,
+            SubtitleHash = annotations.Count > 0 || subtitlePath is not null
+                ? Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(subtitlePath ?? string.Empty))).ToLowerInvariant()
+                : null,
+            MovieHash = movieHash,
+            MatchedBy = matchedBy,
+            DurationCheckOk = durationOk,
+            PrepareOutcome = outcome,
+            SeriesName = seriesName,
+            SeasonNumber = season,
+            EpisodeNumber = episode,
+            Disabled = disabled,
             Annotations = annotations
         };
         _store.Save(cache);
         return cache;
+    }
+
+    private static bool PassesDurationCheck(BaseItem item, IReadOnlyList<SubtitleCue> cues)
+    {
+        if (cues.Count < 8 || item.RunTimeTicks is null or <= 0)
+        {
+            return true;
+        }
+
+        var runtimeMs = item.RunTimeTicks.Value / TimeSpan.TicksPerMillisecond;
+        if (runtimeMs < 60_000)
+        {
+            return true;
+        }
+
+        var lastEnd = cues.Max(c => c.EndMs);
+        if (lastEnd > runtimeMs * 1.12)
+        {
+            return false;
+        }
+
+        if (cues.Count >= 40 && lastEnd < runtimeMs * 0.70)
+        {
+            return false;
+        }
+
+        return true;
     }
 
     private void MaybeWriteSidecar(BaseItem item, ItemAnnotationCache cache, bool enabled)
@@ -1166,32 +1488,56 @@ public class LookItUpService : ILookItUpService
             .Select(NormalizeLang)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        // 1) External sidecar / indexed external files
-        var externalPath = FindExternalSubtitlePath(item, preferred);
-        if (externalPath is not null)
+        // 1) External sidecar / indexed external files (strict episode matching)
+        var external = FindExternalSubtitle(item, preferred);
+        if (external is not null)
         {
             try
             {
-                var content = await File.ReadAllTextAsync(externalPath, cancellationToken).ConfigureAwait(false);
+                var content = await File.ReadAllTextAsync(external.Value.Path, cancellationToken).ConfigureAwait(false);
                 if (!string.IsNullOrWhiteSpace(content))
                 {
-                    return new SubtitleContent(content, externalPath);
+                    _logger.LogInformation(
+                        "Using external subtitle for {Item}: {Path} matchedBy={MatchedBy} score={Score}",
+                        item.Name,
+                        external.Value.Path,
+                        external.Value.MatchedBy,
+                        external.Value.Score);
+                    return new SubtitleContent(content, external.Value.Path, "external", external.Value.MatchedBy);
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Failed to read subtitle file {Path}", externalPath);
+                _logger.LogWarning(ex, "Failed to read subtitle file {Path}", external.Value.Path);
             }
         }
 
-        // 2) Cached embedded extract (skip ffmpeg on repeat preview/prepare)
+        // 2) OpenSubtitles (moviehash first) when enabled
+        var config = Plugin.Instance?.Configuration;
+        if (config is not null && _openSubtitles.IsConfigured(config))
+        {
+            var dest = Path.Combine(_openSubtitlesDir, $"{item.Id:N}.srt");
+            var os = await _openSubtitles
+                .TryDownloadAsync(item, config, dest, cancellationToken)
+                .ConfigureAwait(false);
+            if (os is not null)
+            {
+                _logger.LogInformation(
+                    "Using OpenSubtitles for {Item}: matchedBy={MatchedBy}",
+                    item.Name,
+                    os.MatchedBy);
+                return new SubtitleContent(os.Content, os.Path, "opensubtitles", os.MatchedBy, os.MovieHash);
+            }
+        }
+
+        // 3) Cached embedded extract (skip ffmpeg on repeat preview/prepare)
         if (TryReadCachedEmbeddedSubtitle(item, out var cached))
         {
             _logger.LogInformation("Using cached embedded subtitles for {Item}", item.Name);
             return cached;
         }
 
-        // 3) Embedded text tracks via Jellyfin's subtitle encoder (ffmpeg)
+        // 4) Embedded text tracks via ffmpeg
         var extracted = await ExtractEmbeddedSubtitleAsync(item, preferred, cancellationToken)
             .ConfigureAwait(false);
         if (extracted is not null)
@@ -1238,7 +1584,11 @@ public class LookItUpService : ILookItUpService
                 return false;
             }
 
-            content = new SubtitleContent(text, string.IsNullOrWhiteSpace(label) ? "cached-embedded" : label);
+            content = new SubtitleContent(
+                text,
+                string.IsNullOrWhiteSpace(label) ? "cached-embedded" : label,
+                "embedded",
+                "embedded");
             _subtitleMemory[item.Id] = content;
             return true;
         }
@@ -1337,7 +1687,7 @@ public class LookItUpService : ILookItUpService
                     }
 
                     var label = $"embedded:{stream.Index}:{stream.Codec}:{stream.Language ?? "und"}";
-                    return new SubtitleContent(content, label);
+                    return new SubtitleContent(content, label, "embedded", "embedded");
                 }
                 catch (OperationCanceledException)
                 {
@@ -1513,9 +1863,70 @@ public class LookItUpService : ILookItUpService
         return value[..max] + "…";
     }
 
-    private string? FindExternalSubtitlePath(BaseItem item, HashSet<string> preferred)
+    private (string Path, string MatchedBy, int Score)? FindExternalSubtitle(BaseItem item, HashSet<string> preferred)
     {
-        var candidates = new List<(string Path, int Score)>();
+        var candidates = new List<(string Path, string MatchedBy, int Score)>();
+        int? season = item is Episode ep ? ep.ParentIndexNumber : null;
+        int? episode = item is Episode ep2 ? ep2.IndexNumber : null;
+        var mediaBase = !string.IsNullOrWhiteSpace(item.Path)
+            ? Path.GetFileNameWithoutExtension(item.Path)
+            : null;
+
+        void Consider(string path, string matchedBy, int score)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return;
+            }
+
+            try
+            {
+                if (!File.Exists(path))
+                {
+                    return;
+                }
+            }
+            catch
+            {
+                return;
+            }
+
+            var fileName = Path.GetFileNameWithoutExtension(path);
+            var episodeBonus = ScoreEpisodeAlignment(fileName, season, episode);
+            // For TV: reject season-generic files when they don't encode SxxExx at all
+            // and we have a better stem match available later — still allow with low score.
+            if (season is not null && episode is not null && episodeBonus < 0)
+            {
+                score += episodeBonus;
+            }
+            else
+            {
+                score += episodeBonus;
+            }
+
+            candidates.Add((path, matchedBy, score));
+        }
+
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(item.Path))
+            {
+                var dir = Path.GetDirectoryName(item.Path);
+                var stem = Path.GetFileNameWithoutExtension(item.Path);
+                if (!string.IsNullOrWhiteSpace(dir) && !string.IsNullOrWhiteSpace(stem))
+                {
+                    foreach (var ext in new[] { ".srt", ".vtt", ".en.srt", ".eng.srt" })
+                    {
+                        var direct = Path.Combine(dir, stem + ext);
+                        Consider(direct, "stem", 80);
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Direct sidecar probe failed for {Item}", item.Name);
+        }
 
         try
         {
@@ -1542,7 +1953,12 @@ public class LookItUpService : ILookItUpService
                     continue;
                 }
 
-                candidates.Add((stream.Path, 30 + ScoreSubtitleStream(stream, preferred)));
+                var matchedBy = !string.IsNullOrWhiteSpace(mediaBase)
+                                && Path.GetFileNameWithoutExtension(stream.Path)
+                                    .Contains(mediaBase, StringComparison.OrdinalIgnoreCase)
+                    ? "stem"
+                    : "folder";
+                Consider(stream.Path, matchedBy, 40 + ScoreSubtitleStream(stream, preferred));
             }
         }
         catch (Exception ex)
@@ -1568,24 +1984,23 @@ public class LookItUpService : ILookItUpService
                         continue;
                     }
 
-                    var name = Path.GetFileNameWithoutExtension(file).ToLowerInvariant();
+                    var name = Path.GetFileNameWithoutExtension(file);
                     var score = 0;
-                    if (!string.IsNullOrWhiteSpace(item.Path))
+                    var matchedBy = "folder";
+                    if (!string.IsNullOrWhiteSpace(mediaBase)
+                        && name.Contains(mediaBase, StringComparison.OrdinalIgnoreCase))
                     {
-                        var mediaBase = Path.GetFileNameWithoutExtension(item.Path);
-                        if (!string.IsNullOrWhiteSpace(mediaBase)
-                            && name.Contains(mediaBase, StringComparison.OrdinalIgnoreCase))
-                        {
-                            score += 10;
-                        }
+                        score += 50;
+                        matchedBy = "stem";
                     }
 
                     foreach (var lang in preferred)
                     {
-                        if (name.Contains($".{lang}", StringComparison.Ordinal)
-                            || name.EndsWith($"_{lang}", StringComparison.Ordinal)
-                            || name.EndsWith($"-{lang}", StringComparison.Ordinal)
-                            || name.Contains($".{ExpandLang(lang)}", StringComparison.Ordinal))
+                        var n = name.ToLowerInvariant();
+                        if (n.Contains($".{lang}", StringComparison.Ordinal)
+                            || n.EndsWith($"_{lang}", StringComparison.Ordinal)
+                            || n.EndsWith($"-{lang}", StringComparison.Ordinal)
+                            || n.Contains($".{ExpandLang(lang)}", StringComparison.Ordinal))
                         {
                             score += 5;
                         }
@@ -1596,7 +2011,14 @@ public class LookItUpService : ILookItUpService
                         score += 1;
                     }
 
-                    candidates.Add((file, score));
+                    // Season-generic (lang only, no stem/SxxExx): keep very low so stem wins.
+                    if (matchedBy == "folder" && ScoreEpisodeAlignment(name, season, episode) == 0
+                        && season is not null)
+                    {
+                        score -= 20;
+                    }
+
+                    Consider(file, matchedBy, score);
                 }
             }
         }
@@ -1605,45 +2027,40 @@ public class LookItUpService : ILookItUpService
             _logger.LogWarning(ex, "Folder subtitle scan failed for {Item}", item.Name);
         }
 
-        try
+        return candidates
+            .Where(c => c.Score > 0)
+            .OrderByDescending(c => c.Score)
+            .Select(c => ((string Path, string MatchedBy, int Score)?)(c.Path, c.MatchedBy, c.Score))
+            .FirstOrDefault();
+    }
+
+    private static int ScoreEpisodeAlignment(string fileName, int? season, int? episode)
+    {
+        if (season is null || episode is null)
         {
-            if (!string.IsNullOrWhiteSpace(item.Path))
-            {
-                var dir = Path.GetDirectoryName(item.Path);
-                var stem = Path.GetFileNameWithoutExtension(item.Path);
-                if (!string.IsNullOrWhiteSpace(dir) && !string.IsNullOrWhiteSpace(stem))
-                {
-                    foreach (var ext in new[] { ".srt", ".vtt", ".en.srt", ".eng.srt" })
-                    {
-                        var direct = Path.Combine(dir, stem + ext);
-                        if (File.Exists(direct))
-                        {
-                            candidates.Add((direct, 40));
-                        }
-                    }
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogDebug(ex, "Direct sidecar probe failed for {Item}", item.Name);
+            return 0;
         }
 
-        return candidates
-            .Where(c => !string.IsNullOrWhiteSpace(c.Path))
-            .OrderByDescending(c => c.Score)
-            .Select(c => c.Path)
-            .FirstOrDefault(path =>
-            {
-                try
-                {
-                    return File.Exists(path);
-                }
-                catch
-                {
-                    return false;
-                }
-            });
+        var m = SeasonEpisodeRegex.Match(fileName);
+        if (!m.Success)
+        {
+            // No SxxExx in filename — ambiguous for TV.
+            return -15;
+        }
+
+        if (!int.TryParse(m.Groups["s"].Value, out var s)
+            || !int.TryParse(m.Groups["e"].Value, out var e))
+        {
+            return -15;
+        }
+
+        if (s == season && e == episode)
+        {
+            return 40;
+        }
+
+        // Wrong episode — hard reject via large penalty.
+        return -200;
     }
 
     private static bool IsTextSubtitle(MediaStream stream)
@@ -1721,5 +2138,10 @@ public class LookItUpService : ILookItUpService
         _ => lang
     };
 
-    private sealed record SubtitleContent(string Content, string Label);
+    private sealed record SubtitleContent(
+        string Content,
+        string Label,
+        string Source,
+        string MatchedBy,
+        string? MovieHash = null);
 }

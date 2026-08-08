@@ -1,12 +1,13 @@
 (function () {
   'use strict';
 
-  const CLIENT_VERSION = '1.2.29.0';
+  const CLIENT_VERSION = '1.2.33.0';
   const STYLE_ID = 'lookitup-styles';
   const STACK_ID = 'lookitup-stack';
   const POPUP_ID = 'lookitup-popup'; // legacy single-popup id (removed on upgrade)
   const SERIES_BTN_ID = 'lookitup-prepare-series-btn';
   const SERIES_STATUS_ID = 'lookitup-prepare-series-status';
+  const DETAIL_PANEL_ID = 'lookitup-detail-panel';
   const POLL_MS = 200;
   const DEFAULT_POPUP_MS = 3000;
   const DEFAULT_POPUP_DELAY_MS = 1000;
@@ -310,6 +311,41 @@
       }
       #${SERIES_STATUS_ID}.visible {
         display: block !important;
+      }
+      #${DETAIL_PANEL_ID} {
+        position: fixed !important;
+        z-index: 100000 !important;
+        right: 20px !important;
+        bottom: 20px !important;
+        max-width: min(420px, 92vw) !important;
+        padding: 12px 14px !important;
+        border-radius: 12px !important;
+        background: rgba(8, 12, 20, 0.94) !important;
+        color: #f7fafc !important;
+        font: 600 13px/1.35 system-ui, -apple-system, "Segoe UI", sans-serif !important;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4) !important;
+        display: none !important;
+      }
+      #${DETAIL_PANEL_ID}.visible {
+        display: block !important;
+      }
+      #${DETAIL_PANEL_ID} .lookitup-detail-actions {
+        display: flex !important;
+        flex-wrap: wrap !important;
+        gap: 8px !important;
+        margin-top: 10px !important;
+      }
+      #${DETAIL_PANEL_ID} button {
+        border: 0 !important;
+        border-radius: 999px !important;
+        padding: 8px 12px !important;
+        background: #00a4dc !important;
+        color: #fff !important;
+        cursor: pointer !important;
+        font: inherit !important;
+      }
+      #${DETAIL_PANEL_ID} button.secondary {
+        background: rgba(255, 255, 255, 0.14) !important;
       }
     `;
   }
@@ -1104,6 +1140,7 @@
   function hideSeriesUi() {
     const btn = document.getElementById(SERIES_BTN_ID);
     const status = document.getElementById(SERIES_STATUS_ID);
+    const panel = document.getElementById(DETAIL_PANEL_ID);
     if (btn) {
       btn.style.display = 'none';
     }
@@ -1111,11 +1148,133 @@
       status.classList.remove('visible');
       status.textContent = '';
     }
+    if (panel) {
+      panel.classList.remove('visible');
+      panel.innerHTML = '';
+    }
     seriesUiItemId = null;
     if (seriesStatusTimer) {
       clearInterval(seriesStatusTimer);
       seriesStatusTimer = null;
     }
+  }
+
+  function ensureDetailPanel() {
+    ensureStyles();
+    let panel = document.getElementById(DETAIL_PANEL_ID);
+    if (!panel) {
+      panel = document.createElement('div');
+      panel.id = DETAIL_PANEL_ID;
+      document.body.appendChild(panel);
+    }
+    return panel;
+  }
+
+  async function renderDetailControls(api, detailsId, itemName) {
+    const panel = ensureDetailPanel();
+    const seriesBtn = document.getElementById(SERIES_BTN_ID);
+    if (seriesBtn) {
+      seriesBtn.style.display = 'none';
+    }
+
+    let info = null;
+    try {
+      info = await api.ajax({
+        url: api.getUrl('LookItUp/' + detailsId),
+        type: 'GET',
+        dataType: 'json'
+      });
+    } catch (err) {
+      console.debug('[Look it up] detail status failed', err);
+    }
+
+    const prepared = !!(info && (info.prepared || info.Prepared));
+    const disabled = !!(info && (info.disabled || info.Disabled));
+    const count = (info && (info.annotationCount ?? info.AnnotationCount ?? info.count)) || 0;
+    const source = (info && (info.subtitleSource || info.SubtitleSource)) || '-';
+    const matchedBy = (info && (info.matchedBy || info.MatchedBy)) || '-';
+    const durationOk = info && (info.durationCheckOk ?? info.DurationCheckOk);
+    const outcome = (info && (info.prepareOutcome || info.PrepareOutcome)) || '-';
+
+    panel.innerHTML = '';
+    const title = document.createElement('div');
+    title.textContent = 'Look it up — ' + (itemName || 'item');
+    panel.appendChild(title);
+
+    const body = document.createElement('div');
+    body.style.opacity = '0.9';
+    body.style.marginTop = '6px';
+    body.style.whiteSpace = 'pre-wrap';
+    body.textContent = [
+      prepared ? ('Prepared: ' + count + ' annotation(s)') : 'Not prepared',
+      disabled ? 'Popups: DISABLED' : 'Popups: enabled',
+      'Subtitle: ' + source + ' (' + matchedBy + ')',
+      'Duration check: ' + (durationOk === false ? 'FAILED' : 'ok'),
+      'Outcome: ' + outcome
+    ].join('\n');
+    panel.appendChild(body);
+
+    const actions = document.createElement('div');
+    actions.className = 'lookitup-detail-actions';
+
+    const prepBtn = document.createElement('button');
+    prepBtn.type = 'button';
+    prepBtn.textContent = prepared ? 'Regenerate' : 'Prepare';
+    prepBtn.onclick = async function () {
+      prepBtn.disabled = true;
+      prepBtn.textContent = 'Working…';
+      try {
+        await api.ajax({
+          url: api.getUrl('LookItUp/' + detailsId + '/prepare'),
+          type: 'POST',
+          dataType: 'json',
+          contentType: 'application/json',
+          data: '{}'
+        });
+        await renderDetailControls(api, detailsId, itemName);
+      } catch (err) {
+        window.Dashboard?.alert?.('Prepare failed: ' + err);
+        prepBtn.disabled = false;
+        prepBtn.textContent = prepared ? 'Regenerate' : 'Prepare';
+      }
+    };
+    actions.appendChild(prepBtn);
+
+    if (prepared || count > 0) {
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'secondary';
+      toggle.textContent = disabled ? 'Enable popups' : 'Disable popups';
+      toggle.onclick = async function () {
+        toggle.disabled = true;
+        try {
+          await api.ajax({
+            url: api.getUrl('LookItUp/' + detailsId + '/' + (disabled ? 'enable' : 'disable')),
+            type: 'POST',
+            dataType: 'json',
+            contentType: 'application/json',
+            data: '{}'
+          });
+          await renderDetailControls(api, detailsId, itemName);
+        } catch (err) {
+          window.Dashboard?.alert?.('Toggle failed: ' + err);
+          toggle.disabled = false;
+        }
+      };
+      actions.appendChild(toggle);
+    }
+
+    const openBtn = document.createElement('button');
+    openBtn.type = 'button';
+    openBtn.className = 'secondary';
+    openBtn.textContent = 'Open prepare page';
+    openBtn.onclick = function () {
+      openPreparePage(detailsId);
+    };
+    actions.appendChild(openBtn);
+
+    panel.appendChild(actions);
+    panel.classList.add('visible');
   }
 
   function setSeriesStatus(text, visible) {
@@ -1411,7 +1570,10 @@
       'With annotations: ' + ((s.WithAnnotations ?? s.withAnnotations) || 0),
       'Skipped: ' + ((s.Skipped ?? s.skipped) || 0),
       'Failed: ' + ((s.Failed ?? s.failed) || 0),
+      'Queue pending/failed: ' + ((s.QueuePending ?? s.queuePending) || 0) + ' / ' + ((s.QueueFailed ?? s.queueFailed) || 0),
+      'OpenSubtitles downloads: ' + ((s.OpenSubtitlesDownloads ?? s.openSubtitlesDownloads) || 0),
       'Current: ' + ((s.CurrentItem ?? s.currentItem) || '-'),
+      'Note: ' + ((s.StatusNote ?? s.statusNote) || '-'),
       'Last error: ' + ((s.LastError ?? s.lastError) || '-'),
       'Finished: ' + ((s.FinishedAtUtc ?? s.finishedAtUtc) || '-')
     ].join('\n');
@@ -1482,7 +1644,7 @@
     }
   }
 
-  async function prepareStartSelected(page) {
+  async function prepareStartAll(page) {
     page = page || PrepareUI.lastPage || preparePageFrom(document.body);
     const api = getApiClient();
     const id = ensurePrepareItemId();
@@ -1490,23 +1652,18 @@
       window.Dashboard?.alert?.('Missing item id or ApiClient.');
       return;
     }
-    const items = prepareCollectSelections(page);
-    if (!items.length) {
-      window.Dashboard?.alert?.('Select at least one name.');
-      return;
-    }
-    if (!window.confirm('Prepare ' + prepareCountSelected(page) + ' name(s) across ' + items.length + ' item(s) with AI?')) {
+    if (!window.confirm('Prepare this title with AI? Every local name candidate will be verified in rate-limited batches.')) {
       return;
     }
     const status = pq(page, '#prepareJobStatus');
-    if (status) status.textContent = 'Starting prepare?';
+    if (status) status.textContent = 'Starting prepare…';
     try {
       const result = await api.ajax({
-        url: api.getUrl('LookItUp/' + id + '/prepare-selected'),
+        url: api.getUrl('LookItUp/' + id + '/prepare-series') + '?force=true',
         type: 'POST',
         dataType: 'json',
         contentType: 'application/json',
-        data: JSON.stringify({ force: true, items: items })
+        data: '{}'
       });
       prepareRenderJobStatus(page, result.status || result.Status || result);
       if (!PrepareUI.statusTimer) {
@@ -1585,21 +1742,13 @@
     PrepareUI.lastPage = page;
     ensurePrepareItemId();
     const label = pq(page, '#prepareRootLabel');
-    if (label && !PrepareUI.loading && !PrepareUI.preview) {
+    if (label && !PrepareUI.loading) {
       label.textContent = PrepareUI.rootItemId
-        ? 'Set pre-select N if you want, then click Load candidates (loads all; N only pre-checks).'
+        ? 'Click Prepare all to verify every subtitle name candidate with AI (batched under your rate limit).'
         : 'Missing item id. Open this page from the Look it up button on a show or episode.';
     }
     const api = getApiClient();
     if (api) {
-      api.getPluginConfiguration(PrepareUI.pluginUniqueId)
-        .then((config) => {
-          const input = pq(page, '#txtNamesPerItem');
-          if (input && (!input.value || input.value === '5')) {
-            input.value = config.AiNamesPerPrepare || config.aiNamesPerPrepare || 5;
-          }
-        })
-        .catch(() => {});
       prepareRefreshStatus(page);
     }
   }
@@ -1611,16 +1760,13 @@
     if (!page) return;
     PrepareUI.lastPage = page;
 
-    const btn = t.closest('#btnLoadPreview, #btnSelectSuggested, #btnSelectNone, #btnStartPrepare, #btnCancelPrepare');
+    const btn = t.closest('#btnStartPrepare, #btnCancelPrepare');
     if (!btn) return;
 
     e.preventDefault();
     e.stopPropagation();
 
-    if (btn.id === 'btnLoadPreview') prepareLoadPreview(page);
-    else if (btn.id === 'btnSelectSuggested') prepareSelectSuggested(page);
-    else if (btn.id === 'btnSelectNone') prepareSelectNone(page);
-    else if (btn.id === 'btnStartPrepare') prepareStartSelected(page);
+    if (btn.id === 'btnStartPrepare') prepareStartAll(page);
     else if (btn.id === 'btnCancelPrepare') prepareStop(page);
   }
 
@@ -1747,22 +1893,55 @@
       }
 
       seriesUiItemId = detailsId;
+      const name = (item && (item.Name || item.name)) || 'this title';
+
+      if (type === 'Episode' || type === 'Movie') {
+        await renderDetailControls(api, detailsId, name);
+        return;
+      }
+
+      const panel = document.getElementById(DETAIL_PANEL_ID);
+      if (panel) {
+        panel.classList.remove('visible');
+      }
+
       const { btn } = ensureSeriesUi();
       btn.style.display = 'block';
-      const name = (item && (item.Name || item.name)) || 'this title';
-      btn.title = 'Open Look it up prepare for ' + name;
+      btn.title = 'Prepare all episodes for ' + name;
       btn.disabled = false;
-      if (type === 'Series') {
-        btn.textContent = 'Look it up ? prepare this show';
-      } else if (type === 'Season') {
-        btn.textContent = 'Look it up ? prepare this season';
-      } else if (type === 'Movie') {
-        btn.textContent = 'Look it up ? prepare this movie';
-      } else {
-        btn.textContent = 'Look it up ? prepare this episode';
-      }
-      btn.onclick = function () {
-        openPreparePage(detailsId);
+      btn.textContent = type === 'Season'
+        ? 'Look it up — prepare this season'
+        : 'Look it up — prepare this show';
+      btn.onclick = async function () {
+        if (!window.confirm('Prepare all episodes with AI? Every local name candidate will be verified in batches.')) {
+          return;
+        }
+        btn.disabled = true;
+        btn.textContent = 'Starting…';
+        try {
+          const result = await api.ajax({
+            url: api.getUrl('LookItUp/' + detailsId + '/prepare-series') + '?force=false',
+            type: 'POST',
+            dataType: 'json',
+            contentType: 'application/json',
+            data: '{}'
+          });
+          if (!(result.started || result.Started)) {
+            window.Dashboard?.alert?.('Could not start: ' + (result.error || result.Error || 'unknown'));
+            btn.disabled = false;
+            btn.textContent = type === 'Season'
+              ? 'Look it up — prepare this season'
+              : 'Look it up — prepare this show';
+            return;
+          }
+          if (!seriesStatusTimer) {
+            seriesStatusTimer = setInterval(refreshSeriesPrepareStatus, 2000);
+          }
+          refreshSeriesPrepareStatus();
+        } catch (err) {
+          window.Dashboard?.alert?.('Prepare failed: ' + err);
+          btn.disabled = false;
+        }
       };
     } catch (err) {
       console.debug('[Look it up] series UI item lookup failed', err);

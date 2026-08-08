@@ -33,7 +33,15 @@ public class PluginConfiguration : BasePluginConfiguration
         AiApiKey = string.Empty;
         AiModel = "openai/gpt-oss-20b";
         AiBaseUrl = "https://api.groq.com/openai/v1";
-        AiNamesPerPrepare = 5;
+        // 0 = unlimited (capped at AI safety max).
+        AiNamesPerPrepare = 0;
+        PrepareDelayMsBetweenItems = 1500;
+        PrepareMaxAiCallsPerMinute = 30;
+        PrepareMaxRetries = 3;
+        OpenSubtitlesEnabled = false;
+        OpenSubtitlesApiKey = string.Empty;
+        OpenSubtitlesUsername = string.Empty;
+        OpenSubtitlesPassword = string.Empty;
     }
 
     /// <summary>Gets or sets whether Look it up is enabled.</summary>
@@ -51,7 +59,7 @@ public class PluginConfiguration : BasePluginConfiguration
     /// <summary>Gets or sets popup duration in ms.</summary>
     public int PopupDurationMs { get; set; }
 
-    /// <summary>Gets or sets delay in ms after a cue match before the popup appears. Default 1000.</summary>
+    /// <summary>Gets or sets delay in ms after a cue match before the popup appears.</summary>
     public int PopupDelayMs { get; set; }
 
     /// <summary>Gets or sets popup body font size in pixels.</summary>
@@ -63,13 +71,10 @@ public class PluginConfiguration : BasePluginConfiguration
     /// <summary>Gets or sets popup background color (CSS color, including rgba).</summary>
     public string PopupBackgroundColor { get; set; }
 
-    /// <summary>
-    /// Gets or sets popup placement:
-    /// BottomCenter, BottomLeft, BottomRight, TopCenter, TopLeft, TopRight, Center.
-    /// </summary>
+    /// <summary>Gets or sets popup placement.</summary>
     public string PopupPlacement { get; set; }
 
-    /// <summary>Gets or sets distance from the screen edge as a viewport percent (for top/bottom/side placements).</summary>
+    /// <summary>Gets or sets distance from the screen edge as a viewport percent.</summary>
     public int PopupEdgeOffsetPct { get; set; }
 
     /// <summary>Gets or sets preferred subtitle language codes.</summary>
@@ -90,22 +95,41 @@ public class PluginConfiguration : BasePluginConfiguration
     /// <summary>Gets or sets whether prepare skips already-prepared items.</summary>
     public bool SkipAlreadyPrepared { get; set; }
 
-    /// <summary>
-    /// Gets or sets AI provider: <c>Groq</c>, <c>OpenAI</c>, <c>OpenRouter</c>, <c>Ollama</c>, or <c>None</c> (legacy Wikipedia).
-    /// </summary>
+    /// <summary>Gets or sets AI provider.</summary>
     public string AiProvider { get; set; }
 
-    /// <summary>Gets or sets the AI API key (stored in plugin config).</summary>
+    /// <summary>Gets or sets the AI API key.</summary>
     public string AiApiKey { get; set; }
 
-    /// <summary>Gets or sets the chat model id (e.g. openai/gpt-oss-20b, gpt-4o-mini).</summary>
+    /// <summary>Gets or sets the chat model id.</summary>
     public string AiModel { get; set; }
 
-    /// <summary>Gets or sets the OpenAI-compatible base URL (e.g. https://api.groq.com/openai/v1).</summary>
+    /// <summary>Gets or sets the OpenAI-compatible base URL.</summary>
     public string AiBaseUrl { get; set; }
 
     /// <summary>
-    /// Gets or sets how many local name candidates to verify with AI (one request each). Default 5.
+    /// Gets or sets max AI name verifies per item (0 = unlimited up to safety cap).
     /// </summary>
     public int AiNamesPerPrepare { get; set; }
+
+    /// <summary>Gets or sets delay between library items during prepare.</summary>
+    public int PrepareDelayMsBetweenItems { get; set; }
+
+    /// <summary>Gets or sets max AI HTTP calls per minute (global).</summary>
+    public int PrepareMaxAiCallsPerMinute { get; set; }
+
+    /// <summary>Gets or sets max prepare retries for a failed item.</summary>
+    public int PrepareMaxRetries { get; set; }
+
+    /// <summary>Gets or sets whether OpenSubtitles download is enabled.</summary>
+    public bool OpenSubtitlesEnabled { get; set; }
+
+    /// <summary>Gets or sets the OpenSubtitles.com API key.</summary>
+    public string OpenSubtitlesApiKey { get; set; }
+
+    /// <summary>Gets or sets optional OpenSubtitles username (higher quota).</summary>
+    public string OpenSubtitlesUsername { get; set; }
+
+    /// <summary>Gets or sets optional OpenSubtitles password.</summary>
+    public string OpenSubtitlesPassword { get; set; }
 }

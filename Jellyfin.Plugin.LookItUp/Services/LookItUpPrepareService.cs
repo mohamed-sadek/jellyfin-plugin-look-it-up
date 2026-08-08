@@ -68,6 +68,7 @@ public class LookItUpPrepareService : ILookItUpPrepareService
 {
     private readonly ILibraryManager _libraryManager;
     private readonly ILookItUpService _lookItUpService;
+    private readonly IPrepareQueueStore _queueStore;
     private readonly ILogger<LookItUpPrepareService> _logger;
     private readonly object _gate = new();
     private PrepareStatus _status = new();
@@ -80,16 +81,19 @@ public class LookItUpPrepareService : ILookItUpPrepareService
     public LookItUpPrepareService(
         ILibraryManager libraryManager,
         ILookItUpService lookItUpService,
+        IPrepareQueueStore queueStore,
         ILogger<LookItUpPrepareService> logger)
     {
         _libraryManager = libraryManager;
         _lookItUpService = lookItUpService;
+        _queueStore = queueStore;
         _logger = logger;
     }
 
     /// <inheritdoc />
     public PrepareStatus GetStatus()
     {
+        var queue = _queueStore.Load();
         lock (_gate)
         {
             return new PrepareStatus
@@ -103,7 +107,11 @@ public class LookItUpPrepareService : ILookItUpPrepareService
                 CurrentItem = _status.CurrentItem,
                 LastError = _status.LastError,
                 StartedAtUtc = _status.StartedAtUtc,
-                FinishedAtUtc = _status.FinishedAtUtc
+                FinishedAtUtc = _status.FinishedAtUtc,
+                QueuePending = queue.Pending.Count,
+                QueueFailed = queue.Failed.Count,
+                OpenSubtitlesDownloads = _status.OpenSubtitlesDownloads,
+                StatusNote = _status.StatusNote
             };
         }
     }
@@ -493,65 +501,113 @@ public class LookItUpPrepareService : ILookItUpPrepareService
             return;
         }
 
+        var maxRetries = Math.Max(1, config.PrepareMaxRetries);
+        var delayMs = Math.Max(0, config.PrepareDelayMsBetweenItems);
+        var queue = _queueStore.Load();
+
+        // Drain due retries first (only within this scope), then remaining scope items.
+        var scopeIds = items.Select(i => i.Id).ToHashSet();
+        var dueRetries = queue.Failed
+            .Where(f => f.NextRetryUtc <= DateTime.UtcNow
+                        && f.Attempts < maxRetries
+                        && scopeIds.Contains(f.ItemId))
+            .Select(f => f.ItemId)
+            .Distinct()
+            .ToList();
+        var remaining = items.Select(i => i.Id).Where(id => !dueRetries.Contains(id));
+        var workIds = dueRetries.Concat(remaining).ToList();
+
+        queue.Pending = workIds.ToList();
+        _queueStore.Save(queue);
+
         lock (_gate)
         {
             _status = new PrepareStatus
             {
                 IsRunning = true,
-                Total = items.Count,
+                Total = workIds.Count,
                 StartedAtUtc = DateTime.UtcNow,
-                CurrentItem = scopeLabel
+                CurrentItem = scopeLabel,
+                QueuePending = queue.Pending.Count,
+                QueueFailed = queue.Failed.Count
             };
         }
 
         _logger.LogInformation(
-            "Look it up prepare starting for {Count} items in scope {Scope} (force={Force})",
-            items.Count,
+            "Look it up prepare starting for {Count} items in scope {Scope} (force={Force}, retriesDue={Retries})",
+            workIds.Count,
             scopeLabel,
-            force);
+            force,
+            dueRetries.Count);
 
-        for (var i = 0; i < items.Count; i++)
+        for (var i = 0; i < workIds.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var item = items[i];
+            var itemId = workIds[i];
+            var item = _libraryManager.GetItemById(itemId) ?? items.FirstOrDefault(x => x.Id == itemId);
+            var itemName = item?.Name ?? itemId.ToString("N");
 
             lock (_gate)
             {
-                _status.CurrentItem = item.Name;
+                _status.CurrentItem = itemName;
+                _status.StatusNote = null;
+                _status.QueuePending = Math.Max(0, workIds.Count - i);
             }
 
             try
             {
                 var skipExisting = config.SkipAlreadyPrepared && !force;
-                if (skipExisting && _lookItUpService.TryGetPrepared(item.Id, out _))
+                if (skipExisting
+                    && _lookItUpService.TryGetPrepared(itemId, out var prepared)
+                    && prepared is not null
+                    && _lookItUpService.IsSuccessfullyPrepared(prepared))
                 {
+                    RemoveFromQueue(queue, itemId);
                     lock (_gate)
                     {
                         _status.Completed = i + 1;
                         _status.Skipped++;
                     }
 
-                    progress?.Report(100.0 * (i + 1) / items.Count);
+                    progress?.Report(100.0 * (i + 1) / workIds.Count);
+                    if (delayMs > 0)
+                    {
+                        await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
+                    }
+
                     continue;
                 }
 
                 var result = await _lookItUpService
-                    .PrepareItemAsync(item.Id, force: true, cancellationToken)
+                    .PrepareItemAsync(itemId, force: true, cancellationToken)
                     .ConfigureAwait(false);
 
                 lock (_gate)
                 {
                     _status.Completed = i + 1;
-                    if (result.Cache is null)
+                    if (result.Cache?.SubtitleSource == "opensubtitles")
+                    {
+                        _status.OpenSubtitlesDownloads++;
+                    }
+
+                    if (result.Cache is null
+                        || string.Equals(result.Cache.PrepareOutcome, "failed", StringComparison.OrdinalIgnoreCase)
+                        || (result.Cache.Annotations.Count == 0
+                            && string.Equals(result.Cache.PrepareOutcome, "no-subtitles", StringComparison.OrdinalIgnoreCase)
+                            && !string.IsNullOrWhiteSpace(result.Warning)
+                            && result.Warning.Contains("rate", StringComparison.OrdinalIgnoreCase)))
                     {
                         _status.Failed++;
                         if (!string.IsNullOrWhiteSpace(result.Warning))
                         {
                             _status.LastError = result.Warning;
                         }
+
+                        EnqueueFailure(queue, itemId, itemName, result.Warning ?? "prepare failed", maxRetries);
                     }
                     else if (result.Cache.Annotations.Count == 0)
                     {
+                        RemoveFromQueue(queue, itemId);
                         _status.Skipped++;
                         if (!string.IsNullOrWhiteSpace(result.Warning))
                         {
@@ -560,9 +616,12 @@ public class LookItUpPrepareService : ILookItUpPrepareService
                     }
                     else
                     {
+                        RemoveFromQueue(queue, itemId);
                         _status.WithAnnotations++;
                     }
                 }
+
+                _queueStore.Save(queue);
             }
             catch (OperationCanceledException)
             {
@@ -574,37 +633,96 @@ public class LookItUpPrepareService : ILookItUpPrepareService
                     _status.LastError = "Cancelled by user";
                 }
 
+                _queueStore.Save(queue);
                 throw;
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Prepare failed for {Item}", item.Name);
+                _logger.LogWarning(ex, "Prepare failed for {Item}", itemName);
+                EnqueueFailure(queue, itemId, itemName, ex.Message, maxRetries);
+                _queueStore.Save(queue);
                 lock (_gate)
                 {
                     _status.Completed = i + 1;
                     _status.Failed++;
                     _status.LastError = ex.Message;
+                    if (ex is OpenSubtitlesRateLimitedException)
+                    {
+                        _status.StatusNote = "OpenSubtitles rate-limited; item queued for retry";
+                    }
                 }
             }
 
-            progress?.Report(100.0 * (i + 1) / items.Count);
+            progress?.Report(100.0 * (i + 1) / workIds.Count);
+            if (delayMs > 0 && i < workIds.Count - 1)
+            {
+                await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
+            }
         }
+
+        queue.Pending.Clear();
+        _queueStore.Save(queue);
 
         lock (_gate)
         {
             _status.IsRunning = false;
             _status.CurrentItem = null;
             _status.FinishedAtUtc = DateTime.UtcNow;
-            _status.Completed = items.Count;
+            _status.Completed = workIds.Count;
+            _status.QueuePending = 0;
+            _status.QueueFailed = queue.Failed.Count;
         }
 
         _logger.LogInformation(
-            "Look it up prepare finished ({Scope}): {With} with annotations, {Skipped} skipped, {Failed} failed of {Total}",
+            "Look it up prepare finished ({Scope}): {With} with annotations, {Skipped} skipped, {Failed} failed of {Total}; queueFailed={QueueFailed}",
             scopeLabel,
             _status.WithAnnotations,
             _status.Skipped,
             _status.Failed,
-            items.Count);
+            workIds.Count,
+            queue.Failed.Count);
+    }
+
+    private static void RemoveFromQueue(PrepareQueueState queue, Guid itemId)
+    {
+        queue.Pending.RemoveAll(id => id == itemId);
+        queue.Failed.RemoveAll(f => f.ItemId == itemId);
+    }
+
+    private static void EnqueueFailure(
+        PrepareQueueState queue,
+        Guid itemId,
+        string itemName,
+        string error,
+        int maxRetries)
+    {
+        queue.Pending.RemoveAll(id => id == itemId);
+        var existing = queue.Failed.FirstOrDefault(f => f.ItemId == itemId);
+        var attempts = (existing?.Attempts ?? 0) + 1;
+        queue.Failed.RemoveAll(f => f.ItemId == itemId);
+        if (attempts >= maxRetries)
+        {
+            // Keep a record but nextRetry far in the future so overnight won't spin forever.
+            queue.Failed.Add(new PrepareQueueFailure
+            {
+                ItemId = itemId,
+                ItemName = itemName,
+                Attempts = attempts,
+                LastError = error,
+                NextRetryUtc = DateTime.UtcNow.AddDays(7)
+            });
+            return;
+        }
+
+        var backoffMinutes = Math.Min(120, (int)Math.Pow(2, Math.Min(attempts, 6)));
+        queue.Failed.Add(new PrepareQueueFailure
+        {
+            ItemId = itemId,
+            ItemName = itemName,
+            Attempts = attempts,
+            LastError = error,
+            NextRetryUtc = DateTime.UtcNow.AddMinutes(backoffMinutes)
+        });
     }
 
     private List<BaseItem> ResolvePrepareTargets(BaseItem root)

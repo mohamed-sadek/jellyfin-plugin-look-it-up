@@ -59,4 +59,16 @@ public class PrepareStatus
     /// Gets percent complete (0–100).
     /// </summary>
     public double Percent => Total <= 0 ? 0 : Math.Round(100.0 * Completed / Total, 1);
+
+    /// <summary>Gets or sets pending queue depth.</summary>
+    public int QueuePending { get; set; }
+
+    /// <summary>Gets or sets failed queue depth awaiting retry.</summary>
+    public int QueueFailed { get; set; }
+
+    /// <summary>Gets or sets OpenSubtitles downloads in this job.</summary>
+    public int OpenSubtitlesDownloads { get; set; }
+
+    /// <summary>Gets or sets a status note (e.g. rate-limit pause).</summary>
+    public string? StatusNote { get; set; }
 }

@@ -65,6 +65,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
     private const string DefaultGroqModel = "openai/gpt-oss-20b";
     private static readonly HttpClient Http = CreateClient();
     private readonly ILogger<OpenAiCompatibleEntityExtractor> _logger;
+    private readonly IAiCallRateLimiter _rateLimiter;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -75,9 +76,12 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
     /// <summary>
     /// Initializes a new instance of the <see cref="OpenAiCompatibleEntityExtractor"/> class.
     /// </summary>
-    public OpenAiCompatibleEntityExtractor(ILogger<OpenAiCompatibleEntityExtractor> logger)
+    public OpenAiCompatibleEntityExtractor(
+        ILogger<OpenAiCompatibleEntityExtractor> logger,
+        IAiCallRateLimiter rateLimiter)
     {
         _logger = logger;
+        _rateLimiter = rateLimiter;
     }
 
     /// <inheritdoc />
@@ -158,6 +162,9 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         for (var i = 0; i < batch.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            await _rateLimiter
+                .WaitTurnAsync(config.PrepareMaxAiCallsPerMinute, cancellationToken)
+                .ConfigureAwait(false);
             if (i > 0)
             {
                 await Task.Delay(350, cancellationToken).ConfigureAwait(false);
@@ -405,7 +412,8 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 "historical events, subcultures, etc.\n" +
                 "keep=true ONLY if explaining it adds value.\n" +
                 "keep=false for:\n" +
-                "- characters / cast / nicknames from \"" + show + "\"\n" +
+                "- characters / cast / nicknames from \"" + show + "\" (including guests and minor roles)\n" +
+                "- fictional places, schools, streets, businesses, or organizations that exist only inside \"" + show + "\"\n" +
                 "- basic knowledge everyone already knows (God, Earth, Moon, Sun, America, Chinese, Man, Love, …)\n" +
                 "- demonyms or nationalities alone\n" +
                 "- religious exclamations\n" +
@@ -414,7 +422,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 castHint +
                 "Schema: {\"keep\":true,\"term\":\"Vincent van Gogh\",\"kind\":\"person\",\"summary\":\"Dutch post-impressionist painter known for The Starry Night and Sunflowers.\"}\n" +
                 "kind must be one of: person, place, film, brand, other.\n" +
-                "or {\"keep\":false,\"reason\":\"too basic\"}\n" +
+                "or {\"keep\":false,\"reason\":\"in-show\"}\n" +
                 "Summary: 1–2 short factual sentences about who/what it is. " +
                 "Never mention the show. Never say \"not a character\", \"real-world\", \"fictional\", or that it is/isn't from the show.\n" +
                 "Show: " + show + "\n" +
@@ -426,7 +434,8 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         {
             user =
                 "JSON only. Candidate \"" + candidate.Term + "\" in \"" + candidate.CueText + "\".\n" +
-                "Keep only if it is a non-obvious cultural reference worth a popup (not God/Earth/America/basic words, not a show character).\n" +
+                "Keep only if it is a non-obvious real-world cultural reference (not God/Earth/America/basic words, " +
+                "not a character / cast / fictional place from the show).\n" +
                 "Summary must be factual and must never mention the show.\n" +
                 "{\"keep\":true,\"term\":\"...\",\"kind\":\"person\",\"summary\":\"...\"} or {\"keep\":false,\"reason\":\"...\"}";
         }

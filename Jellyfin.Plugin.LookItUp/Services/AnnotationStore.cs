@@ -29,6 +29,12 @@ public interface IAnnotationStore
     /// </summary>
     /// <param name="itemId">Media item id.</param>
     void Remove(Guid itemId);
+
+    /// <summary>
+    /// Deletes every cache entry (memory + on-disk JSON files).
+    /// </summary>
+    /// <returns>Number of cache files removed.</returns>
+    int ClearAll();
 }
 
 /// <summary>
@@ -120,6 +126,39 @@ public class AnnotationStore : IAnnotationStore
         {
             File.Delete(path);
         }
+    }
+
+    /// <inheritdoc />
+    public int ClearAll()
+    {
+        _memory.Clear();
+        var removed = 0;
+        try
+        {
+            if (!Directory.Exists(_directory))
+            {
+                return 0;
+            }
+
+            foreach (var file in Directory.EnumerateFiles(_directory, "*.json", SearchOption.TopDirectoryOnly))
+            {
+                try
+                {
+                    File.Delete(file);
+                    removed++;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to delete Look it up cache file {Path}", file);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed clearing Look it up cache directory {Dir}", _directory);
+        }
+
+        return removed;
     }
 
     private string GetPath(Guid itemId) => Path.Combine(_directory, $"{itemId:N}.json");

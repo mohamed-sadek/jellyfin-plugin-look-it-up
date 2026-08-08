@@ -18,7 +18,10 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton<INameCandidateFinder, NameCandidateFinder>();
         serviceCollection.AddSingleton<IWikipediaLookupService, WikipediaLookupService>();
         serviceCollection.AddSingleton<IAiEntityExtractor, OpenAiCompatibleEntityExtractor>();
+        serviceCollection.AddSingleton<IAiCallRateLimiter, AiCallRateLimiter>();
+        serviceCollection.AddSingleton<IOpenSubtitlesClient, OpenSubtitlesClient>();
         serviceCollection.AddSingleton<IAnnotationStore, AnnotationStore>();
+        serviceCollection.AddSingleton<IPrepareQueueStore, PrepareQueueStore>();
         serviceCollection.AddSingleton<ILookItUpService, LookItUpService>();
         serviceCollection.AddSingleton<ILookItUpPrepareService, LookItUpPrepareService>();
     }

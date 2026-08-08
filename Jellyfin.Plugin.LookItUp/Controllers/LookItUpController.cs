@@ -67,20 +67,29 @@ public class LookItUpController : ControllerBase
                 .ConfigureAwait(false);
 
             var config = Plugin.Instance?.Configuration;
+            var disabled = cache?.Disabled == true;
             return Ok(new
             {
                 itemId,
                 itemName = item.Name,
                 enabled = config?.Enabled ?? false,
-                prepared = prepared || annotations.Count > 0,
+                prepared = prepared || annotations.Count > 0 || (cache?.Annotations.Count > 0),
+                disabled,
                 preparedAtUtc = cache?.ScannedAtUtc,
                 cacheVersion = cache?.Version ?? 0,
+                subtitlePath = cache?.SubtitlePath,
+                subtitleSource = cache?.SubtitleSource,
+                matchedBy = cache?.MatchedBy,
+                movieHash = cache?.MovieHash,
+                durationCheckOk = cache?.DurationCheckOk,
+                prepareOutcome = cache?.PrepareOutcome,
+                annotationCount = cache?.Annotations.Count ?? 0,
                 popupDurationMs = config?.PopupDurationMs ?? 3000,
                 popup = BuildPopupSettings(config),
                 count = annotations.Count,
                 annotations,
-                hint = prepared || annotations.Count > 0
-                    ? null
+                hint = prepared || annotations.Count > 0 || disabled
+                    ? (disabled ? "Popups disabled for this item." : null)
                     : "No prepared annotations. Run Look it up library prepare (Dashboard → Scheduled Tasks or plugin page)."
             });
         }
@@ -170,6 +179,40 @@ public class LookItUpController : ControllerBase
     }
 
     /// <summary>
+    /// Disables popups for an item without deleting prepared annotations.
+    /// </summary>
+    [HttpPost("{itemId}/disable")]
+    [Authorize]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public ActionResult DisableItem([FromRoute] Guid itemId)
+    {
+        if (!_lookItUpService.TrySetDisabled(itemId, disabled: true, out var cache))
+        {
+            return NotFound(new { error = "No prepared annotations for this item", itemId });
+        }
+
+        return Ok(new { itemId, disabled = true, count = cache?.Annotations.Count ?? 0 });
+    }
+
+    /// <summary>
+    /// Re-enables popups for an item.
+    /// </summary>
+    [HttpPost("{itemId}/enable")]
+    [Authorize]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public ActionResult EnableItem([FromRoute] Guid itemId)
+    {
+        if (!_lookItUpService.TrySetDisabled(itemId, disabled: false, out var cache))
+        {
+            return NotFound(new { error = "No prepared annotations for this item", itemId });
+        }
+
+        return Ok(new { itemId, disabled = false, count = cache?.Annotations.Count ?? 0 });
+    }
+
+    /// <summary>
     /// Forces prepare/rescan for a single media item.
     /// </summary>
     [HttpPost("{itemId}/prepare")]
@@ -198,6 +241,11 @@ public class LookItUpController : ControllerBase
                 count = cache?.Annotations.Count ?? 0,
                 preparedAtUtc = cache?.ScannedAtUtc,
                 subtitle = cache?.SubtitlePath,
+                subtitleSource = cache?.SubtitleSource,
+                matchedBy = cache?.MatchedBy,
+                durationCheckOk = cache?.DurationCheckOk,
+                prepareOutcome = cache?.PrepareOutcome,
+                disabled = cache?.Disabled ?? false,
                 mode = result.Mode,
                 aiBaseUrl = result.AiBaseUrl,
                 aiModel = result.AiModel,
@@ -315,7 +363,7 @@ public class LookItUpController : ControllerBase
     }
 
     /// <summary>
-    /// Starts a background library prepare job.
+    /// Starts a background library prepare job (same work as the overnight scheduled task).
     /// </summary>
     [HttpPost("prepare")]
     [Authorize]
@@ -325,6 +373,8 @@ public class LookItUpController : ControllerBase
         return Ok(new
         {
             started,
+            force,
+            sameAsScheduledTask = true,
             status = _prepareService.GetStatus()
         });
     }
@@ -340,6 +390,32 @@ public class LookItUpController : ControllerBase
         return Ok(new
         {
             cancelled,
+            status = _prepareService.GetStatus()
+        });
+    }
+
+    /// <summary>
+    /// Deletes all generated Look it up files (caches, downloaded subs, sidecars, prepare queue).
+    /// Does not change plugin settings or API keys.
+    /// </summary>
+    [HttpPost("clear-generated")]
+    [Authorize]
+    public ActionResult ClearGeneratedData()
+    {
+        var cancelled = _prepareService.TryCancelLibraryPrepare();
+        ImageCache.Clear();
+        var result = _lookItUpService.ClearGeneratedData();
+        result.PrepareJobCancelled = cancelled;
+        return Ok(new
+        {
+            ok = true,
+            result.CacheFilesDeleted,
+            result.SubtitleCacheFilesDeleted,
+            result.OpenSubtitlesFilesDeleted,
+            result.SidecarFilesDeleted,
+            result.PrepareQueueCleared,
+            result.PrepareJobCancelled,
+            result.TotalFilesDeleted,
             status = _prepareService.GetStatus()
         });
     }

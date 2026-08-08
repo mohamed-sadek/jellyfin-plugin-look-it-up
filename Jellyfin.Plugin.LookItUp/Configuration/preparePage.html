@@ -4,32 +4,25 @@
     <title>Look it up — Prepare</title>
 </head>
 <body>
-    <div id="LookItUpPreparePage" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input">
+    <div id="LookItUpPreparePage" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-button">
         <div data-role="content">
             <div class="content-primary">
                 <div class="sectionTitleContainer flex align-items-center">
                     <h1 class="sectionTitle">Look it up — Prepare</h1>
                 </div>
                 <p id="prepareRootLabel" style="opacity:.85;">Waiting for Look it up script… If this stays, check that /LookItUp/script.js is injected.</p>
-
-                <div class="inputContainer" style="max-width:20em;">
-                    <label class="inputLabel inputLabelUnfocused" for="txtNamesPerItem">Pre-select top N</label>
-                    <input id="txtNamesPerItem" type="number" is="emby-input" min="1" max="200" value="5" />
-                    <div class="fieldDescription">Load candidates shows every name found. This number only pre-checks the top N. Toggle all / manual checks override it when preparing.</div>
-                </div>
+                <p class="fieldDescription">
+                    Finds every local name candidate from subtitles and verifies all of them with AI in rate-limited batches.
+                    Missing subtitles can be fetched from OpenSubtitles when configured.
+                </p>
 
                 <div style="display:flex;flex-wrap:wrap;gap:8px;margin:1em 0;">
-                    <button type="button" id="btnLoadPreview" class="raised button-submit emby-button">Load candidates</button>
-                    <button type="button" id="btnSelectSuggested" class="raised emby-button">Select suggested</button>
-                    <button type="button" id="btnSelectNone" class="raised emby-button">Select none</button>
-                    <button type="button" id="btnStartPrepare" class="raised emby-button">Prepare selected</button>
+                    <button type="button" id="btnStartPrepare" class="raised button-submit emby-button">Prepare all</button>
                     <button type="button" id="btnCancelPrepare" class="raised button-cancel emby-button">Stop</button>
                 </div>
 
                 <pre id="prepareJobStatus" style="white-space:pre-wrap;word-break:break-word;background:rgba(0,0,0,.08);padding:12px;border-radius:8px;min-height:3em;">Job status will appear here.</pre>
-
                 <div id="prepareSummary" style="margin:0.75em 0;opacity:.9;"></div>
-                <div id="prepareItemsHost"></div>
             </div>
         </div>
     </div>
