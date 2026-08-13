@@ -339,7 +339,7 @@ public class LookItUpService : ILookItUpService
                 return Array.Empty<ContextAnnotation>();
             }
 
-            return cached.Annotations;
+            return FilterPlaybackAnnotations(cached.Annotations);
         }
 
         // Playback should usually hit precomputed data. On-demand prepare is opt-in.
@@ -356,7 +356,20 @@ public class LookItUpService : ILookItUpService
             return Array.Empty<ContextAnnotation>();
         }
 
-        return (IReadOnlyList<ContextAnnotation>)(prepared.Cache?.Annotations ?? []);
+        return FilterPlaybackAnnotations(prepared.Cache?.Annotations ?? []);
+    }
+
+    private static IReadOnlyList<ContextAnnotation> FilterPlaybackAnnotations(
+        IReadOnlyList<ContextAnnotation> annotations)
+    {
+        if (annotations.Count == 0)
+        {
+            return annotations;
+        }
+
+        return annotations
+            .Where(a => !OpenAiCompatibleEntityExtractor.IsSongOrMusicWork(a.Term, a.Kind, a.Summary))
+            .ToList();
     }
 
     /// <inheritdoc />
@@ -1142,6 +1155,11 @@ public class LookItUpService : ILookItUpService
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     var term = m.Term.Trim();
+                    if (OpenAiCompatibleEntityExtractor.IsSongOrMusicWork(term, m.Kind, m.Summary))
+                    {
+                        continue;
+                    }
+
                     var kind = string.IsNullOrWhiteSpace(m.Kind)
                                || string.Equals(m.Kind, "other", StringComparison.OrdinalIgnoreCase)
                         ? InferKind(term, m.Summary)
@@ -1149,6 +1167,11 @@ public class LookItUpService : ILookItUpService
                     if (string.Equals(m.Kind, "person", StringComparison.OrdinalIgnoreCase))
                     {
                         kind = "person";
+                    }
+
+                    if (string.Equals(kind, "song", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
                     }
                     var anchored = FindEarliestMention(cues, term);
                     var startMs = anchored?.StartMs ?? m.StartMs;

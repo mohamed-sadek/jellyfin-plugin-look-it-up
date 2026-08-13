@@ -351,6 +351,14 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
 
                 summary = ClampSummary(SanitizeSummary(summary, term), 280);
 
+                if (IsSongOrMusicWork(term, parsed.Kind, summary))
+                {
+                    _logger.LogInformation(
+                        "Look it up AI kept {Term} but local filter dropped it as a song/album/track",
+                        term);
+                    return (null, null, "song");
+                }
+
                 _logger.LogInformation(
                     "Look it up AI kept {Term} → {Canonical}: {Summary}",
                     candidate.Term,
@@ -408,12 +416,14 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 "Return a JSON object about this subtitle name candidate.\n" +
                 "This dialogue is from \"" + show + "\".\n" +
                 "Goal: short popups for CULTURAL REFERENCES a typical viewer might not fully know — " +
-                "artists, historical figures, niche brands, specific places, films, songs, medical/drug names, " +
+                "artists/bands (as people), historical figures, niche brands, specific places, films, medical/drug names, " +
                 "historical events, subcultures, etc.\n" +
                 "keep=true ONLY if explaining it adds value.\n" +
                 "keep=false for:\n" +
                 "- characters / cast / nicknames from \"" + show + "\" (including guests and minor roles)\n" +
                 "- fictional places, schools, streets, businesses, or organizations that exist only inside \"" + show + "\"\n" +
+                "- song titles, album titles, singles, tracks, or lyric-line titles playing or mentioned in the show " +
+                "(do NOT explain the song itself; artists/bands as people are OK)\n" +
                 "- basic knowledge everyone already knows (God, Earth, Moon, Sun, America, Chinese, Man, Love, …)\n" +
                 "- demonyms or nationalities alone\n" +
                 "- religious exclamations\n" +
@@ -435,7 +445,8 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             user =
                 "JSON only. Candidate \"" + candidate.Term + "\" in \"" + candidate.CueText + "\".\n" +
                 "Keep only if it is a non-obvious real-world cultural reference (not God/Earth/America/basic words, " +
-                "not a character / cast / fictional place from the show).\n" +
+                "not a character / cast / fictional place from the show, not a song/album/track title).\n" +
+                "Artists/bands as people are OK; song titles are not.\n" +
                 "Summary must be factual and must never mention the show.\n" +
                 "{\"keep\":true,\"term\":\"...\",\"kind\":\"person\",\"summary\":\"...\"} or {\"keep\":false,\"reason\":\"...\"}";
         }
@@ -916,14 +927,88 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         var value = (kind ?? string.Empty).Trim().ToLowerInvariant();
         return value switch
         {
-            "person" or "people" or "actor" or "actress" or "artist" or "author" or "writer" => "person",
+            "person" or "people" or "actor" or "actress" or "artist" or "author" or "writer"
+                or "singer" or "musician" or "band" => "person",
             "place" or "location" or "city" or "country" or "planet" or "region" => "place",
-            "film" or "movie" or "show" or "tv" or "series" or "song" or "album" => "film",
+            "film" or "movie" or "show" or "tv" or "series" => "film",
+            "song" or "album" or "track" or "single" or "ep" or "mixtape" or "soundtrack" or "record" => "song",
             "brand" or "company" or "org" or "organization" or "product" or "drug" or "medication" => "brand",
             "event" or "history" or "historical" or "war" or "award" or "condition" or "disorder"
                 or "group" or "people-group" or "culture" or "subculture"
                 or "other" or "real-world reference" or "reference" => "other",
             _ => "other"
         };
+    }
+
+    /// <summary>
+    /// True when the entity is a song/album/track title (not an artist/band as a person).
+    /// Used at prepare time and when serving cached annotations.
+    /// </summary>
+    public static bool IsSongOrMusicWork(string? term, string? kind, string? summary)
+    {
+        var k = (kind ?? string.Empty).Trim().ToLowerInvariant();
+        if (k is "song" or "album" or "track" or "single" or "ep" or "mixtape" or "soundtrack" or "record")
+        {
+            return true;
+        }
+
+        // Artists/bands stay; only drop the musical work itself.
+        if (k is "person" or "people" or "actor" or "actress" or "artist" or "author" or "writer"
+            or "singer" or "musician" or "band")
+        {
+            return false;
+        }
+
+        var s = summary ?? string.Empty;
+        if (s.Length == 0)
+        {
+            return false;
+        }
+
+        // Strip "Term: " prefix so patterns match the explanation body.
+        var body = s;
+        if (!string.IsNullOrWhiteSpace(term)
+            && body.StartsWith(term.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            body = body[term.Trim().Length..].TrimStart(':', ' ', '-', '–');
+        }
+
+        // "… is a song / hit single / studio album …"
+        if (Regex.IsMatch(
+                body,
+                @"\b(?:is|was)\s+(?:a|an|the)\s+(?:(?:hit|debut|studio|live|concept|cover)\s+)?(?:song|single|album|track|ep|record)\b",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+        {
+            return true;
+        }
+
+        // "song/single/track by Artist"
+        if (Regex.IsMatch(
+                body,
+                @"\b(?:song|single|track|album|ep)\s+by\b",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+        {
+            return true;
+        }
+
+        // "from the album / soundtrack …"
+        if (Regex.IsMatch(
+                body,
+                @"\bfrom\s+the\s+(?:album|soundtrack|ep|mixtape)\b",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+        {
+            return true;
+        }
+
+        // "charting hit / Billboard single"
+        if (Regex.IsMatch(
+                body,
+                @"\b(?:billboard|chart(?:ing)?)\s+(?:hit|single|song)\b|\bhit\s+single\b",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+        {
+            return true;
+        }
+
+        return false;
     }
 }

@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  const CLIENT_VERSION = '1.2.33.0';
+  const CLIENT_VERSION = '1.2.34.0';
   const STYLE_ID = 'lookitup-styles';
   const STACK_ID = 'lookitup-stack';
   const POPUP_ID = 'lookitup-popup'; // legacy single-popup id (removed on upgrade)
@@ -743,6 +743,7 @@
   function isJunkAnnotation(a) {
     const term = (a.term || '').trim();
     const summary = (a.summary || '').toLowerCase();
+    const kind = (a.kind || '').toLowerCase();
     if (!term) {
       return true;
     }
@@ -763,6 +764,25 @@
     }
     if (/^list of /i.test(term)) {
       return true;
+    }
+    // Song / album / track titles — keep artists (kind=person), drop the musical work.
+    if (['song', 'album', 'track', 'single', 'ep', 'mixtape', 'soundtrack', 'record'].includes(kind)) {
+      return true;
+    }
+    if (!['person', 'people', 'artist', 'singer', 'musician', 'band'].includes(kind)) {
+      let body = summary;
+      const termLower = term.toLowerCase();
+      if (body.startsWith(termLower)) {
+        body = body.slice(termLower.length).replace(/^[\s:\-–]+/, '');
+      }
+      if (
+        /\b(?:is|was)\s+(?:a|an|the)\s+(?:(?:hit|debut|studio|live|concept|cover)\s+)?(?:song|single|album|track|ep|record)\b/.test(body) ||
+        /\b(?:song|single|track|album|ep)\s+by\b/.test(body) ||
+        /\bfrom\s+the\s+(?:album|soundtrack|ep|mixtape)\b/.test(body) ||
+        /\b(?:billboard|chart(?:ing)?)\s+(?:hit|single|song)\b|\bhit\s+single\b/.test(body)
+      ) {
+        return true;
+      }
     }
     // Single ALL-CAPS / tiny filler
     if (!term.includes(' ') && term.length <= 3 && term === term.toUpperCase()) {
