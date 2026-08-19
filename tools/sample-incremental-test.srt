@@ -1,0 +1,11 @@
+1
+00:01:00,000 --> 00:01:04,000
+This story begins in Paris during the Renaissance.
+
+2
+00:06:30,000 --> 00:06:34,000
+Napoleon Bonaparte changed European history forever.
+
+3
+00:11:00,000 --> 00:11:05,000
+Later they traveled through France and visited the Louvre.

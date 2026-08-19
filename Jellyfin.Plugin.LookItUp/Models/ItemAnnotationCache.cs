@@ -60,4 +60,14 @@ public class ItemAnnotationCache
 
     /// <summary>Gets or sets the annotations for this item.</summary>
     public List<ContextAnnotation> Annotations { get; set; } = [];
+
+    /// <summary>
+    /// Gets or sets how far (ms) incremental prepare has scanned ahead in the timeline.
+    /// </summary>
+    public long PreparedThroughMs { get; set; }
+
+    /// <summary>
+    /// Gets or sets whether the full subtitle timeline has been incrementally prepared.
+    /// </summary>
+    public bool FullyPrepared { get; set; }
 }

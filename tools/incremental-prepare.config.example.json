@@ -1,0 +1,15 @@
+{
+  "Enabled": true,
+  "WikipediaLanguage": "en",
+  "MaxAnnotationsPerItem": 40,
+  "MinEntityLength": 3,
+  "PopupDurationMs": 8000,
+  "PopupDelayMs": 1000,
+  "PreferredSubtitleLanguages": "en",
+  "AiProvider": "Groq",
+  "AiApiKey": "",
+  "AiModel": "openai/gpt-oss-20b",
+  "AiBaseUrl": "https://api.groq.com/openai/v1",
+  "AiNamesPerPrepare": 0,
+  "PrepareMaxAiCallsPerMinute": 30
+}
