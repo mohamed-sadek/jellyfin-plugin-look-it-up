@@ -80,3 +80,30 @@ public sealed class IncrementalPrepareSimulationResult
     /// <summary>Gets or sets optional warning (e.g. AI not configured).</summary>
     public string? Warning { get; init; }
 }
+
+/// <summary>
+/// Result of a single incremental prepare-ahead call during playback.
+/// </summary>
+public sealed class PrepareAheadResult
+{
+    /// <summary>Gets or sets whether the cache was updated.</summary>
+    public bool Changed { get; init; }
+
+    /// <summary>Gets or sets annotations added in this call.</summary>
+    public IReadOnlyList<ContextAnnotation> Added { get; init; } = [];
+
+    /// <summary>Gets or sets the updated cache entry.</summary>
+    public ItemAnnotationCache? Cache { get; init; }
+
+    /// <summary>Gets or sets window details when work ran.</summary>
+    public IncrementalPrepareWindowResult? Window { get; init; }
+
+    /// <summary>Gets or sets subtitle duration (ms).</summary>
+    public long SubtitleDurationMs { get; init; }
+
+    /// <summary>Gets or sets prepare mode: ai, legacy, cache, or skipped.</summary>
+    public string Mode { get; init; } = "skipped";
+
+    /// <summary>Gets or sets optional warning.</summary>
+    public string? Warning { get; init; }
+}

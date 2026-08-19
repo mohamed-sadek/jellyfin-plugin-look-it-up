@@ -22,6 +22,7 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton<IOpenSubtitlesClient, OpenSubtitlesClient>();
         serviceCollection.AddSingleton<IAnnotationStore, AnnotationStore>();
         serviceCollection.AddSingleton<IPrepareQueueStore, PrepareQueueStore>();
+        serviceCollection.AddSingleton<IncrementalPrepareEngine>();
         serviceCollection.AddSingleton<ILookItUpService, LookItUpService>();
         serviceCollection.AddSingleton<ILookItUpPrepareService, LookItUpPrepareService>();
     }

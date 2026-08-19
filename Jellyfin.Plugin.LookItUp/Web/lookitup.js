@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  const CLIENT_VERSION = '1.2.34.0';
+  const CLIENT_VERSION = '1.2.35.0';
   const STYLE_ID = 'lookitup-styles';
   const STACK_ID = 'lookitup-stack';
   const POPUP_ID = 'lookitup-popup'; // legacy single-popup id (removed on upgrade)
@@ -13,6 +13,8 @@
   const DEFAULT_POPUP_DELAY_MS = 1000;
   const MIN_MATCH_WINDOW_MS = 8000;
   const SETTINGS_REFRESH_MS = 5000;
+  const PREPARE_AHEAD_MIN_INTERVAL_MS = 10000;
+  const DEFAULT_INCREMENTAL_WINDOW_MS = 300000;
   const MAX_STACKED_POPUPS = 3;
   const JUNK_TERMS = new Set([
     'all', 'new', 'seem', 'consumer', 'yeah', 'heh', 'done', 'away', 'let', 'now',
@@ -56,6 +58,12 @@
   let seriesStatusTimer = null;
   let adminUserCached = null;
   let adminUserCheckedAt = 0;
+  let incrementalPrepareOnPlayback = true;
+  let incrementalPrepareWindowMs = DEFAULT_INCREMENTAL_WINDOW_MS;
+  let preparedThroughMs = 0;
+  let fullyPrepared = false;
+  let prepareAheadInFlight = false;
+  let lastPrepareAheadAt = 0;
   // Terms already shown for their current cue window (don't re-show after auto-hide).
   const shownThisPass = new Set();
 
@@ -158,6 +166,7 @@
       } else {
         console.warn('[Look it up] /LookItUp/status has no popup settings ? is the plugin updated to 1.2.15+?');
       }
+      applyIncrementalSettings(status);
     } catch (err) {
       console.debug('[Look it up] settings refresh failed', err);
     } finally {
@@ -813,6 +822,112 @@
     );
   }
 
+  function mergeAnnotations(incoming) {
+    if (!incoming || !incoming.length) {
+      return 0;
+    }
+    const known = new Set(annotations.map((a) => a.term.toLowerCase()));
+    let added = 0;
+    for (const raw of incoming) {
+      const list = Array.isArray(raw) ? raw : [raw];
+      for (const a of list) {
+        const norm = normalizeAnnotations([a]);
+        if (!norm.length) {
+          continue;
+        }
+        const item = norm[0];
+        const key = item.term.toLowerCase();
+        if (known.has(key)) {
+          continue;
+        }
+        known.add(key);
+        annotations.push(item);
+        added += 1;
+      }
+    }
+    if (added > 0) {
+      annotations.sort((a, b) => a.startMs - b.startMs);
+    }
+    return added;
+  }
+
+  function applyIncrementalSettings(data) {
+    if (!data) {
+      return;
+    }
+    incrementalPrepareOnPlayback = pick(
+      data,
+      'incrementalPrepareOnPlayback',
+      'IncrementalPrepareOnPlayback'
+    ) !== false;
+    const windowMs = Number(
+      pick(data, 'incrementalPrepareWindowMs', 'IncrementalPrepareWindowMs')
+    );
+    if (Number.isFinite(windowMs) && windowMs >= 60000) {
+      incrementalPrepareWindowMs = windowMs;
+    }
+    preparedThroughMs = Number(pick(data, 'preparedThroughMs', 'PreparedThroughMs') || preparedThroughMs || 0);
+    fullyPrepared = !!(pick(data, 'fullyPrepared', 'FullyPrepared'));
+  }
+
+  async function maybePrepareAhead(itemId, playbackMs, force) {
+    if (!itemId || !incrementalPrepareOnPlayback || fullyPrepared || prepareAheadInFlight) {
+      return;
+    }
+    if (playbackMs == null || !Number.isFinite(playbackMs)) {
+      return;
+    }
+    const aheadTarget = playbackMs + incrementalPrepareWindowMs;
+    if (!force && preparedThroughMs >= aheadTarget) {
+      return;
+    }
+    if (!force && Date.now() - lastPrepareAheadAt < PREPARE_AHEAD_MIN_INTERVAL_MS) {
+      return;
+    }
+
+    const api = getApiClient();
+    if (!api) {
+      return;
+    }
+
+    prepareAheadInFlight = true;
+    lastPrepareAheadAt = Date.now();
+    try {
+      const url = api.getUrl(
+        'LookItUp/' + itemId + '/prepare-ahead?playbackMs=' + Math.max(0, Math.floor(playbackMs))
+      );
+      const data = await api.ajax({
+        url,
+        type: 'POST',
+        dataType: 'json'
+      });
+      applyIncrementalSettings(data);
+      const addedRaw = data.added || data.Added || [];
+      const addedCount = mergeAnnotations(addedRaw);
+      if (addedCount > 0) {
+        console.info('[Look it up] incremental prepare added', addedCount, 'annotation(s)', {
+          preparedThroughMs,
+          fullyPrepared,
+          mode: data.mode || data.Mode
+        });
+        tryShowForCurrentTime();
+      } else if (data.changed || data.Changed) {
+        console.info('[Look it up] incremental prepare advanced window', {
+          preparedThroughMs,
+          fullyPrepared,
+          mode: data.mode || data.Mode
+        });
+      }
+      if (data.warning || data.Warning) {
+        console.warn('[Look it up] prepare-ahead warning', data.warning || data.Warning);
+      }
+    } catch (err) {
+      console.warn('[Look it up] prepare-ahead failed', err);
+    } finally {
+      prepareAheadInFlight = false;
+    }
+  }
+
   async function loadAnnotations(itemId) {
     const api = getApiClient();
     if (!api || !itemId) {
@@ -863,13 +978,16 @@
       }
       applyPopupSettings(popupCfg);
       lastSettingsFetchAt = Date.now();
+      applyIncrementalSettings(data);
       const rawList = data.annotations || data.Annotations || [];
       annotations = normalizeAnnotations(rawList);
-      if (data.prepared === false && annotations.length === 0) {
+      if (data.prepared === false && annotations.length === 0 && !incrementalPrepareOnPlayback) {
         console.warn(
           '[Look it up] no prepared annotations for this item. Run Prepare on the plugin page.',
           data.hint || ''
         );
+      } else if (incrementalPrepareOnPlayback && !fullyPrepared && annotations.length === 0) {
+        console.info('[Look it up] incremental prepare will run during playback', data.hint || '');
       }
       console.info('[Look it up] loaded', annotations.length, 'annotations for', itemId, {
         raw: rawList.length,
@@ -892,6 +1010,9 @@
 
       // Immediate pass after load so we don't wait another poll interval.
       tryShowForCurrentTime();
+      if (incrementalPrepareOnPlayback && !fullyPrepared) {
+        await maybePrepareAhead(itemId, getCurrentTimeMs(), true);
+      }
     } catch (err) {
       lastLoadErrorAt = Date.now();
       let detail = err;
@@ -1030,6 +1151,9 @@
       currentItemId = itemId;
       annotations = [];
       shownThisPass.clear();
+      preparedThroughMs = 0;
+      fullyPrepared = false;
+      lastPrepareAheadAt = 0;
       hidePopup();
       refreshPopupSettings(true);
       loadAnnotations(itemId);
@@ -1039,6 +1163,9 @@
     refreshPopupSettings(false);
 
     const now = getCurrentTimeMs();
+    if (videoPlaying && incrementalPrepareOnPlayback && !fullyPrepared) {
+      maybePrepareAhead(itemId, now, false);
+    }
     if (Date.now() - lastDiagAt > 4000 && annotations.length) {
       lastDiagAt = Date.now();
       const activeNow = annotations.filter((a) => now != null && now >= a.startMs && now <= annotationWindowEnd(a));
@@ -1062,7 +1189,11 @@
       });
     }
 
-    if (now == null || !annotations.length) {
+    if (now == null) {
+      return;
+    }
+
+    if (!annotations.length) {
       return;
     }
 

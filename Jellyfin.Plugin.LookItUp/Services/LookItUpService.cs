@@ -77,6 +77,14 @@ public interface ILookItUpService
     bool IsSuccessfullyPrepared(ItemAnnotationCache cache);
 
     /// <summary>
+    /// Incrementally prepares the next subtitle time window during playback.
+    /// </summary>
+    Task<PrepareAheadResult> PrepareAheadAsync(
+        Guid itemId,
+        long playbackMs,
+        CancellationToken cancellationToken);
+
+    /// <summary>
     /// Deletes all generated Look it up files (plugin caches, downloaded subs, media sidecars, prepare queue).
     /// </summary>
     ClearGeneratedDataResult ClearGeneratedData();
@@ -113,10 +121,12 @@ public class LookItUpService : ILookItUpService
     private readonly IOpenSubtitlesClient _openSubtitles;
     private readonly IAnnotationStore _store;
     private readonly IPrepareQueueStore _prepareQueueStore;
+    private readonly IncrementalPrepareEngine _incrementalEngine;
     private readonly ILogger<LookItUpService> _logger;
     private readonly string _subtitleCacheDir;
     private readonly string _openSubtitlesDir;
     private readonly ConcurrentDictionary<Guid, SubtitleContent> _subtitleMemory = new();
+    private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _aheadLocks = new();
 
     /// <summary>
     /// Initializes a new instance of the <see cref="LookItUpService"/> class.
@@ -133,6 +143,7 @@ public class LookItUpService : ILookItUpService
         IOpenSubtitlesClient openSubtitles,
         IAnnotationStore store,
         IPrepareQueueStore prepareQueueStore,
+        IncrementalPrepareEngine incrementalEngine,
         IApplicationPaths appPaths,
         ILogger<LookItUpService> logger)
     {
@@ -147,6 +158,7 @@ public class LookItUpService : ILookItUpService
         _openSubtitles = openSubtitles;
         _store = store;
         _prepareQueueStore = prepareQueueStore;
+        _incrementalEngine = incrementalEngine;
         _logger = logger;
 
         var root = appPaths.PluginConfigurationsPath
@@ -357,6 +369,200 @@ public class LookItUpService : ILookItUpService
         }
 
         return FilterPlaybackAnnotations(prepared.Cache?.Annotations ?? []);
+    }
+
+    /// <inheritdoc />
+    public async Task<PrepareAheadResult> PrepareAheadAsync(
+        Guid itemId,
+        long playbackMs,
+        CancellationToken cancellationToken)
+    {
+        var config = Plugin.Instance?.Configuration;
+        if (config is null || !config.Enabled || !config.IncrementalPrepareOnPlayback)
+        {
+            return new PrepareAheadResult { Mode = "disabled" };
+        }
+
+        var item = _libraryManager.GetItemById(itemId);
+        if (item is null)
+        {
+            return new PrepareAheadResult { Mode = "not-found", Warning = "Item not found." };
+        }
+
+        var gate = _aheadLocks.GetOrAdd(itemId, _ => new SemaphoreSlim(1, 1));
+        if (!await gate.WaitAsync(0, cancellationToken).ConfigureAwait(false))
+        {
+            return new PrepareAheadResult
+            {
+                Changed = false,
+                Cache = _store.Get(itemId),
+                Mode = "busy"
+            };
+        }
+
+        try
+        {
+            var existing = _store.Get(itemId);
+            var priorDisabled = existing?.Disabled ?? false;
+            ItemAnnotationCache cache;
+            if (existing is not null && existing.Version >= CurrentCacheVersion)
+            {
+                cache = existing;
+            }
+            else
+            {
+                cache = new ItemAnnotationCache
+                {
+                    ItemId = itemId,
+                    Version = CurrentCacheVersion,
+                    Disabled = priorDisabled,
+                    Annotations = []
+                };
+            }
+
+            if (cache.Disabled)
+            {
+                return new PrepareAheadResult { Changed = false, Cache = cache, Mode = "disabled" };
+            }
+
+            SubtitleContent? subtitle;
+            try
+            {
+                subtitle = await ResolveSubtitleContentAsync(item, config.PreferredSubtitleLanguages, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OpenSubtitlesRateLimitedException ex)
+            {
+                return new PrepareAheadResult { Mode = "failed", Warning = ex.Message, Cache = cache };
+            }
+
+            if (subtitle is null)
+            {
+                cache.PrepareOutcome = "no-subtitles";
+                cache.ScannedAtUtc = DateTime.UtcNow;
+                PersistCache(item, cache, config);
+                return new PrepareAheadResult
+                {
+                    Changed = true,
+                    Cache = cache,
+                    Mode = "none",
+                    Warning = "No readable text subtitles found."
+                };
+            }
+
+            var cues = _subtitleParser.Parse(subtitle.Content, subtitle.Label);
+            if (cues.Count == 0)
+            {
+                return new PrepareAheadResult
+                {
+                    Changed = false,
+                    Cache = cache,
+                    Mode = "none",
+                    Warning = "No subtitle cues parsed."
+                };
+            }
+
+            var durationMs = cues.Max(c => c.EndMs);
+            if (item.RunTimeTicks is > 0)
+            {
+                durationMs = Math.Max(durationMs, item.RunTimeTicks.Value / TimeSpan.TicksPerMillisecond);
+            }
+
+            if (cache.FullyPrepared || cache.PreparedThroughMs >= durationMs)
+            {
+                cache.FullyPrepared = true;
+                cache.PreparedThroughMs = durationMs;
+                return new PrepareAheadResult
+                {
+                    Changed = false,
+                    Cache = cache,
+                    SubtitleDurationMs = durationMs,
+                    Mode = "cache"
+                };
+            }
+
+            var windowMs = Math.Clamp(config.IncrementalPrepareWindowMs, 60_000, 900_000);
+            playbackMs = Math.Max(0, playbackMs);
+            var fromMs = cache.PreparedThroughMs;
+            var toMs = Math.Min(Math.Max(fromMs + windowMs, playbackMs + windowMs), durationMs);
+            if (fromMs >= toMs)
+            {
+                return new PrepareAheadResult
+                {
+                    Changed = false,
+                    Cache = cache,
+                    SubtitleDurationMs = durationMs,
+                    Mode = "skipped"
+                };
+            }
+
+            var knownBefore = new HashSet<string>(
+                cache.Annotations.Select(a => a.Term),
+                StringComparer.OrdinalIgnoreCase);
+            var minLen = Math.Max(2, config.MinEntityLength);
+            var excludedCast = BuildCastExcludeNames(item, minLen);
+            var mediaContext = BuildAiMediaContext(item, excludedCast);
+
+            cache.Version = CurrentCacheVersion;
+            cache.SubtitlePath ??= subtitle.Label;
+            cache.SubtitleSource ??= subtitle.Source;
+            cache.MatchedBy ??= subtitle.MatchedBy;
+            cache.MovieHash ??= subtitle.MovieHash;
+            cache.DurationCheckOk = PassesDurationCheck(item, cues);
+
+            var (window, mode, warning) = await _incrementalEngine
+                .PrepareWindowAsync(
+                    cache,
+                    cues,
+                    item.Name ?? "Unknown",
+                    excludedCast,
+                    mediaContext,
+                    fromMs,
+                    toMs,
+                    config,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            cache.FullyPrepared = cache.PreparedThroughMs >= durationMs;
+            cache.PrepareOutcome = cache.Annotations.Count > 0
+                ? "success"
+                : string.Equals(cache.PrepareOutcome, "no-subtitles", StringComparison.OrdinalIgnoreCase)
+                    ? "no-subtitles"
+                    : "success";
+
+            if (item is Episode ep)
+            {
+                cache.SeriesName ??= ep.SeriesName;
+                cache.SeasonNumber ??= ep.ParentIndexNumber;
+                cache.EpisodeNumber ??= ep.IndexNumber;
+            }
+
+            PersistCache(item, cache, config);
+
+            var added = cache.Annotations
+                .Where(a => !knownBefore.Contains(a.Term))
+                .ToList();
+
+            return new PrepareAheadResult
+            {
+                Changed = window.AnnotationsAdded > 0 || cache.PreparedThroughMs > fromMs,
+                Added = added,
+                Cache = cache,
+                Window = window,
+                SubtitleDurationMs = durationMs,
+                Mode = mode,
+                Warning = warning
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Look it up prepare-ahead failed for {ItemId}", itemId);
+            return new PrepareAheadResult { Mode = "failed", Warning = ex.Message };
+        }
+        finally
+        {
+            gate.Release();
+        }
     }
 
     private static IReadOnlyList<ContextAnnotation> FilterPlaybackAnnotations(
@@ -1260,6 +1466,9 @@ public class LookItUpService : ILookItUpService
                 durationOk,
                 outcome,
                 priorDisabled);
+            cache.PreparedThroughMs = cues.Max(c => c.EndMs);
+            cache.FullyPrepared = true;
+            _store.Save(cache);
             MaybeWriteSidecar(item, cache, config.WriteSidecarFiles);
 
             _logger.LogInformation(
@@ -1402,6 +1611,16 @@ public class LookItUpService : ILookItUpService
         };
         _store.Save(cache);
         return cache;
+    }
+
+    private void PersistCache(
+        BaseItem item,
+        ItemAnnotationCache cache,
+        Configuration.PluginConfiguration config)
+    {
+        cache.ScannedAtUtc = DateTime.UtcNow;
+        _store.Save(cache);
+        MaybeWriteSidecar(item, cache, config.WriteSidecarFiles);
     }
 
     private static bool PassesDurationCheck(BaseItem item, IReadOnlyList<SubtitleCue> cues)

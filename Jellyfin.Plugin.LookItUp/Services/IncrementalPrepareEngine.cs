@@ -39,6 +39,166 @@ public sealed class IncrementalPrepareEngine
     }
 
     /// <summary>
+    /// Prepares one incremental window during playback and merges into the item cache.
+    /// </summary>
+    public async Task<(IncrementalPrepareWindowResult Window, string Mode, string? Warning)> PrepareWindowAsync(
+        ItemAnnotationCache cache,
+        IReadOnlyList<SubtitleCue> cues,
+        string itemTitle,
+        IReadOnlySet<string> excludeCast,
+        AiMediaContext mediaContext,
+        long fromMs,
+        long toMs,
+        PluginConfiguration config,
+        CancellationToken cancellationToken)
+    {
+        if (fromMs >= toMs || cues.Count == 0)
+        {
+            return (new IncrementalPrepareWindowResult
+            {
+                FromMs = fromMs,
+                ToMs = toMs
+            }, "skipped", null);
+        }
+
+        var max = Math.Max(1, config.MaxAnnotationsPerItem);
+        var minLen = Math.Max(2, config.MinEntityLength);
+        const int prepareCandidateCap = 500;
+        var ranked = _nameCandidateFinder
+            .Find(cues, itemTitle, excludeCast, minLen, prepareCandidateCap)
+            .ToList();
+
+        var skipped = GetSkippedTerms(ranked, fromMs, toMs, cache.Annotations);
+        var beforeCount = cache.Annotations.Count;
+        string? warning = null;
+        var mode = _aiExtractor.IsConfigured(config) ? "ai" : "legacy";
+
+        if (_aiExtractor.IsConfigured(config))
+        {
+            var nameLimit = config.AiNamesPerPrepare <= 0
+                ? 200
+                : Math.Clamp(config.AiNamesPerPrepare, 1, 200);
+            var windowCandidates = SelectWindowCandidates(ranked, fromMs, toMs, cache.Annotations)
+                .Take(nameLimit)
+                .ToList();
+
+            if (windowCandidates.Count > 0)
+            {
+                var aiResult = await _aiExtractor
+                    .ResolveNamesAsync(mediaContext, windowCandidates, config, cancellationToken)
+                    .ConfigureAwait(false);
+                warning = aiResult.Warning;
+
+                var added = await BuildAnnotationsFromAiAsync(
+                        aiResult.Mentions,
+                        cues,
+                        config,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                MergeAnnotations(cache, added, max);
+            }
+
+            cache.PreparedThroughMs = toMs;
+            cache.ScannedAtUtc = DateTime.UtcNow;
+
+            var window = new IncrementalPrepareWindowResult
+            {
+                FromMs = fromMs,
+                ToMs = toMs,
+                CandidatesInWindow = CountCandidatesInWindow(ranked, fromMs, toMs),
+                CandidatesVerified = windowCandidates.Count,
+                AnnotationsAdded = cache.Annotations.Count - beforeCount,
+                SkippedTerms = skipped,
+                VerifiedTerms = windowCandidates.Select(c => c.Term).ToList()
+            };
+
+            _logger.LogInformation(
+                "Incremental window {From}-{To}ms: verified={Verified} added={Added} total={Total}",
+                fromMs,
+                toMs,
+                windowCandidates.Count,
+                window.AnnotationsAdded,
+                cache.Annotations.Count);
+
+            return (window, mode, warning);
+        }
+
+        mode = "legacy";
+        var popupMs = Math.Max(config.PopupDurationMs, 8000);
+        var usedTerms = new HashSet<string>(
+            cache.Annotations.Select(a => a.Term),
+            StringComparer.OrdinalIgnoreCase);
+        var windowCues = cues.Where(c => c.StartMs >= fromMs && c.StartMs < toMs).ToList();
+        var verifiedTerms = new List<string>();
+
+        foreach (var cue in windowCues)
+        {
+            if (cache.Annotations.Count >= max)
+            {
+                break;
+            }
+
+            IReadOnlyList<string> entities;
+            try
+            {
+                entities = _entityExtractor.Extract(cue.Text, config.MinEntityLength);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Entity extract failed for cue at {StartMs}", cue.StartMs);
+                continue;
+            }
+
+            foreach (var entity in entities)
+            {
+                if (!usedTerms.Add(entity))
+                {
+                    continue;
+                }
+
+                verifiedTerms.Add(entity);
+                var lookup = await _wikipedia
+                    .LookupAsync(entity, config.WikipediaLanguage, cancellationToken)
+                    .ConfigureAwait(false);
+                if (!lookup.Found)
+                {
+                    continue;
+                }
+
+                MergeAnnotations(
+                    cache,
+                    [
+                        new ContextAnnotation
+                        {
+                            Term = lookup.Title,
+                            Summary = $"{lookup.Title}: {lookup.Summary}",
+                            Url = lookup.Url,
+                            ImageUrl = lookup.ImageUrl,
+                            Kind = "other",
+                            StartMs = cue.StartMs,
+                            EndMs = Math.Max(cue.EndMs, cue.StartMs + popupMs)
+                        }
+                    ],
+                    max);
+            }
+        }
+
+        cache.PreparedThroughMs = toMs;
+        cache.ScannedAtUtc = DateTime.UtcNow;
+
+        return (new IncrementalPrepareWindowResult
+        {
+            FromMs = fromMs,
+            ToMs = toMs,
+            CandidatesInWindow = windowCues.Count,
+            CandidatesVerified = verifiedTerms.Count,
+            AnnotationsAdded = cache.Annotations.Count - beforeCount,
+            SkippedTerms = skipped,
+            VerifiedTerms = verifiedTerms
+        }, mode, warning);
+    }
+
+    /// <summary>
     /// Runs incremental 5-minute-style windows from 0 → subtitle end and merges annotations into cache.
     /// </summary>
     public async Task<IncrementalPrepareSimulationResult> SimulateAsync(

@@ -25,6 +25,8 @@ public class PluginConfiguration : BasePluginConfiguration
         PopupEdgeOffsetPct = 10;
         PreferredSubtitleLanguages = "en";
         ScanOnPlayback = false;
+        IncrementalPrepareOnPlayback = true;
+        IncrementalPrepareWindowMs = 300_000;
         WriteSidecarFiles = true;
         PrepareMovies = true;
         PrepareEpisodes = true;
@@ -80,8 +82,14 @@ public class PluginConfiguration : BasePluginConfiguration
     /// <summary>Gets or sets preferred subtitle language codes.</summary>
     public string PreferredSubtitleLanguages { get; set; }
 
-    /// <summary>Gets or sets whether playback may prepare on demand.</summary>
+    /// <summary>Gets or sets whether playback may prepare on demand (full blocking prepare).</summary>
     public bool ScanOnPlayback { get; set; }
+
+    /// <summary>Gets or sets whether playback incrementally prepares ahead in time windows.</summary>
+    public bool IncrementalPrepareOnPlayback { get; set; }
+
+    /// <summary>Gets or sets incremental prepare lookahead window in milliseconds.</summary>
+    public int IncrementalPrepareWindowMs { get; set; }
 
     /// <summary>Gets or sets whether to write *.lookitup.json sidecars.</summary>
     public bool WriteSidecarFiles { get; set; }

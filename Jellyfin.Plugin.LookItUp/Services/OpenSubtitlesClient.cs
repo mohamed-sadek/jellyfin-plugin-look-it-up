@@ -344,7 +344,7 @@ public sealed class OpenSubtitlesClient : IOpenSubtitlesClient
     private void ApplyHeaders(HttpRequestMessage req, PluginConfiguration config, bool includeAuth)
     {
         req.Headers.TryAddWithoutValidation("Api-Key", config.OpenSubtitlesApiKey.Trim());
-        req.Headers.TryAddWithoutValidation("User-Agent", "JellyfinLookItUp v1.2.34");
+        req.Headers.TryAddWithoutValidation("User-Agent", "JellyfinLookItUp v1.2.35");
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         if (includeAuth && !string.IsNullOrWhiteSpace(_jwt))
         {
@@ -442,7 +442,7 @@ public sealed class OpenSubtitlesClient : IOpenSubtitlesClient
     private static HttpClient CreateClient()
     {
         var c = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
-        c.DefaultRequestHeaders.UserAgent.ParseAdd("JellyfinLookItUp/1.2.34");
+        c.DefaultRequestHeaders.UserAgent.ParseAdd("JellyfinLookItUp/1.2.35");
         return c;
     }
 

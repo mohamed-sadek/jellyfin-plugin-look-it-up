@@ -76,6 +76,10 @@ public class LookItUpController : ControllerBase
                 prepared = prepared || annotations.Count > 0 || (cache?.Annotations.Count > 0),
                 disabled,
                 preparedAtUtc = cache?.ScannedAtUtc,
+                preparedThroughMs = cache?.PreparedThroughMs ?? 0,
+                fullyPrepared = cache?.FullyPrepared ?? false,
+                incrementalPrepareOnPlayback = config?.IncrementalPrepareOnPlayback ?? false,
+                incrementalPrepareWindowMs = config?.IncrementalPrepareWindowMs ?? 300_000,
                 cacheVersion = cache?.Version ?? 0,
                 subtitlePath = cache?.SubtitlePath,
                 subtitleSource = cache?.SubtitleSource,
@@ -90,7 +94,9 @@ public class LookItUpController : ControllerBase
                 annotations,
                 hint = prepared || annotations.Count > 0 || disabled
                     ? (disabled ? "Popups disabled for this item." : null)
-                    : "No prepared annotations. Run Look it up library prepare (Dashboard → Scheduled Tasks or plugin page)."
+                    : config?.IncrementalPrepareOnPlayback == true
+                        ? "Preparing annotations during playback…"
+                        : "No prepared annotations. Run Look it up library prepare (Dashboard → Scheduled Tasks or plugin page)."
             });
         }
         catch (Exception ex)
@@ -103,6 +109,78 @@ public class LookItUpController : ControllerBase
                 itemId
             });
         }
+    }
+
+    /// <summary>
+    /// Incrementally prepares the next subtitle window during playback.
+    /// </summary>
+    [HttpPost("{itemId}/prepare-ahead")]
+    [Authorize]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult> PrepareAhead(
+        [FromRoute] Guid itemId,
+        [FromQuery] long playbackMs = 0,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var item = _libraryManager.GetItemById(itemId);
+            if (item is null)
+            {
+                return NotFound(new { error = "Item not found", itemId });
+            }
+
+            var result = await _lookItUpService
+                .PrepareAheadAsync(itemId, playbackMs, cancellationToken)
+                .ConfigureAwait(false);
+
+            var config = Plugin.Instance?.Configuration;
+            var cache = result.Cache;
+            var annotations = cache?.Annotations ?? [];
+            return Ok(new
+            {
+                itemId,
+                changed = result.Changed,
+                mode = result.Mode,
+                warning = result.Warning,
+                playbackMs,
+                preparedThroughMs = cache?.PreparedThroughMs ?? 0,
+                fullyPrepared = cache?.FullyPrepared ?? false,
+                subtitleDurationMs = result.SubtitleDurationMs,
+                addedCount = result.Added.Count,
+                added = result.Added,
+                annotationCount = annotations.Count,
+                annotations = _lookItUpService.TryGetPrepared(itemId, out var prepared)
+                    ? FilterPlaybackAnnotations(prepared!.Annotations)
+                    : annotations,
+                window = result.Window,
+                popup = BuildPopupSettings(config)
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "LookItUp prepare-ahead failed for {ItemId}", itemId);
+            return StatusCode(StatusCodes.Status500InternalServerError, new
+            {
+                error = ex.Message,
+                type = ex.GetType().Name,
+                itemId
+            });
+        }
+    }
+
+    private static IReadOnlyList<ContextAnnotation> FilterPlaybackAnnotations(
+        IReadOnlyList<ContextAnnotation> annotations)
+    {
+        if (annotations.Count == 0)
+        {
+            return annotations;
+        }
+
+        return annotations
+            .Where(a => !OpenAiCompatibleEntityExtractor.IsSongOrMusicWork(a.Term, a.Kind, a.Summary))
+            .ToList();
     }
 
     private static object BuildPopupSettings(Configuration.PluginConfiguration? config)
@@ -443,6 +521,8 @@ public class LookItUpController : ControllerBase
             enabled = config?.Enabled ?? false,
             wikipediaLanguage = config?.WikipediaLanguage,
             scanOnPlayback = config?.ScanOnPlayback ?? false,
+            incrementalPrepareOnPlayback = config?.IncrementalPrepareOnPlayback ?? false,
+            incrementalPrepareWindowMs = config?.IncrementalPrepareWindowMs ?? 300_000,
             writeSidecarFiles = config?.WriteSidecarFiles ?? false,
             aiProvider = config?.AiProvider ?? "None",
             aiModel = config?.AiModel,

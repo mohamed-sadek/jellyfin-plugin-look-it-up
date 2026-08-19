@@ -62,6 +62,17 @@
                             <span>Allow on-demand prepare during playback (slower; not recommended)</span>
                         </label>
                     </div>
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label class="emby-checkbox-label">
+                            <input id="chkIncrementalPrepare" type="checkbox" is="emby-checkbox" />
+                            <span>Prepare incrementally during playback (recommended — scans ahead in time windows)</span>
+                        </label>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="txtIncrementalWindowMs">Incremental prepare window (ms)</label>
+                        <input id="txtIncrementalWindowMs" type="number" is="emby-input" min="60000" max="900000" step="60000" />
+                        <div class="fieldDescription">How far ahead to prepare during playback (default 300000 = 5 minutes).</div>
+                    </div>
 
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="txtPrepareItemId">Prepare one item (id)</label>
@@ -267,7 +278,7 @@
                     </p>
                     <pre style="white-space:pre-wrap;word-break:break-all;background:rgba(0,0,0,.08);padding:12px;border-radius:8px;">(function () {
   var s = document.createElement('script');
-  s.src = '/LookItUp/script.js?v=1.2.34';
+  s.src = '/LookItUp/script.js?v=1.2.35';
   s.async = true;
   document.head.appendChild(s);
 })();</pre>
@@ -620,6 +631,8 @@
                         document.querySelector('#chkSkipPrepared').checked = config.SkipAlreadyPrepared !== false;
                         document.querySelector('#chkWriteSidecar').checked = !!config.WriteSidecarFiles;
                         document.querySelector('#chkScanOnPlayback').checked = !!config.ScanOnPlayback;
+                        document.querySelector('#chkIncrementalPrepare').checked = cfgGet(config, 'IncrementalPrepareOnPlayback', 'incrementalPrepareOnPlayback', true) !== false;
+                        document.querySelector('#txtIncrementalWindowMs').value = cfgGet(config, 'IncrementalPrepareWindowMs', 'incrementalPrepareWindowMs', 300000);
                         document.querySelector('#txtWikipediaLanguage').value = config.WikipediaLanguage || 'en';
                         document.querySelector('#txtPreferredSubtitleLanguages').value = config.PreferredSubtitleLanguages || 'en';
                         document.querySelector('#txtMaxAnnotations').value = config.MaxAnnotationsPerItem;
@@ -685,6 +698,8 @@
                         config.SkipAlreadyPrepared = document.querySelector('#chkSkipPrepared').checked;
                         config.WriteSidecarFiles = document.querySelector('#chkWriteSidecar').checked;
                         config.ScanOnPlayback = document.querySelector('#chkScanOnPlayback').checked;
+                        config.IncrementalPrepareOnPlayback = document.querySelector('#chkIncrementalPrepare').checked;
+                        config.IncrementalPrepareWindowMs = parseInt(document.querySelector('#txtIncrementalWindowMs').value, 10) || 300000;
                         config.WikipediaLanguage = document.querySelector('#txtWikipediaLanguage').value;
                         config.PreferredSubtitleLanguages = document.querySelector('#txtPreferredSubtitleLanguages').value;
                         config.MaxAnnotationsPerItem = parseInt(document.querySelector('#txtMaxAnnotations').value, 10);
