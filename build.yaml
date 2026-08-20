@@ -1,7 +1,7 @@
 ---
 name: "Look it up"
 guid: "a8ab0fed-cac9-406d-b98b-58161bf970b8"
-version: "1.2.39.0"
+version: "1.2.40.0"
 targetAbi: "10.11.0.0"
 framework: "net9.0"
 overview: "AI-prepare subtitle references, then show short popups during playback"
@@ -13,4 +13,4 @@ owner: "lookitup"
 artifacts:
   - "Jellyfin.Plugin.LookItUp.dll"
 changelog: >
-  Broader heuristic candidate pass; AI prompt gatekeeps cultural references more strictly during incremental prepare.
+  Import OpenSubtitles login from Jellyfin's OpenSubtitles plugin when LookItUp fields are empty; use shared Jellyfin API key by default for BluRay/PGS fallback downloads.

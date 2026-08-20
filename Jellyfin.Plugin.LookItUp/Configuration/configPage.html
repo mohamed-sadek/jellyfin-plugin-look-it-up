@@ -82,12 +82,14 @@
                     <div class="checkboxContainer checkboxContainer-withDescription">
                         <label class="emby-checkbox-label">
                             <input id="chkOpenSubtitlesEnabled" type="checkbox" is="emby-checkbox" />
-                            <span>Download from OpenSubtitles when no local/embedded subs</span>
+                            <span>Download from OpenSubtitles when no local/embedded text subs</span>
                         </label>
+                        <div class="fieldDescription">Uses your Jellyfin OpenSubtitles plugin login when Look it up username/password are empty. Optional API key below overrides the shared Jellyfin key.</div>
                     </div>
                     <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="txtOpenSubtitlesApiKey">OpenSubtitles API key</label>
+                        <label class="inputLabel inputLabelUnfocused" for="txtOpenSubtitlesApiKey">OpenSubtitles API key (optional)</label>
                         <input id="txtOpenSubtitlesApiKey" type="password" is="emby-input" autocomplete="new-password" readonly onfocus="this.removeAttribute('readonly');" />
+                        <div class="fieldDescription">Leave blank to use the same shared API key as Jellyfin's OpenSubtitles plugin.</div>
                     </div>
 
                     <div class="sectionTitleContainer flex align-items-center" style="margin-top:1.5em;">
@@ -156,7 +158,7 @@
                     <p>Paste into JavaScript Injector (not an HTML <code>&lt;script&gt;</code> tag):</p>
                     <pre style="white-space:pre-wrap;word-break:break-all;background:rgba(0,0,0,.08);padding:12px;border-radius:8px;">(function () {
   var s = document.createElement('script');
-  s.src = '/LookItUp/script.js?v=1.2.39';
+  s.src = '/LookItUp/script.js?v=1.2.40';
   s.async = true;
   document.head.appendChild(s);
 })();</pre>

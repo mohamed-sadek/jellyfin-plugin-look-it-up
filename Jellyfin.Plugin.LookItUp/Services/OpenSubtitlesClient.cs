@@ -2,6 +2,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using Jellyfin.Plugin.LookItUp.Configuration;
+using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Model.Entities;
@@ -15,7 +16,7 @@ namespace Jellyfin.Plugin.LookItUp.Services;
 public interface IOpenSubtitlesClient
 {
     /// <summary>
-    /// Returns true when API key is configured and feature enabled.
+    /// Returns true when OpenSubtitles download is enabled and credentials are available.
     /// </summary>
     bool IsConfigured(PluginConfiguration config);
 
@@ -56,23 +57,25 @@ public sealed class OpenSubtitlesDownloadResult
 public sealed class OpenSubtitlesClient : IOpenSubtitlesClient
 {
     private static readonly HttpClient Http = CreateClient();
+    private readonly IApplicationPaths _appPaths;
     private readonly ILogger<OpenSubtitlesClient> _logger;
     private string? _jwt;
     private DateTime _jwtExpiryUtc = DateTime.MinValue;
     private string _baseHost = "api.opensubtitles.com";
+    private string? _jwtUsername;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="OpenSubtitlesClient"/> class.
     /// </summary>
-    public OpenSubtitlesClient(ILogger<OpenSubtitlesClient> logger)
+    public OpenSubtitlesClient(IApplicationPaths appPaths, ILogger<OpenSubtitlesClient> logger)
     {
+        _appPaths = appPaths;
         _logger = logger;
     }
 
     /// <inheritdoc />
     public bool IsConfigured(PluginConfiguration config)
-        => config.OpenSubtitlesEnabled
-           && !string.IsNullOrWhiteSpace(config.OpenSubtitlesApiKey);
+        => OpenSubtitlesCredentialResolver.IsConfigured(config, _appPaths);
 
     /// <inheritdoc />
     public async Task<OpenSubtitlesDownloadResult?> TryDownloadAsync(
@@ -86,7 +89,22 @@ public sealed class OpenSubtitlesClient : IOpenSubtitlesClient
             return null;
         }
 
-        await EnsureLoginAsync(config, cancellationToken).ConfigureAwait(false);
+        var creds = OpenSubtitlesCredentialResolver.Resolve(config, _appPaths);
+        if (creds.UsesJellyfinPluginCredentials)
+        {
+            _logger.LogInformation(
+                "OpenSubtitles: using credentials imported from Jellyfin OpenSubtitles plugin for {User}",
+                creds.Username);
+        }
+
+        await EnsureLoginAsync(creds, cancellationToken).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(_jwt))
+        {
+            _logger.LogWarning(
+                "OpenSubtitles: login required but no JWT obtained for {User}",
+                creds.Username);
+            return null;
+        }
 
         var langs = (config.PreferredSubtitleLanguages ?? "en")
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
@@ -109,7 +127,7 @@ public sealed class OpenSubtitlesClient : IOpenSubtitlesClient
         if (!string.IsNullOrWhiteSpace(movieHash) && bytes is > 0)
         {
             hit = await SearchBestAsync(
-                    config,
+                    creds,
                     BuildQuery(langCsv, movieHash: movieHash, moviebytesize: bytes),
                     item,
                     preferHash: true,
@@ -122,7 +140,7 @@ public sealed class OpenSubtitlesClient : IOpenSubtitlesClient
         }
 
         hit ??= await SearchBestAsync(
-                config,
+                creds,
                 BuildQuery(langCsv, item: item),
                 item,
                 preferHash: false,
@@ -135,7 +153,7 @@ public sealed class OpenSubtitlesClient : IOpenSubtitlesClient
             return null;
         }
 
-        var link = await RequestDownloadLinkAsync(config, hit.FileId, cancellationToken).ConfigureAwait(false);
+        var link = await RequestDownloadLinkAsync(creds, hit.FileId, cancellationToken).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(link))
         {
             return null;
@@ -170,28 +188,32 @@ public sealed class OpenSubtitlesClient : IOpenSubtitlesClient
         };
     }
 
-    private async Task EnsureLoginAsync(PluginConfiguration config, CancellationToken cancellationToken)
+    private async Task EnsureLoginAsync(
+        OpenSubtitlesEffectiveCredentials creds,
+        CancellationToken cancellationToken)
     {
-        if (!string.IsNullOrWhiteSpace(_jwt) && DateTime.UtcNow < _jwtExpiryUtc)
+        if (!string.IsNullOrWhiteSpace(_jwt)
+            && DateTime.UtcNow < _jwtExpiryUtc
+            && string.Equals(_jwtUsername, creds.Username, StringComparison.OrdinalIgnoreCase))
         {
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(config.OpenSubtitlesUsername)
-            || string.IsNullOrWhiteSpace(config.OpenSubtitlesPassword))
+        if (string.IsNullOrWhiteSpace(creds.Username) || string.IsNullOrWhiteSpace(creds.Password))
         {
             _jwt = null;
+            _jwtUsername = null;
             return;
         }
 
         var url = $"https://{_baseHost}/api/v1/login";
         using var req = new HttpRequestMessage(HttpMethod.Post, url);
-        ApplyHeaders(req, config, includeAuth: false);
+        ApplyHeaders(req, creds, includeAuth: false);
         req.Content = new StringContent(
             JsonSerializer.Serialize(new
             {
-                username = config.OpenSubtitlesUsername.Trim(),
-                password = config.OpenSubtitlesPassword
+                username = creds.Username.Trim(),
+                password = creds.Password
             }),
             Encoding.UTF8,
             "application/json");
@@ -201,6 +223,8 @@ public sealed class OpenSubtitlesClient : IOpenSubtitlesClient
         if (!resp.IsSuccessStatusCode)
         {
             _logger.LogWarning("OpenSubtitles login failed HTTP {Status}: {Body}", (int)resp.StatusCode, Truncate(body));
+            _jwt = null;
+            _jwtUsername = null;
             return;
         }
 
@@ -209,6 +233,7 @@ public sealed class OpenSubtitlesClient : IOpenSubtitlesClient
         {
             _jwt = token.GetString();
             _jwtExpiryUtc = DateTime.UtcNow.AddHours(20);
+            _jwtUsername = creds.Username;
         }
 
         if (doc.RootElement.TryGetProperty("base_url", out var baseUrl)
@@ -220,7 +245,7 @@ public sealed class OpenSubtitlesClient : IOpenSubtitlesClient
     }
 
     private async Task<OpenSubtitlesHit?> SearchBestAsync(
-        PluginConfiguration config,
+        OpenSubtitlesEffectiveCredentials creds,
         string query,
         BaseItem item,
         bool preferHash,
@@ -228,7 +253,7 @@ public sealed class OpenSubtitlesClient : IOpenSubtitlesClient
     {
         var url = $"https://{_baseHost}/api/v1/subtitles?{query}";
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
-        ApplyHeaders(req, config, includeAuth: true);
+        ApplyHeaders(req, creds, includeAuth: true);
 
         using var resp = await Http.SendAsync(req, cancellationToken).ConfigureAwait(false);
         var body = await resp.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
@@ -307,13 +332,13 @@ public sealed class OpenSubtitlesClient : IOpenSubtitlesClient
     }
 
     private async Task<string?> RequestDownloadLinkAsync(
-        PluginConfiguration config,
+        OpenSubtitlesEffectiveCredentials creds,
         long fileId,
         CancellationToken cancellationToken)
     {
         var url = $"https://{_baseHost}/api/v1/download";
         using var req = new HttpRequestMessage(HttpMethod.Post, url);
-        ApplyHeaders(req, config, includeAuth: true);
+        ApplyHeaders(req, creds, includeAuth: true);
         req.Content = new StringContent(
             JsonSerializer.Serialize(new { file_id = fileId }),
             Encoding.UTF8,
@@ -341,10 +366,10 @@ public sealed class OpenSubtitlesClient : IOpenSubtitlesClient
         return null;
     }
 
-    private void ApplyHeaders(HttpRequestMessage req, PluginConfiguration config, bool includeAuth)
+    private void ApplyHeaders(HttpRequestMessage req, OpenSubtitlesEffectiveCredentials creds, bool includeAuth)
     {
-        req.Headers.TryAddWithoutValidation("Api-Key", config.OpenSubtitlesApiKey.Trim());
-        req.Headers.TryAddWithoutValidation("User-Agent", "JellyfinLookItUp v1.2.36");
+        req.Headers.TryAddWithoutValidation("Api-Key", creds.ApiKey);
+        req.Headers.TryAddWithoutValidation("User-Agent", "JellyfinLookItUp v1.2.40");
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         if (includeAuth && !string.IsNullOrWhiteSpace(_jwt))
         {
@@ -442,7 +467,7 @@ public sealed class OpenSubtitlesClient : IOpenSubtitlesClient
     private static HttpClient CreateClient()
     {
         var c = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
-        c.DefaultRequestHeaders.UserAgent.ParseAdd("JellyfinLookItUp/1.2.36");
+        c.DefaultRequestHeaders.UserAgent.ParseAdd("JellyfinLookItUp/1.2.40");
         return c;
     }
 
