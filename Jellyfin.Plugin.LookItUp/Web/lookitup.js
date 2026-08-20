@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  const CLIENT_VERSION = '1.2.40.0';
+  const CLIENT_VERSION = '1.2.41.0';
   const STYLE_ID = 'lookitup-styles';
   const STACK_ID = 'lookitup-stack';
   const POPUP_ID = 'lookitup-popup'; // legacy single-popup id (removed on upgrade)
@@ -67,6 +67,7 @@
   let fullyPrepared = false;
   let prepareAheadInFlight = false;
   let lastPrepareAheadAt = 0;
+  let trustedPlaybackItemId = null;
   // Terms already shown for their current cue window (don't re-show after auto-hide).
   const shownThisPass = new Set();
 
@@ -603,25 +604,41 @@
     return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
   }
 
+  function readItemIdFromPlaybackObject(item) {
+    if (!item) {
+      return null;
+    }
+    return formatGuid(item.Id || item.id);
+  }
+
   function extractItemId(text) {
     if (!text) {
       return null;
     }
 
     const str = String(text);
-    let match = str.match(/\/Videos\/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9a-fA-F]{32})(?=[/?#]|$)/i);
+    const guid =
+      '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9a-fA-F]{32})';
+
+    // Path item ids only — never MediaSourceId / LiveStreamId query params.
+    let match = str.match(new RegExp('/Videos/' + guid + '(?=[/?#]|$)', 'i'));
     if (match) {
       return formatGuid(match[1]);
     }
 
-    match = str.match(/\/Items\/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9a-fA-F]{32})(?=[/?#]|$)/i);
+    match = str.match(new RegExp('/Items/' + guid + '(?=[/?#]|$)', 'i'));
     if (match) {
       return formatGuid(match[1]);
     }
 
-    match = str.match(/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/);
+    match = str.match(/[?&#]videoid=([0-9a-fA-F-]{32,36})/i);
     if (match) {
-      return match[0];
+      return formatGuid(match[1]);
+    }
+
+    match = str.match(/(?:^|[?&#])id=([0-9a-fA-F-]{32,36})/i);
+    if (match) {
+      return formatGuid(match[1]);
     }
 
     return null;
@@ -653,9 +670,10 @@
 
     try {
       if (pm && player && typeof pm.currentItem === 'function') {
-        const item = pm.currentItem(player);
-        if (item && (item.Id || item.id)) {
-          return formatGuid(item.Id || item.id);
+        const id = readItemIdFromPlaybackObject(pm.currentItem(player));
+        if (id) {
+          trustedPlaybackItemId = id;
+          return id;
         }
       }
     } catch (err) {
@@ -663,24 +681,45 @@
     }
 
     try {
-      if (pm && typeof pm.getPlayerState === 'function') {
-        const state = pm.getPlayerState(player || undefined);
-        const item = state?.NowPlayingItem || state?.nowPlayingItem;
-        if (item && (item.Id || item.id)) {
-          return formatGuid(item.Id || item.id);
+      if (player && typeof player.currentItem === 'function') {
+        const id = readItemIdFromPlaybackObject(player.currentItem());
+        if (id) {
+          trustedPlaybackItemId = id;
+          return id;
         }
       }
     } catch (_) {
       /* ignore */
     }
 
+    try {
+      if (pm && typeof pm.getPlayerState === 'function') {
+        const state = pm.getPlayerState(player || undefined);
+        const item = state?.NowPlayingItem || state?.nowPlayingItem;
+        const id = readItemIdFromPlaybackObject(item);
+        if (id) {
+          trustedPlaybackItemId = id;
+          return id;
+        }
+      }
+    } catch (_) {
+      /* ignore */
+    }
+
+    if (trustedPlaybackItemId) {
+      return trustedPlaybackItemId;
+    }
+
+    for (const candidate of [location.hash, location.href]) {
+      const id = extractItemId(candidate);
+      if (id) {
+        trustedPlaybackItemId = id;
+        return id;
+      }
+    }
+
     const video = getVideoElement();
-    const candidates = [
-      video?.currentSrc,
-      video?.src,
-      location.href,
-      location.hash
-    ];
+    const candidates = [video?.currentSrc, video?.src];
 
     if (video) {
       try {
@@ -697,6 +736,7 @@
           lastResolvedLogId = id;
           console.info('[Look it up] resolved item id from media url', id);
         }
+        trustedPlaybackItemId = id;
         return id;
       }
     }
@@ -893,7 +933,10 @@
       return;
     }
     if (playbackMs == null || !Number.isFinite(playbackMs)) {
-      return;
+      if (!force) {
+        return;
+      }
+      playbackMs = 0;
     }
     const aheadTarget = playbackMs + incrementalPrepareWindowMs;
     const behindPlayback = preparedThroughMs < playbackMs;
@@ -942,6 +985,13 @@
       }
     } catch (err) {
       console.warn('[Look it up] prepare-ahead failed', err);
+      const status = err && (err.status || err.statusCode || err.Status);
+      if (status === 404) {
+        trustedPlaybackItemId = null;
+        console.warn(
+          '[Look it up] prepare-ahead 404 — client may have sent MediaSourceId instead of library ItemId; will re-resolve on next tick'
+        );
+      }
     } finally {
       prepareAheadInFlight = false;
     }
@@ -998,6 +1048,7 @@
       applyPopupSettings(popupCfg);
       lastSettingsFetchAt = Date.now();
       applyIncrementalSettings(data);
+      trustedPlaybackItemId = itemId;
       const rawList = data.annotations || data.Annotations || [];
       annotations = normalizeAnnotations(rawList);
       if (data.prepared === false && annotations.length === 0 && !incrementalPrepareOnPlayback) {
@@ -1158,6 +1209,7 @@
         missingItemTicks += 1;
         if (missingItemTicks > 8) {
           currentItemId = null;
+          trustedPlaybackItemId = null;
           annotations = [];
           shownThisPass.clear();
           hidePopup();
@@ -1171,6 +1223,7 @@
 
     if (itemId !== currentItemId) {
       currentItemId = itemId;
+      trustedPlaybackItemId = itemId;
       annotations = [];
       shownThisPass.clear();
       preparedThroughMs = 0;

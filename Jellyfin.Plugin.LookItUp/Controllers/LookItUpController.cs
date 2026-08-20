@@ -55,22 +55,27 @@ public class LookItUpController : ControllerBase
     {
         try
         {
-            var item = _libraryManager.GetItemById(itemId);
+            var item = LibraryItemResolver.GetItem(_libraryManager, itemId);
             if (item is null)
             {
-                return NotFound(new { error = "Item not found", itemId });
+                return NotFound(new
+                {
+                    error = "Item not found",
+                    itemId,
+                    hint = "Send the library ItemId (from NowPlayingItem), not MediaSourceId from the stream URL."
+                });
             }
 
-            var prepared = _lookItUpService.TryGetPrepared(itemId, out var cache);
+            var prepared = _lookItUpService.TryGetPrepared(item.Id, out var cache);
             var annotations = await _lookItUpService
-                .GetAnnotationsAsync(itemId, force, cancellationToken)
+                .GetAnnotationsAsync(item.Id, force, cancellationToken)
                 .ConfigureAwait(false);
 
             var config = Plugin.Instance?.Configuration;
             var disabled = cache?.Disabled == true;
             return Ok(new
             {
-                itemId,
+                itemId = item.Id,
                 itemName = item.Name,
                 enabled = config?.Enabled ?? false,
                 showPopupsDuringPlayback = config?.ShowPopupsDuringPlayback ?? true,
@@ -132,14 +137,19 @@ public class LookItUpController : ControllerBase
     {
         try
         {
-            var item = _libraryManager.GetItemById(itemId);
+            var item = LibraryItemResolver.GetItem(_libraryManager, itemId);
             if (item is null)
             {
-                return NotFound(new { error = "Item not found", itemId });
+                return NotFound(new
+                {
+                    error = "Item not found",
+                    itemId,
+                    hint = "Send the library ItemId (from NowPlayingItem), not MediaSourceId from the stream URL."
+                });
             }
 
             var result = await _lookItUpService
-                .PrepareAheadAsync(itemId, playbackMs, cancellationToken)
+                .PrepareAheadAsync(item.Id, playbackMs, cancellationToken)
                 .ConfigureAwait(false);
 
             var config = Plugin.Instance?.Configuration;
@@ -157,7 +167,8 @@ public class LookItUpController : ControllerBase
 
             return Ok(new
             {
-                itemId,
+                itemId = item.Id,
+                resolvedFromMediaSourceId = item.Id != itemId,
                 changed = result.Changed,
                 mode = result.Mode,
                 warning = result.Warning,
@@ -168,7 +179,7 @@ public class LookItUpController : ControllerBase
                 addedCount = result.Added.Count,
                 added = result.Added,
                 annotationCount = annotations.Count,
-                annotations = _lookItUpService.TryGetPrepared(itemId, out var prepared)
+                annotations = _lookItUpService.TryGetPrepared(item.Id, out var prepared)
                     ? FilterPlaybackAnnotations(prepared!.Annotations)
                     : annotations,
                 aiDecisions = config?.StoreAiDecisions == true ? cache?.AiDecisions : null,
