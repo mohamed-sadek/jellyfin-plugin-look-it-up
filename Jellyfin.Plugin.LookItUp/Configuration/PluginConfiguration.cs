@@ -28,6 +28,7 @@ public class PluginConfiguration : BasePluginConfiguration
         IncrementalPrepareOnPlayback = true;
         IncrementalPrepareWindowMs = 300_000;
         IncrementalAiNamesPerWindow = 40;
+        StoreAiDecisions = true;
         WriteSidecarFiles = true;
         PrepareMovies = true;
         PrepareEpisodes = true;
@@ -94,6 +95,9 @@ public class PluginConfiguration : BasePluginConfiguration
 
     /// <summary>Gets or sets max AI verifications per incremental playback window.</summary>
     public int IncrementalAiNamesPerWindow { get; set; }
+
+    /// <summary>Gets or sets whether to persist AI keep/reject reasons in cache JSON for debugging.</summary>
+    public bool StoreAiDecisions { get; set; }
 
     /// <summary>Gets or sets whether to write *.lookitup.json sidecars.</summary>
     public bool WriteSidecarFiles { get; set; }

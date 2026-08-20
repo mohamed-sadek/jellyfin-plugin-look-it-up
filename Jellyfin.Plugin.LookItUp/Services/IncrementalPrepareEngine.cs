@@ -76,9 +76,8 @@ public sealed class IncrementalPrepareEngine
 
         if (_aiExtractor.IsConfigured(config))
         {
-            var windowCandidates = SelectWindowCandidates(ranked, fromMs, toMs, cache.Annotations)
-                .Take(windowLimit)
-                .ToList();
+            var windowCandidates = NameCandidateBatchSelector
+                .SelectForWindow(ranked, fromMs, toMs, cache.Annotations, windowLimit);
 
             if (windowCandidates.Count > 0)
             {
@@ -86,6 +85,7 @@ public sealed class IncrementalPrepareEngine
                     .ResolveNamesAsync(mediaContext, windowCandidates, config, cancellationToken)
                     .ConfigureAwait(false);
                 warning = aiResult.Warning;
+                AiDecisionStore.Merge(cache, aiResult.Decisions, config.StoreAiDecisions);
 
                 var added = await BuildAnnotationsFromAiAsync(
                         aiResult.Mentions,
@@ -232,6 +232,7 @@ public sealed class IncrementalPrepareEngine
         var windows = new List<IncrementalPrepareWindowResult>();
         var mode = request.DryRun ? "dry-run" : (_aiExtractor.IsConfigured(config) ? "ai" : "legacy");
         string? warning = null;
+        var windowLimit = Math.Clamp(config.IncrementalAiNamesPerWindow, 5, 250);
 
         if (request.DryRun)
         {
@@ -239,7 +240,8 @@ public sealed class IncrementalPrepareEngine
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var toMs = Math.Min(fromMs + request.WindowMs, durationMs);
-                var windowCandidates = SelectWindowCandidates(ranked, fromMs, toMs, cache.Annotations);
+                var windowCandidates = NameCandidateBatchSelector
+                    .SelectForWindow(ranked, fromMs, toMs, cache.Annotations, windowLimit);
                 var skipped = GetSkippedTerms(ranked, fromMs, toMs, cache.Annotations);
 
                 windows.Add(new IncrementalPrepareWindowResult
@@ -270,7 +272,6 @@ public sealed class IncrementalPrepareEngine
 
         if (_aiExtractor.IsConfigured(config))
         {
-            var windowLimit = Math.Clamp(config.IncrementalAiNamesPerWindow, 5, 250);
             var nameLimit = config.AiNamesPerPrepare <= 0
                 ? windowLimit
                 : Math.Clamp(config.AiNamesPerPrepare, 1, 250);
@@ -285,9 +286,8 @@ public sealed class IncrementalPrepareEngine
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var toMs = Math.Min(fromMs + request.WindowMs, durationMs);
-                var windowCandidates = SelectWindowCandidates(ranked, fromMs, toMs, cache.Annotations)
-                    .Take(nameLimit)
-                    .ToList();
+                var windowCandidates = NameCandidateBatchSelector
+                    .SelectForWindow(ranked, fromMs, toMs, cache.Annotations, nameLimit);
                 var skipped = GetSkippedTerms(ranked, fromMs, toMs, cache.Annotations);
                 var beforeCount = cache.Annotations.Count;
 
@@ -301,6 +301,8 @@ public sealed class IncrementalPrepareEngine
                     {
                         warning = aiResult.Warning;
                     }
+
+                    AiDecisionStore.Merge(cache, aiResult.Decisions, config.StoreAiDecisions);
 
                     var added = await BuildAnnotationsFromAiAsync(
                             aiResult.Mentions,
@@ -464,25 +466,6 @@ public sealed class IncrementalPrepareEngine
         long fromMs,
         long toMs)
         => ranked.Count(c => c.StartMs >= fromMs && c.StartMs < toMs);
-
-    private static List<NameCandidate> SelectWindowCandidates(
-        IReadOnlyList<NameCandidate> ranked,
-        long fromMs,
-        long toMs,
-        IReadOnlyList<ContextAnnotation> existing)
-    {
-        var known = new HashSet<string>(
-            existing.Select(a => a.Term),
-            StringComparer.OrdinalIgnoreCase);
-
-        return ranked
-            .Where(c => c.StartMs >= fromMs && c.StartMs < toMs)
-            .Where(c => !known.Contains(c.Term))
-            .GroupBy(c => c.Term, StringComparer.OrdinalIgnoreCase)
-            .Select(g => g.OrderBy(c => c.StartMs).First())
-            .OrderBy(c => c.StartMs)
-            .ToList();
-    }
 
     private static IReadOnlyList<string> GetSkippedTerms(
         IReadOnlyList<NameCandidate> ranked,

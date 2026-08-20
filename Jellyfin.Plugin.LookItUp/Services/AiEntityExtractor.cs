@@ -18,6 +18,9 @@ public sealed class AiExtractionResult
     /// <summary>Gets the verified mentions to show as popups.</summary>
     public IReadOnlyList<AiEntityMention> Mentions { get; init; } = [];
 
+    /// <summary>Gets keep/reject decisions for debugging and tuning.</summary>
+    public IReadOnlyList<AiVerifyDecision> Decisions { get; init; } = [];
+
     /// <summary>Gets a short warning when AI failed or returned nothing useful.</summary>
     public string? Warning { get; set; }
 }
@@ -136,6 +139,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         const int absoluteMax = 250;
         var batch = candidates.Take(absoluteMax).ToList();
         var mentions = new List<AiEntityMention>();
+        var decisions = new List<AiVerifyDecision>(batch.Count);
         var outcomes = new List<string>(batch.Count);
         var failed = 0;
         var rejected = 0;
@@ -180,8 +184,8 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 Truncate(candidate.CueText, 120));
 
             AiEntityMention? mention = null;
+            AiVerifyDecision? decision = null;
             string? error = null;
-            string? rejectReason = null;
             try
             {
                 var result = await VerifyOneAsync(
@@ -193,8 +197,8 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                         cancellationToken)
                     .ConfigureAwait(false);
                 mention = result.Mention;
+                decision = result.Decision;
                 error = result.Error;
-                rejectReason = result.RejectReason;
             }
             catch (OperationCanceledException)
             {
@@ -203,10 +207,16 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             catch (Exception ex)
             {
                 error = $"exception: {ex.Message}";
+                decision = BuildDecision(candidate, kept: false, reason: error, category: "error");
                 _logger.LogWarning(
                     ex,
                     "Look it up AI verify threw for {Term}; continuing with remaining names",
                     candidate.Term);
+            }
+
+            if (decision is not null)
+            {
+                decisions.Add(decision);
             }
 
             if (!string.IsNullOrWhiteSpace(error))
@@ -224,12 +234,12 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             if (mention is null)
             {
                 rejected++;
-                outcomes.Add($"{candidate.Term}: reject ({rejectReason ?? "keep=false"})");
+                outcomes.Add($"{candidate.Term}: reject ({decision?.Reason ?? "keep=false"})");
                 continue;
             }
 
             mentions.Add(mention);
-            outcomes.Add($"{candidate.Term}: keep");
+            outcomes.Add($"{candidate.Term}: keep ({decision?.Reason ?? "ok"})");
         }
 
         var summary =
@@ -241,17 +251,18 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         if (mentions.Count == 0)
         {
             _logger.LogWarning("Look it up AI produced 0 mentions for {Item}: {Summary}", itemLabel, summary);
-            return new AiExtractionResult { Warning = summary };
+            return new AiExtractionResult { Decisions = decisions, Warning = summary };
         }
 
         return new AiExtractionResult
         {
             Mentions = mentions.OrderBy(m => m.StartMs).ToList(),
+            Decisions = decisions,
             Warning = failed > 0 ? summary : null
         };
     }
 
-    private async Task<(AiEntityMention? Mention, string? Error, string? RejectReason)> VerifyOneAsync(
+    private async Task<(AiEntityMention? Mention, AiVerifyDecision Decision, string? Error)> VerifyOneAsync(
         AiMediaContext media,
         NameCandidate candidate,
         PluginConfiguration config,
@@ -306,7 +317,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 if (!response.IsSuccessStatusCode)
                 {
                     lastError = $"HTTP {(int)response.StatusCode}: {Truncate(body, 200)}";
-                    return (null, lastError, null);
+                    return (null, BuildDecision(candidate, false, lastError, "error"), lastError);
                 }
 
                 var parsed = TryParseVerifyResponse(body);
@@ -327,21 +338,28 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 if (!parsed.Keep)
                 {
                     var reason = parsed.Reason ?? "keep=false";
-                    _logger.LogInformation("Look it up AI rejected {Term}: {Reason}", candidate.Term, reason);
-                    return (null, null, reason);
+                    var category = parsed.Category ?? InferRejectCategory(reason);
+                    _logger.LogInformation(
+                        "Look it up AI rejected {Term}: [{Category}] {Reason}",
+                        candidate.Term,
+                        category,
+                        reason);
+                    return (null, BuildDecision(candidate, false, reason, category), null);
                 }
 
                 var term = string.IsNullOrWhiteSpace(parsed.Term) ? candidate.Term : parsed.Term!.Trim();
                 if (IsTooBasicToKeep(term))
                 {
+                    const string filterReason = "Local filter: term is too common for a popup";
                     _logger.LogInformation("Look it up AI kept {Term} but local filter dropped it as too basic", term);
-                    return (null, null, "too basic");
+                    return (null, BuildDecision(candidate, false, filterReason, "too-common"), null);
                 }
 
                 var summary = (parsed.Summary ?? string.Empty).Trim();
                 if (summary.Length == 0)
                 {
-                    return (null, $"kept {term} but empty summary", null);
+                    var emptySummaryError = $"kept {term} but empty summary";
+                    return (null, BuildDecision(candidate, false, emptySummaryError, "error"), emptySummaryError);
                 }
 
                 if (!summary.StartsWith(term, StringComparison.OrdinalIgnoreCase))
@@ -353,17 +371,24 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
 
                 if (IsSongOrMusicWork(term, parsed.Kind, summary))
                 {
+                    const string songReason = "Local filter: song/album/track title";
                     _logger.LogInformation(
                         "Look it up AI kept {Term} but local filter dropped it as a song/album/track",
                         term);
-                    return (null, null, "song");
+                    return (null, BuildDecision(candidate, false, songReason, "song-title"), null);
                 }
 
+                var keepReason = string.IsNullOrWhiteSpace(parsed.KeepReason)
+                    ? "Non-obvious cultural reference worth a short popup"
+                    : parsed.KeepReason!.Trim();
+                var keepCategory = parsed.Category ?? NormalizeKind(parsed.Kind);
+
                 _logger.LogInformation(
-                    "Look it up AI kept {Term} → {Canonical}: {Summary}",
+                    "Look it up AI kept {Term} → {Canonical}: [{Category}] {Reason}",
                     candidate.Term,
                     term,
-                    Truncate(summary, 200));
+                    keepCategory,
+                    keepReason);
 
                 return (new AiEntityMention
                 {
@@ -372,7 +397,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                     Summary = summary,
                     StartMs = candidate.StartMs,
                     EndMs = Math.Max(candidate.EndMs, candidate.StartMs + 3000)
-                }, null, null);
+                }, BuildDecision(candidate, true, keepReason, keepCategory), null);
             }
             catch (OperationCanceledException)
             {
@@ -384,14 +409,58 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 _logger.LogWarning(ex, "Look it up AI request exception for {Term} attempt {Attempt}", candidate.Term, attempt);
                 if (attempt == maxAttempts)
                 {
-                    return (null, lastError, null);
+                    return (null, BuildDecision(candidate, false, lastError, "error"), lastError);
                 }
 
                 await Task.Delay(600 * attempt, cancellationToken).ConfigureAwait(false);
             }
         }
 
-        return (null, lastError ?? "verify failed", null);
+        lastError ??= "verify failed";
+        return (null, BuildDecision(candidate, false, lastError, "error"), lastError);
+    }
+
+    private static AiVerifyDecision BuildDecision(
+        NameCandidate candidate,
+        bool kept,
+        string? reason,
+        string? category) =>
+        new()
+        {
+            Term = candidate.Term,
+            StartMs = candidate.StartMs,
+            CueText = candidate.CueText,
+            Kept = kept,
+            Reason = reason,
+            Category = category,
+            AtUtc = DateTime.UtcNow
+        };
+
+    private static string InferRejectCategory(string reason)
+    {
+        var r = reason.ToLowerInvariant();
+        if (r.Contains("in-show", StringComparison.Ordinal) || r.Contains("cast", StringComparison.Ordinal))
+        {
+            return "in-show";
+        }
+
+        if (r.Contains("song", StringComparison.Ordinal) || r.Contains("album", StringComparison.Ordinal))
+        {
+            return "song-title";
+        }
+
+        if (r.Contains("common", StringComparison.Ordinal) || r.Contains("obvious", StringComparison.Ordinal))
+        {
+            return "too-common";
+        }
+
+        if (r.Contains("car", StringComparison.Ordinal) || r.Contains("model", StringComparison.Ordinal)
+            || r.Contains("brand", StringComparison.Ordinal) || r.Contains("product", StringComparison.Ordinal))
+        {
+            return "ordinary-prop";
+        }
+
+        return "no-value";
     }
 
     private static Dictionary<string, object?> BuildChatPayload(
@@ -419,7 +488,8 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 "KEEP (keep=true) ONLY when a typical viewer would benefit from 1–2 factual sentences — " +
                 "a non-obvious CULTURAL REFERENCE worth looking up:\n" +
                 "- Real people: historical figures, artists, authors, scientists, politicians, public figures, " +
-                "directors, actors, musicians (when NOT a character in this show)\n" +
+                "directors, actors, musicians referenced in dialogue (when NOT a character in this show). " +
+                "KEEP celebrities/actors even if famous when they are clearly referenced as real people.\n" +
                 "- Specific real places: cities, landmarks, regions, institutions when used as meaningful references\n" +
                 "- Real organizations, movements, events, awards, ideologies, medical/scientific terms, niche brands\n" +
                 "- Films, books, artworks as cultural objects (not song/album/track titles playing in the scene)\n\n" +
@@ -428,13 +498,20 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 "- Song titles, album names, singles, tracks, or lyric-line titles\n" +
                 "- Universal common knowledge: major countries/demonyms used generically, days/months, religious exclamations, " +
                 "basic nature words (sun, moon, earth, god), generic family words (mom, dad)\n" +
+                "- Ordinary consumer products used casually (car models, everyday brands, generic props) " +
+                "when dialogue is comparison/shopping/small-talk without cultural significance\n" +
                 "- Subtitle credits, dialogue filler, ordinary capitalized grammar\n" +
                 "- Borderline terms where context gives enough clue — when uncertain, reject\n" +
                 castHint +
-                "Schema: {\"keep\":true,\"term\":\"Vincent van Gogh\",\"kind\":\"person\"," +
-                "\"summary\":\"Dutch post-impressionist painter known for The Starry Night.\"}\n" +
-                "kind: person | place | film | brand | other\n" +
-                "or {\"keep\":false,\"reason\":\"in-show|song-title|too-common|no-value|…\"}\n" +
+                "Always explain your decision in one sentence.\n" +
+                "Schema KEEP: {\"keep\":true,\"term\":\"Jon Voight\",\"kind\":\"person\"," +
+                "\"summary\":\"American actor known for Midnight Cowboy and Deliverance.\"," +
+                "\"keepReason\":\"Referenced real actor, not in-show cast\",\"category\":\"person-reference\"}\n" +
+                "Schema REJECT: {\"keep\":false,\"reason\":\"Ordinary car model in casual comparison dialogue\"," +
+                "\"category\":\"ordinary-prop\"}\n" +
+                "category tags: person-reference | place-reference | cultural-work | niche-term | in-show | " +
+                "song-title | too-common | ordinary-prop | filler | no-value\n" +
+                "kind (when keep=true): person | place | film | brand | other\n" +
                 "Summary: factual, 1–2 short sentences. Never mention the show. " +
                 "Never say \"real-world\", \"fictional\", or whether it is from the show.\n" +
                 "Show: " + show + "\n" +
@@ -448,8 +525,12 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 "JSON only. Gatekeep popups — keep=false when uncertain.\n" +
                 "Candidate \"" + candidate.Term + "\" in \"" + candidate.CueText + "\" from \"" + show + "\".\n" +
                 "Keep ONLY non-obvious cultural references (people, places, events, niche terms). " +
-                "Reject: in-show cast/places, song/album titles, too-common geography/words, filler.\n" +
-                "{\"keep\":true,\"term\":\"…\",\"kind\":\"person\",\"summary\":\"…\"} or {\"keep\":false,\"reason\":\"…\"}";
+                "Keep referenced real actors/celebrities unless in-show cast. " +
+                "Reject: in-show cast/places, song/album titles, too-common geography/words, " +
+                "ordinary car models/brands in casual dialogue, filler.\n" +
+                "Always include reason (reject) or keepReason (keep) and category.\n" +
+                "{\"keep\":true,\"term\":\"…\",\"kind\":\"person\",\"summary\":\"…\",\"keepReason\":\"…\",\"category\":\"…\"} " +
+                "or {\"keep\":false,\"reason\":\"…\",\"category\":\"…\"}";
         }
 
         var payload = new Dictionary<string, object?>
@@ -545,6 +626,8 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 Kind = parsed.Kind,
                 Summary = parsed.Summary,
                 Reason = parsed.Reason,
+                KeepReason = parsed.KeepReason,
+                Category = parsed.Category,
                 FinishReason = finishReason,
                 RawMessageJson = rawMessage
             };
@@ -836,7 +919,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             Timeout = TimeSpan.FromSeconds(90)
         };
         client.DefaultRequestHeaders.UserAgent.Add(
-            new ProductInfoHeaderValue("Jellyfin.Plugin.LookItUp", "1.3"));
+            new ProductInfoHeaderValue("Jellyfin.Plugin.LookItUp", "1.2.37"));
         return client;
     }
 
@@ -856,6 +939,12 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
 
         [JsonPropertyName("reason")]
         public string? Reason { get; set; }
+
+        [JsonPropertyName("keepReason")]
+        public string? KeepReason { get; set; }
+
+        [JsonPropertyName("category")]
+        public string? Category { get; set; }
     }
 
     private sealed class VerifyParseResult
@@ -871,6 +960,10 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         public string? Summary { get; init; }
 
         public string? Reason { get; init; }
+
+        public string? KeepReason { get; init; }
+
+        public string? Category { get; init; }
 
         public string? Error { get; init; }
 

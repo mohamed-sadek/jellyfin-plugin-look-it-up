@@ -235,6 +235,13 @@
                         <input id="txtAiNamesPerPrepare" type="number" is="emby-input" min="0" max="200" />
                         <div class="fieldDescription">Safety cap on AI verifies per item. Use <code>0</code> to send every local candidate (up to 200). Prepare runs in rate-limited batches.</div>
                     </div>
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label class="emby-checkbox-label">
+                            <input id="chkStoreAiDecisions" type="checkbox" is="emby-checkbox" />
+                            <span>Store AI keep/reject reasons in cache</span>
+                        </label>
+                        <div class="fieldDescription">Writes an <code>aiDecisions</code> audit trail to *.lookitup.json and API responses — useful for debugging why terms were kept or dropped.</div>
+                    </div>
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="txtPrepareDelayMs">Delay between items (ms)</label>
                         <input id="txtPrepareDelayMs" type="number" is="emby-input" min="0" max="60000" />
@@ -283,7 +290,7 @@
                     </p>
                     <pre style="white-space:pre-wrap;word-break:break-all;background:rgba(0,0,0,.08);padding:12px;border-radius:8px;">(function () {
   var s = document.createElement('script');
-  s.src = '/LookItUp/script.js?v=1.2.36';
+  s.src = '/LookItUp/script.js?v=1.2.37';
   s.async = true;
   document.head.appendChild(s);
 })();</pre>
@@ -660,6 +667,7 @@
                         document.querySelector('#txtAiBaseUrl').value = config.AiBaseUrl || config.aiBaseUrl || 'https://api.groq.com/openai/v1';
                         var namesPer = config.AiNamesPerPrepare ?? config.aiNamesPerPrepare;
                         document.querySelector('#txtAiNamesPerPrepare').value = namesPer === 0 || namesPer ? namesPer : 0;
+                        document.querySelector('#chkStoreAiDecisions').checked = cfgGet(config, 'StoreAiDecisions', 'storeAiDecisions', true) !== false;
                         document.querySelector('#txtPrepareDelayMs').value = cfgGet(config, 'PrepareDelayMsBetweenItems', 'prepareDelayMsBetweenItems', 1500);
                         document.querySelector('#txtPrepareMaxRpm').value = cfgGet(config, 'PrepareMaxAiCallsPerMinute', 'prepareMaxAiCallsPerMinute', 30);
                         document.querySelector('#txtPrepareMaxRetries').value = cfgGet(config, 'PrepareMaxRetries', 'prepareMaxRetries', 3);
@@ -737,6 +745,7 @@
                         config.AiBaseUrl = document.querySelector('#txtAiBaseUrl').value || 'https://api.groq.com/openai/v1';
                         var namesPer = parseInt(document.querySelector('#txtAiNamesPerPrepare').value, 10);
                         config.AiNamesPerPrepare = Number.isFinite(namesPer) ? namesPer : 0;
+                        config.StoreAiDecisions = document.querySelector('#chkStoreAiDecisions').checked;
                         config.PrepareDelayMsBetweenItems = parseInt(document.querySelector('#txtPrepareDelayMs').value, 10) || 1500;
                         config.PrepareMaxAiCallsPerMinute = parseInt(document.querySelector('#txtPrepareMaxRpm').value, 10) || 30;
                         config.PrepareMaxRetries = parseInt(document.querySelector('#txtPrepareMaxRetries').value, 10) || 3;

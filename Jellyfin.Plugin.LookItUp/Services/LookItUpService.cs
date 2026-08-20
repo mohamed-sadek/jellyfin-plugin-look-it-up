@@ -99,7 +99,7 @@ public class LookItUpService : ILookItUpService
     /// <summary>
     /// Bump when scan logic changes so stale caches are ignored.
     /// </summary>
-    public const int CurrentCacheVersion = 10;
+    public const int CurrentCacheVersion = 11;
 
     private static readonly HashSet<string> TextSubtitleCodecs = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -736,7 +736,7 @@ public class LookItUpService : ILookItUpService
             .Find(cues, item.Name, excludedCast, minLen, previewCandidateCap)
             .ToList();
         var suggested = new HashSet<string>(
-            SelectAiBatch(ranked, suggestedN).Select(c => c.Term),
+            NameCandidateBatchSelector.SelectAiBatch(ranked, suggestedN).Select(c => c.Term),
             StringComparer.OrdinalIgnoreCase);
 
         return new PreparePreviewItem
@@ -925,138 +925,6 @@ public class LookItUpService : ILookItUpService
             EpisodeName = episodeName,
             KnownCastNames = castHint
         };
-    }
-
-    /// <summary>
-    /// Picks AI verify targets, preferring earlier shorter Cap+Cap forms over later long phrases
-    /// (e.g. "Jon Voight" @ 0:59 over "Jon Voight's LeBaron" @ 2:31),
-    /// while still queuing the possessive tail (LeBaron) separately.
-    /// </summary>
-    private static List<NameCandidate> SelectAiBatch(IReadOnlyList<NameCandidate> ranked, int limit)
-    {
-        var batch = new List<NameCandidate>(limit);
-        var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var candidate in ranked)
-        {
-            if (batch.Count >= limit)
-            {
-                break;
-            }
-
-            var preferred = PreferEarlierShorterForm(candidate, ranked);
-            if (used.Add(preferred.Term))
-            {
-                batch.Add(preferred);
-            }
-
-            // Collapsing "Jon Voight's LeBaron" → "Jon Voight" must not drop "LeBaron".
-            if (batch.Count >= limit)
-            {
-                break;
-            }
-
-            var tail = GetPossessiveTail(candidate.Term);
-            if (tail is null || !used.Add(tail))
-            {
-                continue;
-            }
-
-            NameCandidate? tailCandidate = null;
-            foreach (var other in ranked)
-            {
-                if (!other.Term.Equals(tail, StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                if (tailCandidate is null || other.StartMs < tailCandidate.StartMs)
-                {
-                    tailCandidate = other;
-                }
-            }
-
-            batch.Add(tailCandidate ?? new NameCandidate
-            {
-                Term = tail,
-                StartMs = candidate.StartMs,
-                EndMs = candidate.EndMs,
-                CueText = candidate.CueText,
-                Score = candidate.Score,
-                Reason = "possessive-tail"
-            });
-        }
-
-        return batch.OrderBy(c => c.StartMs).ToList();
-    }
-
-    private static NameCandidate PreferEarlierShorterForm(
-        NameCandidate candidate,
-        IReadOnlyList<NameCandidate> pool)
-    {
-        var parts = candidate.Term.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 3)
-        {
-            return candidate;
-        }
-
-        var head2 = parts[0] + " " + StripPossessive(parts[1]);
-        NameCandidate? best = null;
-        foreach (var other in pool)
-        {
-            if (!other.Term.Equals(head2, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            if (other.StartMs <= candidate.StartMs && (best is null || other.StartMs < best.StartMs))
-            {
-                best = other;
-            }
-        }
-
-        return best ?? candidate;
-    }
-
-    private static string? GetPossessiveTail(string term)
-    {
-        var parts = term.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        for (var i = 0; i < parts.Length - 1; i++)
-        {
-            if (!IsPossessiveToken(parts[i]))
-            {
-                continue;
-            }
-
-            var tail = string.Join(' ', parts.Skip(i + 1));
-            return string.IsNullOrWhiteSpace(tail) ? null : tail;
-        }
-
-        return null;
-    }
-
-    private static bool IsPossessiveToken(string token)
-    {
-        return token.EndsWith("'s", StringComparison.OrdinalIgnoreCase)
-               || token.EndsWith("’s", StringComparison.OrdinalIgnoreCase)
-               || token.EndsWith("'", StringComparison.Ordinal)
-               || token.EndsWith("’", StringComparison.Ordinal);
-    }
-
-    private static string StripPossessive(string token)
-    {
-        if (token.EndsWith("'s", StringComparison.OrdinalIgnoreCase)
-            || token.EndsWith("’s", StringComparison.OrdinalIgnoreCase))
-        {
-            return token[..^2];
-        }
-
-        if (token.EndsWith("'", StringComparison.Ordinal) || token.EndsWith("’", StringComparison.Ordinal))
-        {
-            return token[..^1];
-        }
-
-        return token;
     }
 
     private static string InferKind(string term, string summary)
@@ -1257,6 +1125,7 @@ public class LookItUpService : ILookItUpService
             string? aiBaseUrl = null;
             string? aiModel = null;
             string outcome = "success";
+            IReadOnlyList<AiVerifyDecision> aiDecisions = [];
 
             if (_aiExtractor.IsConfigured(config))
             {
@@ -1295,8 +1164,8 @@ public class LookItUpService : ILookItUpService
                 }
                 else
                 {
-                    // Send all ranked candidates (capped by nameLimit / AI safety).
-                    nameCandidates = ranked.Take(nameLimit).ToList();
+                    // Score-aware batch: prefer Jon Voight @ 0:59 over Jon Voight's LeBaron @ 2:31.
+                    nameCandidates = NameCandidateBatchSelector.SelectAiBatch(ranked, nameLimit);
                 }
 
                 if (nameCandidates.Count == 0)
@@ -1346,6 +1215,7 @@ public class LookItUpService : ILookItUpService
                     .ConfigureAwait(false);
 
                 warning = aiResult.Warning;
+                aiDecisions = aiResult.Decisions;
                 if (!string.IsNullOrWhiteSpace(warning))
                 {
                     _logger.LogWarning(
@@ -1468,6 +1338,7 @@ public class LookItUpService : ILookItUpService
                 priorDisabled);
             cache.PreparedThroughMs = cues.Max(c => c.EndMs);
             cache.FullyPrepared = true;
+            AiDecisionStore.Merge(cache, aiDecisions, config.StoreAiDecisions);
             _store.Save(cache);
             MaybeWriteSidecar(item, cache, config.WriteSidecarFiles);
 

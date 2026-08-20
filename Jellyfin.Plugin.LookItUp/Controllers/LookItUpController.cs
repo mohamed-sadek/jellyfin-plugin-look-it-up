@@ -93,6 +93,7 @@ public class LookItUpController : ControllerBase
                 popup = BuildPopupSettings(config),
                 count = annotations.Count,
                 annotations,
+                aiDecisions = config?.StoreAiDecisions == true ? cache?.AiDecisions : null,
                 hint = prepared || annotations.Count > 0 || disabled
                     ? (disabled ? "Popups disabled for this item." : null)
                     : config?.IncrementalPrepareOnPlayback == true
@@ -139,6 +140,16 @@ public class LookItUpController : ControllerBase
             var config = Plugin.Instance?.Configuration;
             var cache = result.Cache;
             var annotations = cache?.Annotations ?? [];
+            IReadOnlyList<AiVerifyDecision>? windowAiDecisions = null;
+            if (config?.StoreAiDecisions == true
+                && cache?.AiDecisions is { Count: > 0 } aiDecisions
+                && result.Window is { } window)
+            {
+                windowAiDecisions = aiDecisions
+                    .Where(d => d.StartMs >= window.FromMs && d.StartMs < window.ToMs)
+                    .ToList();
+            }
+
             return Ok(new
             {
                 itemId,
@@ -155,6 +166,8 @@ public class LookItUpController : ControllerBase
                 annotations = _lookItUpService.TryGetPrepared(itemId, out var prepared)
                     ? FilterPlaybackAnnotations(prepared!.Annotations)
                     : annotations,
+                aiDecisions = config?.StoreAiDecisions == true ? cache?.AiDecisions : null,
+                windowAiDecisions,
                 window = result.Window,
                 popup = BuildPopupSettings(config)
             });
@@ -524,6 +537,7 @@ public class LookItUpController : ControllerBase
             scanOnPlayback = config?.ScanOnPlayback ?? false,
             incrementalPrepareOnPlayback = config?.IncrementalPrepareOnPlayback ?? false,
             incrementalPrepareWindowMs = config?.IncrementalPrepareWindowMs ?? 300_000,
+            incrementalAiNamesPerWindow = config?.IncrementalAiNamesPerWindow ?? 40,
             writeSidecarFiles = config?.WriteSidecarFiles ?? false,
             aiProvider = config?.AiProvider ?? "None",
             aiModel = config?.AiModel,

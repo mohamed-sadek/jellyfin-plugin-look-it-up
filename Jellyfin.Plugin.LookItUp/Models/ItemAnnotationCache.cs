@@ -62,6 +62,11 @@ public class ItemAnnotationCache
     public List<ContextAnnotation> Annotations { get; set; } = [];
 
     /// <summary>
+    /// Gets or sets AI keep/reject audit trail for debugging and tuning (when enabled in config).
+    /// </summary>
+    public List<AiVerifyDecision> AiDecisions { get; set; } = [];
+
+    /// <summary>
     /// Gets or sets how far (ms) incremental prepare has scanned ahead in the timeline.
     /// </summary>
     public long PreparedThroughMs { get; set; }
