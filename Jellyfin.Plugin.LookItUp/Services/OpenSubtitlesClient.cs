@@ -169,11 +169,12 @@ public sealed class OpenSubtitlesClient : IOpenSubtitlesClient
         OpenSubtitlesHit? hit = null;
         var matchedBy = "metadata";
 
+        // 1) Hash-only (remuxes rarely match; keep separate so metadata params don't poison the hash query)
         if (!string.IsNullOrWhiteSpace(movieHash) && bytes is > 0)
         {
             hit = await SearchBestAsync(
                     creds,
-                    BuildQuery(langCsv, movieHash: movieHash, moviebytesize: bytes, item: item),
+                    BuildHashQuery(langCsv, movieHash, bytes.Value),
                     item,
                     preferHash: true,
                     cancellationToken)
@@ -184,20 +185,41 @@ public sealed class OpenSubtitlesClient : IOpenSubtitlesClient
             }
         }
 
+        // 2) Metadata: for episodes use parent_imdb_id (series) + season/episode — not episode imdb_id
         hit ??= await SearchBestAsync(
                 creds,
-                BuildQuery(langCsv, item: item),
+                BuildMetadataQuery(langCsv, item),
                 item,
                 preferHash: false,
                 cancellationToken)
             .ConfigureAwait(false);
 
+        // 3) Fallback: series/title text query when provider ids were missing or returned nothing
+        if (hit is null && item is Episode)
+        {
+            hit = await SearchBestAsync(
+                    creds,
+                    BuildEpisodeQueryFallback(langCsv, (Episode)item),
+                    item,
+                    preferHash: false,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            if (hit is not null)
+            {
+                matchedBy = "query";
+            }
+        }
+
         if (hit is null)
         {
-            _logger.LogInformation("OpenSubtitles: no subtitle found for {Item}", item.Name);
+            _logger.LogInformation(
+                "OpenSubtitles: no subtitle found for {Item} ({Kind})",
+                item.Name,
+                item.GetType().Name);
             return new OpenSubtitlesAttempt
             {
-                FailureReason = "OpenSubtitles found no matching text subtitle for this title."
+                FailureReason =
+                    "OpenSubtitles found no matching text subtitle for this title (search used series id + S/E)."
             };
         }
 
@@ -309,6 +331,7 @@ public sealed class OpenSubtitlesClient : IOpenSubtitlesClient
         CancellationToken cancellationToken)
     {
         var url = $"https://{_baseHost}/api/v1/subtitles?{query}";
+        _logger.LogInformation("OpenSubtitles search: {Query}", query);
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
         ApplyHeaders(req, creds, includeAuth: true);
 
@@ -328,12 +351,15 @@ public sealed class OpenSubtitlesClient : IOpenSubtitlesClient
         using var doc = JsonDocument.Parse(body);
         if (!doc.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
         {
+            _logger.LogInformation("OpenSubtitles search returned no data array for query {Query}", query);
             return null;
         }
 
+        var total = data.GetArrayLength();
         var videoFps = TryGetVideoFps(item);
         OpenSubtitlesHit? best = null;
         var bestScore = int.MinValue;
+        var considered = 0;
 
         foreach (var row in data.EnumerateArray())
         {
@@ -348,33 +374,16 @@ public sealed class OpenSubtitlesClient : IOpenSubtitlesClient
             {
                 var featureType = details.TryGetProperty("feature_type", out var ft) ? ft.GetString() : null;
                 if (!string.IsNullOrWhiteSpace(featureType)
-                    && !string.Equals(featureType, "Episode", StringComparison.OrdinalIgnoreCase))
+                    && !string.Equals(featureType, "Episode", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(featureType, "Tvshow", StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
                 }
 
-                if (ep.ParentIndexNumber is int seasonWanted
-                    && details.TryGetProperty("season_number", out var sn)
-                    && sn.TryGetInt32(out var seasonGot)
-                    && seasonGot != seasonWanted)
+                if (!MatchesSeasonEpisode(details, ep))
                 {
                     continue;
                 }
-
-                if (ep.IndexNumber is int episodeWanted
-                    && details.TryGetProperty("episode_number", out var en)
-                    && en.TryGetInt32(out var episodeGot)
-                    && episodeGot != episodeWanted)
-                {
-                    continue;
-                }
-            }
-
-            var downloads = attrs.TryGetProperty("download_count", out var dc) ? dc.GetInt32() : 0;
-            double? fps = null;
-            if (attrs.TryGetProperty("fps", out var fpsEl) && fpsEl.ValueKind == JsonValueKind.Number)
-            {
-                fps = fpsEl.GetDouble();
             }
 
             if (!attrs.TryGetProperty("files", out var files) || files.GetArrayLength() == 0)
@@ -388,7 +397,17 @@ public sealed class OpenSubtitlesClient : IOpenSubtitlesClient
                 continue;
             }
 
+            considered++;
             var fileId = fileIdEl.GetInt64();
+            var downloads = attrs.TryGetProperty("download_count", out var dc) && dc.TryGetInt32(out var dcv)
+                ? dcv
+                : 0;
+            double? fps = null;
+            if (attrs.TryGetProperty("fps", out var fpsEl) && fpsEl.ValueKind == JsonValueKind.Number)
+            {
+                fps = fpsEl.GetDouble();
+            }
+
             var score = downloads;
             if (preferHash)
             {
@@ -419,7 +438,57 @@ public sealed class OpenSubtitlesClient : IOpenSubtitlesClient
             }
         }
 
+        _logger.LogInformation(
+            "OpenSubtitles search results: total={Total} considered={Considered} bestFileId={FileId}",
+            total,
+            considered,
+            best?.FileId);
+
         return best;
+    }
+
+    private static bool MatchesSeasonEpisode(JsonElement details, Episode ep)
+    {
+        if (ep.ParentIndexNumber is int seasonWanted)
+        {
+            var seasonGot = ReadInt(details, "season_number");
+            if (seasonGot is not null && seasonGot != seasonWanted)
+            {
+                return false;
+            }
+        }
+
+        if (ep.IndexNumber is int episodeWanted)
+        {
+            var episodeGot = ReadInt(details, "episode_number");
+            if (episodeGot is not null && episodeGot != episodeWanted)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static int? ReadInt(JsonElement obj, string name)
+    {
+        if (!obj.TryGetProperty(name, out var el))
+        {
+            return null;
+        }
+
+        if (el.TryGetInt32(out var n))
+        {
+            return n;
+        }
+
+        if (el.ValueKind == JsonValueKind.String
+            && int.TryParse(el.GetString(), out var fromString))
+        {
+            return fromString;
+        }
+
+        return null;
     }
 
     private async Task<string?> RequestDownloadLinkAsync(
@@ -468,48 +537,72 @@ public sealed class OpenSubtitlesClient : IOpenSubtitlesClient
         }
     }
 
-    private static string BuildQuery(
-        string langCsv,
-        string? movieHash = null,
-        long? moviebytesize = null,
-        BaseItem? item = null)
+    private static string BuildHashQuery(string langCsv, string movieHash, long moviebytesize)
+    {
+        return string.Join(
+            '&',
+            "languages=" + Uri.EscapeDataString(langCsv),
+            "moviehash=" + Uri.EscapeDataString(movieHash),
+            "moviebytesize=" + moviebytesize);
+    }
+
+    private static string BuildMetadataQuery(string langCsv, BaseItem item)
     {
         var parts = new List<string> { "languages=" + Uri.EscapeDataString(langCsv) };
-        if (!string.IsNullOrWhiteSpace(movieHash))
-        {
-            parts.Add("moviehash=" + Uri.EscapeDataString(movieHash));
-        }
 
-        if (moviebytesize is > 0)
+        if (item is Episode ep)
         {
-            parts.Add("moviebytesize=" + moviebytesize.Value);
-        }
+            parts.Add("type=episode");
 
-        if (item is not null)
-        {
-            if (item is Episode)
+            // OpenSubtitles expects the *series* id as parent_imdb_id / parent_tmdb_id.
+            var series = ep.Series;
+            var parentImdb = series?.GetProviderId(MetadataProvider.Imdb);
+            if (string.IsNullOrWhiteSpace(parentImdb))
             {
-                parts.Add("type=episode");
-            }
-            else
-            {
-                parts.Add("type=movie");
+                // Some libraries only store series IMDb on the episode.
+                parentImdb = ep.GetProviderId(MetadataProvider.Imdb);
             }
 
-            var imdb = item.GetProviderId(MetadataProvider.Imdb);
-            if (string.IsNullOrWhiteSpace(imdb) && item is Episode episodeForSeries)
+            var parentImdbDigits = DigitsOnly(parentImdb);
+            if (!string.IsNullOrWhiteSpace(parentImdbDigits))
             {
-                imdb = episodeForSeries.Series?.GetProviderId(MetadataProvider.Imdb)
-                       ?? episodeForSeries.GetProviderId(MetadataProvider.Imdb);
+                parts.Add("parent_imdb_id=" + parentImdbDigits);
             }
 
-            if (!string.IsNullOrWhiteSpace(imdb))
+            var parentTmdb = series?.GetProviderId(MetadataProvider.Tmdb)
+                             ?? ep.GetProviderId(MetadataProvider.Tmdb);
+            if (!string.IsNullOrWhiteSpace(parentTmdb) && long.TryParse(parentTmdb, out var parentTmdbId))
             {
-                var digits = new string(imdb.Where(char.IsDigit).ToArray());
-                if (digits.Length > 0)
+                parts.Add("parent_tmdb_id=" + parentTmdbId);
+            }
+
+            if (ep.ParentIndexNumber is int season)
+            {
+                parts.Add("season_number=" + season);
+            }
+
+            if (ep.IndexNumber is int episode)
+            {
+                parts.Add("episode_number=" + episode);
+            }
+
+            // Text query only when we lack a series id — otherwise it hurts precision.
+            if (string.IsNullOrWhiteSpace(parentImdbDigits))
+            {
+                var seriesName = !string.IsNullOrWhiteSpace(ep.SeriesName) ? ep.SeriesName : series?.Name;
+                if (!string.IsNullOrWhiteSpace(seriesName))
                 {
-                    parts.Add("imdb_id=" + digits);
+                    parts.Add("query=" + Uri.EscapeDataString(seriesName));
                 }
+            }
+        }
+        else
+        {
+            parts.Add("type=movie");
+            var imdbDigits = DigitsOnly(item.GetProviderId(MetadataProvider.Imdb));
+            if (!string.IsNullOrWhiteSpace(imdbDigits))
+            {
+                parts.Add("imdb_id=" + imdbDigits);
             }
 
             var tmdb = item.GetProviderId(MetadataProvider.Tmdb);
@@ -518,41 +611,53 @@ public sealed class OpenSubtitlesClient : IOpenSubtitlesClient
                 parts.Add("tmdb_id=" + tmdbId);
             }
 
-            if (item is Episode ep)
-            {
-                if (ep.ParentIndexNumber is int season)
-                {
-                    parts.Add("season_number=" + season);
-                }
-
-                if (ep.IndexNumber is int episode)
-                {
-                    parts.Add("episode_number=" + episode);
-                }
-
-                var seriesName = !string.IsNullOrWhiteSpace(ep.SeriesName)
-                    ? ep.SeriesName
-                    : ep.Series?.Name;
-                if (!string.IsNullOrWhiteSpace(seriesName)
-                    && !parts.Any(p => p.StartsWith("imdb_id=", StringComparison.Ordinal)))
-                {
-                    parts.Add("query=" + Uri.EscapeDataString(seriesName));
-                }
-            }
-            else if (!string.IsNullOrWhiteSpace(item.Name)
-                     && !parts.Any(p => p.StartsWith("imdb_id=", StringComparison.Ordinal)))
+            if (string.IsNullOrWhiteSpace(imdbDigits) && !string.IsNullOrWhiteSpace(item.Name))
             {
                 parts.Add("query=" + Uri.EscapeDataString(item.Name));
-            }
-            else if (!string.IsNullOrWhiteSpace(item.Path)
-                     && !parts.Any(p => p.StartsWith("imdb_id=", StringComparison.Ordinal)
-                                        || p.StartsWith("query=", StringComparison.Ordinal)))
-            {
-                parts.Add("query=" + Uri.EscapeDataString(Path.GetFileNameWithoutExtension(item.Path)));
             }
         }
 
         return string.Join('&', parts);
+    }
+
+    private static string BuildEpisodeQueryFallback(string langCsv, Episode ep)
+    {
+        var parts = new List<string>
+        {
+            "languages=" + Uri.EscapeDataString(langCsv),
+            "type=episode"
+        };
+
+        var seriesName = !string.IsNullOrWhiteSpace(ep.SeriesName)
+            ? ep.SeriesName
+            : ep.Series?.Name;
+        if (!string.IsNullOrWhiteSpace(seriesName))
+        {
+            parts.Add("query=" + Uri.EscapeDataString(seriesName));
+        }
+
+        if (ep.ParentIndexNumber is int season)
+        {
+            parts.Add("season_number=" + season);
+        }
+
+        if (ep.IndexNumber is int episode)
+        {
+            parts.Add("episode_number=" + episode);
+        }
+
+        return string.Join('&', parts);
+    }
+
+    private static string? DigitsOnly(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var digits = new string(value.Where(char.IsDigit).ToArray());
+        return digits.Length > 0 ? digits : null;
     }
 
     private static double? TryGetVideoFps(BaseItem item)
