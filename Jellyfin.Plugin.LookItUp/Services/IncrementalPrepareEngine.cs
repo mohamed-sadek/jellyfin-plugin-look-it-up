@@ -63,7 +63,7 @@ public sealed class IncrementalPrepareEngine
 
         var max = Math.Max(1, config.MaxAnnotationsPerItem);
         var minLen = Math.Max(2, config.MinEntityLength);
-        const int prepareCandidateCap = 500;
+        const int prepareCandidateCap = 750;
         var ranked = _nameCandidateFinder
             .Find(cues, itemTitle, excludeCast, minLen, prepareCandidateCap)
             .ToList();
@@ -72,14 +72,12 @@ public sealed class IncrementalPrepareEngine
         var beforeCount = cache.Annotations.Count;
         string? warning = null;
         var mode = _aiExtractor.IsConfigured(config) ? "ai" : "legacy";
+        var windowLimit = Math.Clamp(config.IncrementalAiNamesPerWindow, 5, 250);
 
         if (_aiExtractor.IsConfigured(config))
         {
-            var nameLimit = config.AiNamesPerPrepare <= 0
-                ? 200
-                : Math.Clamp(config.AiNamesPerPrepare, 1, 200);
             var windowCandidates = SelectWindowCandidates(ranked, fromMs, toMs, cache.Annotations)
-                .Take(nameLimit)
+                .Take(windowLimit)
                 .ToList();
 
             if (windowCandidates.Count > 0)
@@ -222,7 +220,7 @@ public sealed class IncrementalPrepareEngine
         var max = Math.Max(1, config.MaxAnnotationsPerItem);
         var excludeCast = new HashSet<string>(request.ExcludeCastNames, StringComparer.OrdinalIgnoreCase);
         var minLen = Math.Max(2, config.MinEntityLength);
-        const int prepareCandidateCap = 500;
+        const int prepareCandidateCap = 750;
         var ranked = _nameCandidateFinder
             .Find(cues, request.ItemTitle, excludeCast, minLen, prepareCandidateCap)
             .ToList();
@@ -272,9 +270,10 @@ public sealed class IncrementalPrepareEngine
 
         if (_aiExtractor.IsConfigured(config))
         {
+            var windowLimit = Math.Clamp(config.IncrementalAiNamesPerWindow, 5, 250);
             var nameLimit = config.AiNamesPerPrepare <= 0
-                ? 200
-                : Math.Clamp(config.AiNamesPerPrepare, 1, 200);
+                ? windowLimit
+                : Math.Clamp(config.AiNamesPerPrepare, 1, 250);
             var mediaContext = new AiMediaContext
             {
                 ShowName = request.ShowName,

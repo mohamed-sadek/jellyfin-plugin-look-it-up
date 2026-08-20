@@ -73,26 +73,17 @@ public partial class NameCandidateFinder : INameCandidateFinder
     };
 
     /// <summary>
-    /// Terms that look capitalized but are not worth popup candidates (credits, common knowledge, demonyms).
+    /// Subtitle noise and non-entity junk — not cultural-reference judgments (those go to AI).
     /// </summary>
-    private static readonly HashSet<string> JunkOrTooCommonTerms = new(StringComparer.OrdinalIgnoreCase)
+    private static readonly HashSet<string> SubtitleNoiseTerms = new(StringComparer.OrdinalIgnoreCase)
     {
         // Subtitle file credits / noise
         "opensubtitles", "opensubtitle", "subtitles", "subtitle", "subs", "synced", "sync",
         "english", "eng", "srt", "webrip", "web-dl", "bluray", "hdtv",
-        // Universal / basic knowledge — not cultural deep cuts
-        "god", "jesus", "christ", "jesus christ", "lord", "heaven", "hell", "amen",
-        "earth", "world", "moon", "sun", "sky", "sea", "ocean",
-        "man", "woman", "boy", "girl", "mom", "dad", "mum", "daddy", "mommy",
-        "love", "life", "death", "time", "truth", "money", "home", "school",
-        "america", "american", "americans", "usa", "u.s.", "u.s.a.",
-        "china", "chinese", "japan", "japanese", "france", "french", "germany", "german",
-        "italy", "italian", "spain", "spanish", "mexico", "mexican", "canada", "canadian",
-        "britain", "british", "england", "english", "russia", "russian", "india", "indian",
-        "europe", "european", "africa", "african", "asia", "asian",
-        // Filler caps often mistaken for names
+        // Sound / stage directions often capitalized in subs
+        "thud", "bang", "boom", "beep", "ring", "knock", "sighs", "gasps", "laughs", "applause",
+        // Filler caps / dialogue noise
         "ok", "okay", "oh", "uh", "um", "ah", "hmm", "huh", "wow", "whoa",
-        "thud", "bang", "boom", "beep", "ring", "knock",
         "one", "two", "three", "first", "last", "next", "right", "left",
         "everything", "nothing", "something", "anything", "everyone", "someone",
         "through", "without", "feeling", "playing", "winning", "office", "screaming"
@@ -248,6 +239,25 @@ public partial class NameCandidateFinder : INameCandidateFinder
 
             if (!strong && !repeatedCapOnly)
             {
+                // Repeated at sentence starts (e.g. a character name always capitalized after a period).
+                var repeatedInitial = stats.SentenceInitialCapCount >= 2
+                                      && stats.MidSentenceCapCount == 0
+                                      && stats.LowercaseCount == 0;
+                if (!repeatedInitial)
+                {
+                    continue;
+                }
+
+                TryAddCandidate(
+                    candidates,
+                    occ.Surface,
+                    occ,
+                    tokenStats,
+                    titleNorm,
+                    excludeNames,
+                    minLength,
+                    scoreBonus: 8,
+                    reason: "repeated-sentence-initial");
                 continue;
             }
 
@@ -388,7 +398,7 @@ public partial class NameCandidateFinder : INameCandidateFinder
             return;
         }
 
-        if (IsJunkOrTooCommon(term))
+        if (IsSubtitleNoise(term))
         {
             return;
         }
@@ -944,9 +954,9 @@ public partial class NameCandidateFinder : INameCandidateFinder
     [GeneratedRegex(@"\s+", RegexOptions.CultureInvariant)]
     private static partial Regex WhitespaceRegex();
 
-    private static bool IsJunkOrTooCommon(string term)
+    private static bool IsSubtitleNoise(string term)
     {
-        if (JunkOrTooCommonTerms.Contains(term))
+        if (SubtitleNoiseTerms.Contains(term))
         {
             return true;
         }

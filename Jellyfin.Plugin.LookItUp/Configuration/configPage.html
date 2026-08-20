@@ -73,6 +73,11 @@
                         <input id="txtIncrementalWindowMs" type="number" is="emby-input" min="60000" max="900000" step="60000" />
                         <div class="fieldDescription">How far ahead to prepare during playback (default 300000 = 5 minutes).</div>
                     </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="txtIncrementalAiPerWindow">AI names per playback window</label>
+                        <input id="txtIncrementalAiPerWindow" type="number" is="emby-input" min="5" max="250" />
+                        <div class="fieldDescription">Max Groq verifications per incremental window (default 40). Heuristics send more candidates; AI decides what gets a popup.</div>
+                    </div>
 
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="txtPrepareItemId">Prepare one item (id)</label>
@@ -278,7 +283,7 @@
                     </p>
                     <pre style="white-space:pre-wrap;word-break:break-all;background:rgba(0,0,0,.08);padding:12px;border-radius:8px;">(function () {
   var s = document.createElement('script');
-  s.src = '/LookItUp/script.js?v=1.2.35';
+  s.src = '/LookItUp/script.js?v=1.2.36';
   s.async = true;
   document.head.appendChild(s);
 })();</pre>
@@ -633,6 +638,7 @@
                         document.querySelector('#chkScanOnPlayback').checked = !!config.ScanOnPlayback;
                         document.querySelector('#chkIncrementalPrepare').checked = cfgGet(config, 'IncrementalPrepareOnPlayback', 'incrementalPrepareOnPlayback', true) !== false;
                         document.querySelector('#txtIncrementalWindowMs').value = cfgGet(config, 'IncrementalPrepareWindowMs', 'incrementalPrepareWindowMs', 300000);
+                        document.querySelector('#txtIncrementalAiPerWindow').value = cfgGet(config, 'IncrementalAiNamesPerWindow', 'incrementalAiNamesPerWindow', 40);
                         document.querySelector('#txtWikipediaLanguage').value = config.WikipediaLanguage || 'en';
                         document.querySelector('#txtPreferredSubtitleLanguages').value = config.PreferredSubtitleLanguages || 'en';
                         document.querySelector('#txtMaxAnnotations').value = config.MaxAnnotationsPerItem;
@@ -700,6 +706,7 @@
                         config.ScanOnPlayback = document.querySelector('#chkScanOnPlayback').checked;
                         config.IncrementalPrepareOnPlayback = document.querySelector('#chkIncrementalPrepare').checked;
                         config.IncrementalPrepareWindowMs = parseInt(document.querySelector('#txtIncrementalWindowMs').value, 10) || 300000;
+                        config.IncrementalAiNamesPerWindow = parseInt(document.querySelector('#txtIncrementalAiPerWindow').value, 10) || 40;
                         config.WikipediaLanguage = document.querySelector('#txtWikipediaLanguage').value;
                         config.PreferredSubtitleLanguages = document.querySelector('#txtPreferredSubtitleLanguages').value;
                         config.MaxAnnotationsPerItem = parseInt(document.querySelector('#txtMaxAnnotations').value, 10);

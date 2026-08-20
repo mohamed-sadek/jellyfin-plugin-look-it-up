@@ -80,6 +80,7 @@ public class LookItUpController : ControllerBase
                 fullyPrepared = cache?.FullyPrepared ?? false,
                 incrementalPrepareOnPlayback = config?.IncrementalPrepareOnPlayback ?? false,
                 incrementalPrepareWindowMs = config?.IncrementalPrepareWindowMs ?? 300_000,
+                incrementalAiNamesPerWindow = config?.IncrementalAiNamesPerWindow ?? 40,
                 cacheVersion = cache?.Version ?? 0,
                 subtitlePath = cache?.SubtitlePath,
                 subtitleSource = cache?.SubtitleSource,

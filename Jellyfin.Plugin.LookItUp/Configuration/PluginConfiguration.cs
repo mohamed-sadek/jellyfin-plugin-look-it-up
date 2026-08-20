@@ -14,7 +14,7 @@ public class PluginConfiguration : BasePluginConfiguration
     {
         Enabled = true;
         WikipediaLanguage = "en";
-        MaxAnnotationsPerItem = 40;
+        MaxAnnotationsPerItem = 60;
         MinEntityLength = 3;
         PopupDurationMs = 3000;
         PopupDelayMs = 1000;
@@ -27,6 +27,7 @@ public class PluginConfiguration : BasePluginConfiguration
         ScanOnPlayback = false;
         IncrementalPrepareOnPlayback = true;
         IncrementalPrepareWindowMs = 300_000;
+        IncrementalAiNamesPerWindow = 40;
         WriteSidecarFiles = true;
         PrepareMovies = true;
         PrepareEpisodes = true;
@@ -90,6 +91,9 @@ public class PluginConfiguration : BasePluginConfiguration
 
     /// <summary>Gets or sets incremental prepare lookahead window in milliseconds.</summary>
     public int IncrementalPrepareWindowMs { get; set; }
+
+    /// <summary>Gets or sets max AI verifications per incremental playback window.</summary>
+    public int IncrementalAiNamesPerWindow { get; set; }
 
     /// <summary>Gets or sets whether to write *.lookitup.json sidecars.</summary>
     public bool WriteSidecarFiles { get; set; }

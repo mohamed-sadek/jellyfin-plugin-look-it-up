@@ -99,7 +99,7 @@ public class LookItUpService : ILookItUpService
     /// <summary>
     /// Bump when scan logic changes so stale caches are ignored.
     /// </summary>
-    public const int CurrentCacheVersion = 9;
+    public const int CurrentCacheVersion = 10;
 
     private static readonly HashSet<string> TextSubtitleCodecs = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -1268,9 +1268,9 @@ public class LookItUpService : ILookItUpService
                 var excludedCast = BuildCastExcludeNames(item, minLen);
                 // 0 = unlimited (safety-capped later in AI extractor).
                 var nameLimit = config.AiNamesPerPrepare <= 0
-                    ? 200
-                    : Math.Clamp(config.AiNamesPerPrepare, 1, 200);
-                const int prepareCandidateCap = 500;
+                    ? 250
+                    : Math.Clamp(config.AiNamesPerPrepare, 1, 250);
+                const int prepareCandidateCap = 750;
                 var rankedLimit = selectedTerms is { Count: > 0 }
                     ? Math.Max(prepareCandidateCap, selectedTerms.Count)
                     : prepareCandidateCap;

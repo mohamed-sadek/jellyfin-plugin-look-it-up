@@ -133,7 +133,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
 
         var baseUrl = ResolveBaseUrl(config, model);
         // Caller controls batch size (auto top-N or full UI selection). Safety cap only.
-        const int absoluteMax = 200;
+        const int absoluteMax = 250;
         var batch = candidates.Take(absoluteMax).ToList();
         var mentions = new List<AiEntityMention>();
         var outcomes = new List<string>(batch.Count);
@@ -413,28 +413,30 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         if (attempt == 1)
         {
             user =
-                "Return a JSON object about this subtitle name candidate.\n" +
-                "This dialogue is from \"" + show + "\".\n" +
-                "Goal: short popups for CULTURAL REFERENCES a typical viewer might not fully know — " +
-                "artists/bands (as people), historical figures, niche brands, specific places, films, medical/drug names, " +
-                "historical events, subcultures, etc.\n" +
-                "keep=true ONLY if explaining it adds value.\n" +
-                "keep=false for:\n" +
-                "- characters / cast / nicknames from \"" + show + "\" (including guests and minor roles)\n" +
-                "- fictional places, schools, streets, businesses, or organizations that exist only inside \"" + show + "\"\n" +
-                "- song titles, album titles, singles, tracks, or lyric-line titles playing or mentioned in the show " +
-                "(do NOT explain the song itself; artists/bands as people are OK)\n" +
-                "- basic knowledge everyone already knows (God, Earth, Moon, Sun, America, Chinese, Man, Love, …)\n" +
-                "- demonyms or nationalities alone\n" +
-                "- religious exclamations\n" +
-                "- subtitle credits (OpenSubtitles, Subtitles)\n" +
-                "- ordinary dialogue words\n" +
+                "You gatekeep short on-screen popups during TV/film playback. " +
+                "Return JSON about this subtitle name candidate.\n" +
+                "Dialogue is from \"" + show + "\".\n\n" +
+                "KEEP (keep=true) ONLY when a typical viewer would benefit from 1–2 factual sentences — " +
+                "a non-obvious CULTURAL REFERENCE worth looking up:\n" +
+                "- Real people: historical figures, artists, authors, scientists, politicians, public figures, " +
+                "directors, actors, musicians (when NOT a character in this show)\n" +
+                "- Specific real places: cities, landmarks, regions, institutions when used as meaningful references\n" +
+                "- Real organizations, movements, events, awards, ideologies, medical/scientific terms, niche brands\n" +
+                "- Films, books, artworks as cultural objects (not song/album/track titles playing in the scene)\n\n" +
+                "REJECT (keep=false) when a popup adds little value:\n" +
+                "- Any cast member, character, nickname, or in-universe place/org from \"" + show + "\" (in-show)\n" +
+                "- Song titles, album names, singles, tracks, or lyric-line titles\n" +
+                "- Universal common knowledge: major countries/demonyms used generically, days/months, religious exclamations, " +
+                "basic nature words (sun, moon, earth, god), generic family words (mom, dad)\n" +
+                "- Subtitle credits, dialogue filler, ordinary capitalized grammar\n" +
+                "- Borderline terms where context gives enough clue — when uncertain, reject\n" +
                 castHint +
-                "Schema: {\"keep\":true,\"term\":\"Vincent van Gogh\",\"kind\":\"person\",\"summary\":\"Dutch post-impressionist painter known for The Starry Night and Sunflowers.\"}\n" +
-                "kind must be one of: person, place, film, brand, other.\n" +
-                "or {\"keep\":false,\"reason\":\"in-show\"}\n" +
-                "Summary: 1–2 short factual sentences about who/what it is. " +
-                "Never mention the show. Never say \"not a character\", \"real-world\", \"fictional\", or that it is/isn't from the show.\n" +
+                "Schema: {\"keep\":true,\"term\":\"Vincent van Gogh\",\"kind\":\"person\"," +
+                "\"summary\":\"Dutch post-impressionist painter known for The Starry Night.\"}\n" +
+                "kind: person | place | film | brand | other\n" +
+                "or {\"keep\":false,\"reason\":\"in-show|song-title|too-common|no-value|…\"}\n" +
+                "Summary: factual, 1–2 short sentences. Never mention the show. " +
+                "Never say \"real-world\", \"fictional\", or whether it is from the show.\n" +
                 "Show: " + show + "\n" +
                 (episode is null ? string.Empty : "Episode: " + episode + "\n") +
                 "Candidate: " + candidate.Term + "\n" +
@@ -443,12 +445,11 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         else
         {
             user =
-                "JSON only. Candidate \"" + candidate.Term + "\" in \"" + candidate.CueText + "\".\n" +
-                "Keep only if it is a non-obvious real-world cultural reference (not God/Earth/America/basic words, " +
-                "not a character / cast / fictional place from the show, not a song/album/track title).\n" +
-                "Artists/bands as people are OK; song titles are not.\n" +
-                "Summary must be factual and must never mention the show.\n" +
-                "{\"keep\":true,\"term\":\"...\",\"kind\":\"person\",\"summary\":\"...\"} or {\"keep\":false,\"reason\":\"...\"}";
+                "JSON only. Gatekeep popups — keep=false when uncertain.\n" +
+                "Candidate \"" + candidate.Term + "\" in \"" + candidate.CueText + "\" from \"" + show + "\".\n" +
+                "Keep ONLY non-obvious cultural references (people, places, events, niche terms). " +
+                "Reject: in-show cast/places, song/album titles, too-common geography/words, filler.\n" +
+                "{\"keep\":true,\"term\":\"…\",\"kind\":\"person\",\"summary\":\"…\"} or {\"keep\":false,\"reason\":\"…\"}";
         }
 
         var payload = new Dictionary<string, object?>
