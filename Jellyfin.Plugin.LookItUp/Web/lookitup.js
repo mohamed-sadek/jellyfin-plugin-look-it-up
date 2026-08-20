@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  const CLIENT_VERSION = '1.2.42.0';
+  const CLIENT_VERSION = '1.2.43.0';
   const STYLE_ID = 'lookitup-styles';
   const STACK_ID = 'lookitup-stack';
   const POPUP_ID = 'lookitup-popup'; // legacy single-popup id (removed on upgrade)
@@ -505,6 +505,39 @@
     return window.ApiClient || window.ServerConnections?.currentApiClient?.() || null;
   }
 
+  function installApiClientPlaybackHooks() {
+    const api = getApiClient();
+    if (!api || api._lookitupAjaxHooked) {
+      return;
+    }
+    if (typeof api.ajax !== 'function') {
+      return;
+    }
+    api._lookitupAjaxHooked = true;
+    const origAjax = api.ajax.bind(api);
+    api.ajax = function (request) {
+      try {
+        const url = String((request && (request.url || request.Url)) || '');
+        const match = url.match(
+          /\/Items\/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9a-fA-F]{32})\/PlaybackInfo/i
+        );
+        if (match) {
+          const id = formatGuid(match[1]);
+          if (id && id !== lastBadItemId) {
+            trustedPlaybackItemId = id;
+            if (lastResolvedLogId !== id) {
+              lastResolvedLogId = id;
+              console.info('[Look it up] captured ItemId from PlaybackInfo request', id);
+            }
+          }
+        }
+      } catch (_) {
+        /* ignore */
+      }
+      return origAjax(request);
+    };
+  }
+
   function getPlaybackManager() {
     if (discoveredPlaybackManager) {
       return discoveredPlaybackManager;
@@ -613,7 +646,13 @@
     if (sessionResolveInFlight) {
       return;
     }
-    if (!force && Date.now() - sessionResolveAt < 3000) {
+    const video = getVideoElement();
+    const blobPlayback = !!(
+      video
+      && /^(blob:|mediasource:)/i.test(String(video.currentSrc || video.src || ''))
+    );
+    const minInterval = blobPlayback || /#\/?video/i.test(String(location.hash || '')) ? 1200 : 3000;
+    if (!force && Date.now() - sessionResolveAt < minInterval) {
       return;
     }
     sessionResolveAt = Date.now();
@@ -627,8 +666,14 @@
 
   async function resolveItemIdFromSession() {
     const api = getApiClient();
+    if (!api) {
+      return null;
+    }
+
     const video = getVideoElement();
-    if (!api || !video || video.paused || video.readyState < 2) {
+    const videoLikelyPlaying = !!(video && !video.paused && video.readyState >= 2);
+    // Blob/#/video players often have no local id — still query sessions.
+    if (!videoLikelyPlaying && !/#\/?video/i.test(String(location.hash || ''))) {
       return null;
     }
 
@@ -639,35 +684,93 @@
     });
 
     const deviceId = typeof api.deviceId === 'function' ? api.deviceId() : null;
-    let best = null;
+    let userId = null;
+    try {
+      userId = typeof api.getCurrentUserId === 'function' ? api.getCurrentUserId() : null;
+    } catch (_) {
+      userId = null;
+    }
 
+    const candidates = [];
     for (const session of sessions || []) {
       const np = session?.NowPlayingItem || session?.nowPlayingItem;
       if (!np || String(np.MediaType || np.mediaType || '').toLowerCase() !== 'video') {
         continue;
       }
-      const playing = session?.PlayState?.IsPaused === false;
-      if (!playing) {
-        continue;
-      }
       const id = readItemIdFromPlaybackObject(np);
-      if (!id) {
+      if (!id || id === lastBadItemId) {
         continue;
       }
+      const playState = session?.PlayState || session?.playState || {};
+      const paused = playState.IsPaused ?? playState.isPaused;
+      let score = 0;
       if (deviceId && session.DeviceId === deviceId) {
-        trustedPlaybackItemId = id;
-        lastBadItemId = null;
-        return id;
+        score += 100;
       }
-      best = id;
+      if (userId && (session.UserId === userId || session.userId === userId)) {
+        score += 40;
+      }
+      if (paused === false) {
+        score += 30;
+      } else if (paused === true) {
+        score += 5;
+      } else {
+        score += 15; // unknown pause state — still usable
+      }
+      if (session.SupportsRemoteControl || session.supportsRemoteControl) {
+        score += 5;
+      }
+      candidates.push({ id, score, name: np.Name || np.name || null });
     }
 
-    if (best) {
-      trustedPlaybackItemId = best;
-      lastBadItemId = null;
-      return best;
+    candidates.sort((a, b) => b.score - a.score);
+    const best = candidates[0];
+    if (!best) {
+      return null;
     }
 
+    trustedPlaybackItemId = best.id;
+    lastBadItemId = null;
+    if (lastResolvedLogId !== best.id) {
+      lastResolvedLogId = best.id;
+      console.info('[Look it up] resolved item id from Sessions', best.id, best.name || '');
+    }
+    return best.id;
+  }
+
+  function extractItemIdFromRecentNetwork() {
+    try {
+      const entries = performance.getEntriesByType('resource');
+      // Newest first
+      for (let i = entries.length - 1; i >= 0; i--) {
+        const name = entries[i] && entries[i].name;
+        if (!name || typeof name !== 'string') {
+          continue;
+        }
+        // PlaybackInfo path id is the library ItemId.
+        let match = name.match(
+          /\/Items\/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9a-fA-F]{32})\/PlaybackInfo/i
+        );
+        if (match) {
+          const id = formatGuid(match[1]);
+          if (id && id !== lastBadItemId) {
+            return id;
+          }
+        }
+      }
+      for (let i = entries.length - 1; i >= 0; i--) {
+        const name = entries[i] && entries[i].name;
+        if (!name || typeof name !== 'string' || name.indexOf('/Videos/') < 0) {
+          continue;
+        }
+        const id = extractItemIdFromStreamUrl(name);
+        if (id && id !== lastBadItemId) {
+          return id;
+        }
+      }
+    } catch (_) {
+      /* ignore */
+    }
     return null;
   }
 
@@ -838,6 +941,7 @@
 
   function getCurrentItemId() {
     installPlaybackManagerDiscovery();
+    installApiClientPlaybackHooks();
 
     const fromPm = readItemIdFromPlaybackManager();
     if (fromPm && fromPm !== lastBadItemId) {
@@ -869,12 +973,25 @@
       }
     }
 
+    const fromNet = extractItemIdFromRecentNetwork();
+    if (fromNet && fromNet !== lastBadItemId) {
+      if (lastResolvedLogId !== fromNet) {
+        lastResolvedLogId = fromNet;
+        console.info('[Look it up] resolved item id from recent network request', fromNet);
+      }
+      trustedPlaybackItemId = fromNet;
+      return fromNet;
+    }
+
     const video = getVideoElement();
     if (video && !video.paused && video.readyState >= 2) {
+      queueSessionItemResolve(false);
+    } else if (/#\/?video/i.test(String(location.hash || ''))) {
       queueSessionItemResolve(false);
     }
 
     // Stream URLs often carry MediaSourceId (transcode) — never trust over playback state.
+    // Skip blob: — no guid there.
     const streamCandidates = [video?.currentSrc, video?.src];
     if (video) {
       try {
@@ -885,6 +1002,9 @@
     }
 
     for (const candidate of streamCandidates) {
+      if (!candidate || /^(blob:|mediasource:)/i.test(String(candidate))) {
+        continue;
+      }
       const id = extractItemIdFromStreamUrl(candidate);
       if (id && id !== lastBadItemId) {
         if (lastResolvedLogId !== id) {
@@ -1360,11 +1480,14 @@
         noItemLogAt = Date.now();
         const pm = getPlaybackManager();
         console.warn('[Look it up] video playing but no item id', {
+          client: CLIENT_VERSION,
           hasPlaybackManager: !!pm,
           hasPlayer: !!getActivePlayer(pm),
           hash: location.hash,
-          videoSrc: video?.currentSrc || video?.src || null
+          videoSrc: video?.currentSrc || video?.src || null,
+          hint: 'If client version is old, update custom JS to /LookItUp/script.js without ?v= pin'
         });
+        queueSessionItemResolve(true);
       }
       if (currentItemId && !videoPlaying) {
         missingItemTicks += 1;
@@ -1467,6 +1590,13 @@
         enabled: status && (status.enabled ?? status.Enabled),
         targetServer: status && (status.targetServer || status.TargetServer)
       });
+      if (server !== 'unknown' && String(server) !== CLIENT_VERSION) {
+        console.error(
+          '[Look it up] CLIENT/SERVER VERSION MISMATCH — custom JS injector is still loading an old script.',
+          'Update your injector to: <script src="/LookItUp/script.js"></script>',
+          '(no ?v= pin). Client=' + CLIENT_VERSION + ' server=' + server
+        );
+      }
       if (String(server).startsWith('1.0.5') || String(server).startsWith('1.0.4') || String(server).startsWith('1.0.3')) {
         console.warn('[Look it up] server plugin is outdated (' + server + '). Install 1.0.6.0+ for better name filtering.');
       }
@@ -1481,10 +1611,12 @@
 
   function start() {
     installPlaybackManagerDiscovery();
+    installApiClientPlaybackHooks();
     removeLegacyDetailPrepareUi();
     ensureStack();
     ensureStyles();
     setInterval(tick, POLL_MS);
+    setInterval(installApiClientPlaybackHooks, 2000);
     console.info('[Look it up] overlay ready', CLIENT_VERSION);
     logServerVersion(0);
     refreshPopupSettings(true);

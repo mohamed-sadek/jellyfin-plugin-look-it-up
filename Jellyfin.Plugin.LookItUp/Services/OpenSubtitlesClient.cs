@@ -28,6 +28,27 @@ public interface IOpenSubtitlesClient
         PluginConfiguration config,
         string destPath,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Same as <see cref="TryDownloadAsync"/> but reports why download was skipped or failed.
+    /// </summary>
+    Task<OpenSubtitlesAttempt> TryDownloadWithReasonAsync(
+        BaseItem item,
+        PluginConfiguration config,
+        string destPath,
+        CancellationToken cancellationToken);
+}
+
+/// <summary>
+/// Outcome of an OpenSubtitles attempt including a user-facing reason when empty.
+/// </summary>
+public sealed class OpenSubtitlesAttempt
+{
+    /// <summary>Gets the download result when successful.</summary>
+    public OpenSubtitlesDownloadResult? Result { get; init; }
+
+    /// <summary>Gets a short reason when <see cref="Result"/> is null.</summary>
+    public string? FailureReason { get; init; }
 }
 
 /// <summary>
@@ -84,9 +105,25 @@ public sealed class OpenSubtitlesClient : IOpenSubtitlesClient
         string destPath,
         CancellationToken cancellationToken)
     {
-        if (!IsConfigured(config) || string.IsNullOrWhiteSpace(item.Path))
+        var attempt = await TryDownloadWithReasonAsync(item, config, destPath, cancellationToken)
+            .ConfigureAwait(false);
+        return attempt.Result;
+    }
+
+    /// <inheritdoc />
+    public async Task<OpenSubtitlesAttempt> TryDownloadWithReasonAsync(
+        BaseItem item,
+        PluginConfiguration config,
+        string destPath,
+        CancellationToken cancellationToken)
+    {
+        if (!IsConfigured(config))
         {
-            return null;
+            return new OpenSubtitlesAttempt
+            {
+                FailureReason =
+                    "OpenSubtitles credentials missing — set username/password in Look it up settings, or configure the Jellyfin OpenSubtitles plugin."
+            };
         }
 
         var creds = OpenSubtitlesCredentialResolver.Resolve(config, _appPaths);
@@ -103,22 +140,30 @@ public sealed class OpenSubtitlesClient : IOpenSubtitlesClient
             _logger.LogWarning(
                 "OpenSubtitles: login required but no JWT obtained for {User}",
                 creds.Username);
-            return null;
+            return new OpenSubtitlesAttempt
+            {
+                FailureReason =
+                    "OpenSubtitles login failed — check username/password (opensubtitles.com account, not .org)."
+            };
         }
 
         var langs = (config.PreferredSubtitleLanguages ?? "en")
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         var langCsv = langs.Length == 0 ? "en" : string.Join(',', langs.Select(NormalizeLang));
 
-        var movieHash = OpenSubtitlesMovieHash.Compute(item.Path);
+        string? movieHash = null;
         long? bytes = null;
-        try
+        if (!string.IsNullOrWhiteSpace(item.Path) && File.Exists(item.Path))
         {
-            bytes = new FileInfo(item.Path).Length;
-        }
-        catch
-        {
-            // ignore
+            movieHash = OpenSubtitlesMovieHash.Compute(item.Path);
+            try
+            {
+                bytes = new FileInfo(item.Path).Length;
+            }
+            catch
+            {
+                // ignore
+            }
         }
 
         OpenSubtitlesHit? hit = null;
@@ -128,7 +173,7 @@ public sealed class OpenSubtitlesClient : IOpenSubtitlesClient
         {
             hit = await SearchBestAsync(
                     creds,
-                    BuildQuery(langCsv, movieHash: movieHash, moviebytesize: bytes),
+                    BuildQuery(langCsv, movieHash: movieHash, moviebytesize: bytes, item: item),
                     item,
                     preferHash: true,
                     cancellationToken)
@@ -150,13 +195,19 @@ public sealed class OpenSubtitlesClient : IOpenSubtitlesClient
         if (hit is null)
         {
             _logger.LogInformation("OpenSubtitles: no subtitle found for {Item}", item.Name);
-            return null;
+            return new OpenSubtitlesAttempt
+            {
+                FailureReason = "OpenSubtitles found no matching text subtitle for this title."
+            };
         }
 
         var link = await RequestDownloadLinkAsync(creds, hit.FileId, cancellationToken).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(link))
         {
-            return null;
+            return new OpenSubtitlesAttempt
+            {
+                FailureReason = "OpenSubtitles matched a file but download link request failed (quota or API error)."
+            };
         }
 
         using var dl = await Http.GetAsync(link, cancellationToken).ConfigureAwait(false);
@@ -167,7 +218,10 @@ public sealed class OpenSubtitlesClient : IOpenSubtitlesClient
                 "OpenSubtitles download failed HTTP {Status} for file {FileId}",
                 (int)dl.StatusCode,
                 hit.FileId);
-            return null;
+            return new OpenSubtitlesAttempt
+            {
+                FailureReason = $"OpenSubtitles download failed (HTTP {(int)dl.StatusCode})."
+            };
         }
 
         var dir = Path.GetDirectoryName(destPath);
@@ -178,13 +232,16 @@ public sealed class OpenSubtitlesClient : IOpenSubtitlesClient
 
         await File.WriteAllTextAsync(destPath, content, cancellationToken).ConfigureAwait(false);
 
-        return new OpenSubtitlesDownloadResult
+        return new OpenSubtitlesAttempt
         {
-            Content = content,
-            Path = destPath,
-            MatchedBy = matchedBy,
-            MovieHash = movieHash,
-            Label = $"opensubtitles:{hit.FileId}:{matchedBy}"
+            Result = new OpenSubtitlesDownloadResult
+            {
+                Content = content,
+                Path = destPath,
+                MatchedBy = matchedBy,
+                MovieHash = movieHash,
+                Label = $"opensubtitles:{hit.FileId}:{matchedBy}"
+            }
         };
     }
 
@@ -285,6 +342,34 @@ public sealed class OpenSubtitlesClient : IOpenSubtitlesClient
                 continue;
             }
 
+            if (item is Episode ep
+                && attrs.TryGetProperty("feature_details", out var details)
+                && details.ValueKind == JsonValueKind.Object)
+            {
+                var featureType = details.TryGetProperty("feature_type", out var ft) ? ft.GetString() : null;
+                if (!string.IsNullOrWhiteSpace(featureType)
+                    && !string.Equals(featureType, "Episode", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (ep.ParentIndexNumber is int seasonWanted
+                    && details.TryGetProperty("season_number", out var sn)
+                    && sn.TryGetInt32(out var seasonGot)
+                    && seasonGot != seasonWanted)
+                {
+                    continue;
+                }
+
+                if (ep.IndexNumber is int episodeWanted
+                    && details.TryGetProperty("episode_number", out var en)
+                    && en.TryGetInt32(out var episodeGot)
+                    && episodeGot != episodeWanted)
+                {
+                    continue;
+                }
+            }
+
             var downloads = attrs.TryGetProperty("download_count", out var dc) ? dc.GetInt32() : 0;
             double? fps = null;
             if (attrs.TryGetProperty("fps", out var fpsEl) && fpsEl.ValueKind == JsonValueKind.Number)
@@ -308,6 +393,12 @@ public sealed class OpenSubtitlesClient : IOpenSubtitlesClient
             if (preferHash)
             {
                 score += 10_000;
+            }
+
+            if (attrs.TryGetProperty("moviehash_match", out var hashMatch)
+                && hashMatch.ValueKind == JsonValueKind.True)
+            {
+                score += 5_000;
             }
 
             if (videoFps is > 0 && fps is > 0 && Math.Abs(videoFps.Value - fps.Value) < 0.15)
@@ -396,7 +487,22 @@ public sealed class OpenSubtitlesClient : IOpenSubtitlesClient
 
         if (item is not null)
         {
+            if (item is Episode)
+            {
+                parts.Add("type=episode");
+            }
+            else
+            {
+                parts.Add("type=movie");
+            }
+
             var imdb = item.GetProviderId(MetadataProvider.Imdb);
+            if (string.IsNullOrWhiteSpace(imdb) && item is Episode episodeForSeries)
+            {
+                imdb = episodeForSeries.Series?.GetProviderId(MetadataProvider.Imdb)
+                       ?? episodeForSeries.GetProviderId(MetadataProvider.Imdb);
+            }
+
             if (!string.IsNullOrWhiteSpace(imdb))
             {
                 var digits = new string(imdb.Where(char.IsDigit).ToArray());
@@ -423,9 +529,24 @@ public sealed class OpenSubtitlesClient : IOpenSubtitlesClient
                 {
                     parts.Add("episode_number=" + episode);
                 }
-            }
 
-            if (!string.IsNullOrWhiteSpace(item.Path))
+                var seriesName = !string.IsNullOrWhiteSpace(ep.SeriesName)
+                    ? ep.SeriesName
+                    : ep.Series?.Name;
+                if (!string.IsNullOrWhiteSpace(seriesName)
+                    && !parts.Any(p => p.StartsWith("imdb_id=", StringComparison.Ordinal)))
+                {
+                    parts.Add("query=" + Uri.EscapeDataString(seriesName));
+                }
+            }
+            else if (!string.IsNullOrWhiteSpace(item.Name)
+                     && !parts.Any(p => p.StartsWith("imdb_id=", StringComparison.Ordinal)))
+            {
+                parts.Add("query=" + Uri.EscapeDataString(item.Name));
+            }
+            else if (!string.IsNullOrWhiteSpace(item.Path)
+                     && !parts.Any(p => p.StartsWith("imdb_id=", StringComparison.Ordinal)
+                                        || p.StartsWith("query=", StringComparison.Ordinal)))
             {
                 parts.Add("query=" + Uri.EscapeDataString(Path.GetFileNameWithoutExtension(item.Path)));
             }

@@ -65,8 +65,14 @@ public static class OpenSubtitlesCredentialResolver
         if (username is null || password is null)
         {
             var imported = ReadJellyfinPluginCredentials(appPaths);
-            if (imported is not null && !imported.CredentialsInvalid)
+            if (imported is not null)
             {
+                if (imported.CredentialsInvalid)
+                {
+                    // Still try credentials — Jellyfin may have marked them invalid earlier.
+                    // OpenSubtitles login will fail clearly if they are still wrong.
+                }
+
                 if (username is null && !string.IsNullOrWhiteSpace(imported.Username))
                 {
                     username = imported.Username.Trim();

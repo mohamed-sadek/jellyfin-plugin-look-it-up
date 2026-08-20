@@ -80,7 +80,18 @@
                         <div class="fieldDescription">Comma-separated codes (e.g. en,eng).</div>
                     </div>
                     <div class="fieldDescription" style="margin-top:0.5em;">
-                        When no external or embedded text subtitles are found, Look it up automatically tries OpenSubtitles using your Jellyfin OpenSubtitles plugin login. Optional API key below overrides the shared Jellyfin key.
+                        When no external or embedded text subtitles are found, Look it up automatically tries OpenSubtitles.
+                        Credentials are imported from the Jellyfin OpenSubtitles plugin when the fields below are empty.
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="txtOpenSubtitlesUsername">OpenSubtitles username</label>
+                        <input id="txtOpenSubtitlesUsername" type="text" is="emby-input" autocomplete="username" />
+                        <div class="fieldDescription">opensubtitles.com account (not .org). Leave blank to use Jellyfin OpenSubtitles plugin login.</div>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="txtOpenSubtitlesPassword">OpenSubtitles password</label>
+                        <input id="txtOpenSubtitlesPassword" type="password" is="emby-input" autocomplete="new-password" readonly onfocus="this.removeAttribute('readonly');" />
+                        <div class="fieldDescription">Leave blank to keep the saved password / Jellyfin plugin password.</div>
                     </div>
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="txtOpenSubtitlesApiKey">OpenSubtitles API key (optional)</label>
@@ -154,7 +165,7 @@
                     <p>Paste into JavaScript Injector (not an HTML <code>&lt;script&gt;</code> tag):</p>
                     <pre style="white-space:pre-wrap;word-break:break-all;background:rgba(0,0,0,.08);padding:12px;border-radius:8px;">(function () {
   var s = document.createElement('script');
-  s.src = '/LookItUp/script.js?v=1.2.42';
+  s.src = '/LookItUp/script.js?v=1.2.43';
   s.async = true;
   document.head.appendChild(s);
 })();</pre>
@@ -250,6 +261,9 @@
                     document.querySelector('#txtIncrementalAiPerWindow').value = cfgGet(config, 'IncrementalAiNamesPerWindow', 'incrementalAiNamesPerWindow', 40);
                     document.querySelector('#txtMaxAnnotations').value = config.MaxAnnotationsPerItem || 60;
                     document.querySelector('#txtPreferredSubtitleLanguages').value = config.PreferredSubtitleLanguages || 'en';
+                    document.querySelector('#txtOpenSubtitlesUsername').value = config.OpenSubtitlesUsername || config.openSubtitlesUsername || '';
+                    document.querySelector('#txtOpenSubtitlesPassword').placeholder = (config.OpenSubtitlesPassword || config.openSubtitlesPassword) ? '(saved)' : '(not set — will try Jellyfin OpenSubtitles plugin)';
+                    document.querySelector('#txtOpenSubtitlesPassword').value = '';
                     document.querySelector('#txtOpenSubtitlesApiKey').placeholder = (config.OpenSubtitlesApiKey || config.openSubtitlesApiKey) ? '(saved)' : '(not set)';
                     document.querySelector('#txtOpenSubtitlesApiKey').value = '';
                     var provider = config.AiProvider || 'Groq';
@@ -288,6 +302,14 @@
                     config.MaxAnnotationsPerItem = parseInt(document.querySelector('#txtMaxAnnotations').value, 10) || 60;
                     config.PreferredSubtitleLanguages = document.querySelector('#txtPreferredSubtitleLanguages').value || 'en';
                     config.OpenSubtitlesEnabled = true;
+                    config.OpenSubtitlesUsername = (document.querySelector('#txtOpenSubtitlesUsername').value || '').trim();
+                    var osPass = (document.querySelector('#txtOpenSubtitlesPassword').value || '').trim();
+                    if (osPass.length > 0) {
+                        config.OpenSubtitlesPassword = osPass;
+                    } else {
+                        delete config.OpenSubtitlesPassword;
+                        delete config.openSubtitlesPassword;
+                    }
                     config.AiProvider = document.querySelector('#selAiProvider').value || 'Groq';
                     config.AiModel = document.querySelector('#txtAiModel').value || 'openai/gpt-oss-20b';
                     config.AiBaseUrl = document.querySelector('#txtAiBaseUrl').value || 'https://api.groq.com/openai/v1';

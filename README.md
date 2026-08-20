@@ -23,6 +23,7 @@ Server plugins cannot inject the player UI. Add this to your Jellyfin Web client
 <script src="/LookItUp/script.js"></script>
 ```
 
+Do **not** pin an old `?v=1.2.xx` query string — that freezes the browser on an outdated overlay. The plugin already sends `Cache-Control: no-cache` on `script.js`.
 ## How it works
 
 1. **Server plugin** finds an external `.srt` / `.vtt` subtitle for the playing item

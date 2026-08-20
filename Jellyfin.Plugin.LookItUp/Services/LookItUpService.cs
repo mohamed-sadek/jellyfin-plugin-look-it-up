@@ -127,6 +127,7 @@ public class LookItUpService : ILookItUpService
     private readonly string _openSubtitlesDir;
     private readonly ConcurrentDictionary<Guid, SubtitleContent> _subtitleMemory = new();
     private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _aheadLocks = new();
+    private string? _lastOpenSubtitlesFailureReason;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="LookItUpService"/> class.
@@ -441,12 +442,15 @@ public class LookItUpService : ILookItUpService
                 cache.PrepareOutcome = "no-subtitles";
                 cache.ScannedAtUtc = DateTime.UtcNow;
                 PersistCache(item, cache, config);
+                var noSubsWarning = string.IsNullOrWhiteSpace(_lastOpenSubtitlesFailureReason)
+                    ? "No readable text subtitles found."
+                    : "No readable text subtitles found. " + _lastOpenSubtitlesFailureReason;
                 return new PrepareAheadResult
                 {
                     Changed = true,
                     Cache = cache,
                     Mode = "none",
-                    Warning = "No readable text subtitles found."
+                    Warning = noSubsWarning
                 };
             }
 
@@ -610,7 +614,9 @@ public class LookItUpService : ILookItUpService
             {
                 ItemId = itemId,
                 ItemName = item.Name,
-                Warning = "No readable text subtitles found."
+                Warning = string.IsNullOrWhiteSpace(_lastOpenSubtitlesFailureReason)
+                    ? "No readable text subtitles found."
+                    : "No readable text subtitles found. " + _lastOpenSubtitlesFailureReason
             };
         }
 
@@ -730,7 +736,9 @@ public class LookItUpService : ILookItUpService
                 SeasonNumber = item.ParentIndexNumber,
                 EpisodeNumber = item.IndexNumber,
                 AlreadyPrepared = already,
-                Warning = "No readable text subtitles found."
+                Warning = string.IsNullOrWhiteSpace(_lastOpenSubtitlesFailureReason)
+                    ? "No readable text subtitles found."
+                    : "No readable text subtitles found. " + _lastOpenSubtitlesFailureReason
             };
         }
 
@@ -1111,7 +1119,9 @@ public class LookItUpService : ILookItUpService
                 {
                     Cache = empty,
                     Mode = "none",
-                    Warning = "No readable text subtitles found."
+                    Warning = string.IsNullOrWhiteSpace(_lastOpenSubtitlesFailureReason)
+                        ? "No readable text subtitles found."
+                        : "No readable text subtitles found. " + _lastOpenSubtitlesFailureReason
                 };
             }
 
@@ -1626,6 +1636,8 @@ public class LookItUpService : ILookItUpService
         string preferredLanguages,
         CancellationToken cancellationToken)
     {
+        _lastOpenSubtitlesFailureReason = null;
+
         var preferred = (preferredLanguages ?? "en")
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Select(NormalizeLang)
@@ -1680,7 +1692,7 @@ public class LookItUpService : ILookItUpService
         CancellationToken cancellationToken)
     {
         var config = Plugin.Instance?.Configuration;
-        if (config is null || !_openSubtitles.IsConfigured(config))
+        if (config is null)
         {
             return null;
         }
@@ -1688,19 +1700,34 @@ public class LookItUpService : ILookItUpService
         try
         {
             var dest = Path.Combine(_openSubtitlesDir, $"{item.Id:N}.srt");
-            var os = await _openSubtitles
-                .TryDownloadAsync(item, config, dest, cancellationToken)
+            var attempt = await _openSubtitles
+                .TryDownloadWithReasonAsync(item, config, dest, cancellationToken)
                 .ConfigureAwait(false);
-            if (os is null)
+            if (attempt.Result is null)
             {
+                if (!string.IsNullOrWhiteSpace(attempt.FailureReason))
+                {
+                    _logger.LogWarning(
+                        "OpenSubtitles fallback skipped for {Item}: {Reason}",
+                        item.Name,
+                        attempt.FailureReason);
+                    _lastOpenSubtitlesFailureReason = attempt.FailureReason;
+                }
+
                 return null;
             }
 
+            _lastOpenSubtitlesFailureReason = null;
             _logger.LogInformation(
                 "Using OpenSubtitles for {Item}: matchedBy={MatchedBy}",
                 item.Name,
-                os.MatchedBy);
-            return new SubtitleContent(os.Content, os.Path, "opensubtitles", os.MatchedBy, os.MovieHash);
+                attempt.Result.MatchedBy);
+            return new SubtitleContent(
+                attempt.Result.Content,
+                attempt.Result.Path,
+                "opensubtitles",
+                attempt.Result.MatchedBy,
+                attempt.Result.MovieHash);
         }
         catch (OpenSubtitlesRateLimitedException)
         {
@@ -1708,6 +1735,7 @@ public class LookItUpService : ILookItUpService
         }
         catch (Exception ex)
         {
+            _lastOpenSubtitlesFailureReason = "OpenSubtitles fallback failed: " + ex.Message;
             _logger.LogWarning(ex, "OpenSubtitles fallback failed for {Item}", item.Name);
             return null;
         }

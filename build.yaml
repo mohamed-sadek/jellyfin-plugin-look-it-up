@@ -1,7 +1,7 @@
 ---
 name: "Look it up"
 guid: "a8ab0fed-cac9-406d-b98b-58161bf970b8"
-version: "1.2.42.0"
+version: "1.2.43.0"
 targetAbi: "10.11.0.0"
 framework: "net9.0"
 overview: "AI-prepare subtitle references, then show short popups during playback"
@@ -13,5 +13,5 @@ owner: "lookitup"
 artifacts:
   - "Jellyfin.Plugin.LookItUp.dll"
 changelog: >
-  OpenSubtitles always falls back when no text subs; stronger MediaSourceId→ItemId resolution;
-  remove detail-page prepare popup (background-only prepare).
+  Blob/#/video ItemId via Sessions/PlaybackInfo; OpenSubtitles clearer errors + better episode search;
+  restore OpenSubtitles username/password fields; warn on old injector pin.
