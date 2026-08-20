@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  const CLIENT_VERSION = '1.2.38.0';
+  const CLIENT_VERSION = '1.2.39.0';
   const STYLE_ID = 'lookitup-styles';
   const STACK_ID = 'lookitup-stack';
   const POPUP_ID = 'lookitup-popup'; // legacy single-popup id (removed on upgrade)
@@ -62,6 +62,7 @@
   let adminUserCheckedAt = 0;
   let incrementalPrepareOnPlayback = true;
   let incrementalPrepareWindowMs = DEFAULT_INCREMENTAL_WINDOW_MS;
+  let showPopupsDuringPlayback = true;
   let preparedThroughMs = 0;
   let fullyPrepared = false;
   let prepareAheadInFlight = false;
@@ -870,6 +871,10 @@
     }
     preparedThroughMs = Number(pick(data, 'preparedThroughMs', 'PreparedThroughMs') || preparedThroughMs || 0);
     fullyPrepared = !!(pick(data, 'fullyPrepared', 'FullyPrepared'));
+    const showPopups = pick(data, 'showPopupsDuringPlayback', 'ShowPopupsDuringPlayback');
+    if (showPopups !== undefined && showPopups !== null) {
+      showPopupsDuringPlayback = showPopups !== false;
+    }
   }
 
   function prepareAheadIntervalMs(playbackMs) {
@@ -1058,6 +1063,9 @@
   }
 
   function tryShowForCurrentTime() {
+    if (!showPopupsDuringPlayback) {
+      return;
+    }
     ensureStack();
     const now = getCurrentTimeMs();
     if (now == null || !annotations.length) {

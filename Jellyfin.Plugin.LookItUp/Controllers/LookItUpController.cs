@@ -73,6 +73,7 @@ public class LookItUpController : ControllerBase
                 itemId,
                 itemName = item.Name,
                 enabled = config?.Enabled ?? false,
+                showPopupsDuringPlayback = config?.ShowPopupsDuringPlayback ?? true,
                 prepared = prepared || annotations.Count > 0 || (cache?.Annotations.Count > 0),
                 disabled,
                 preparedAtUtc = cache?.ScannedAtUtc,
@@ -95,10 +96,14 @@ public class LookItUpController : ControllerBase
                 annotations,
                 aiDecisions = config?.StoreAiDecisions == true ? cache?.AiDecisions : null,
                 hint = prepared || annotations.Count > 0 || disabled
-                    ? (disabled ? "Popups disabled for this item." : null)
+                    ? (disabled
+                        ? "Popups disabled for this item."
+                        : config?.ShowPopupsDuringPlayback == false
+                            ? "Popups hidden globally — JSON cache still builds during playback."
+                            : null)
                     : config?.IncrementalPrepareOnPlayback == true
                         ? "Preparing annotations during playback…"
-                        : "No prepared annotations. Run Look it up library prepare (Dashboard → Scheduled Tasks or plugin page)."
+                        : "No prepared annotations yet. Enable incremental prepare and play the item."
             });
         }
         catch (Exception ex)
@@ -168,6 +173,7 @@ public class LookItUpController : ControllerBase
                     : annotations,
                 aiDecisions = config?.StoreAiDecisions == true ? cache?.AiDecisions : null,
                 windowAiDecisions,
+                showPopupsDuringPlayback = config?.ShowPopupsDuringPlayback ?? true,
                 window = result.Window,
                 popup = BuildPopupSettings(config)
             });
@@ -533,6 +539,7 @@ public class LookItUpController : ControllerBase
             plugin = Plugin.Instance?.Name,
             version = Plugin.Instance?.Version?.ToString(),
             enabled = config?.Enabled ?? false,
+            showPopupsDuringPlayback = config?.ShowPopupsDuringPlayback ?? true,
             wikipediaLanguage = config?.WikipediaLanguage,
             scanOnPlayback = config?.ScanOnPlayback ?? false,
             incrementalPrepareOnPlayback = config?.IncrementalPrepareOnPlayback ?? false,

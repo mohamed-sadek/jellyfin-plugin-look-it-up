@@ -9,17 +9,13 @@ namespace Jellyfin.Plugin.LookItUp.ScheduledTasks;
 /// </summary>
 public class LookItUpPrepareTask : IScheduledTask
 {
-    private readonly ILookItUpPrepareService _prepareService;
     private readonly ILogger<LookItUpPrepareTask> _logger;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="LookItUpPrepareTask"/> class.
     /// </summary>
-    public LookItUpPrepareTask(
-        ILookItUpPrepareService prepareService,
-        ILogger<LookItUpPrepareTask> logger)
+    public LookItUpPrepareTask(ILogger<LookItUpPrepareTask> logger)
     {
-        _prepareService = prepareService;
         _logger = logger;
     }
 
@@ -31,7 +27,7 @@ public class LookItUpPrepareTask : IScheduledTask
 
     /// <inheritdoc />
     public string Description =>
-        "Prepares Look it up annotations overnight: finds/downloads subtitles, verifies names with AI under rate limits, retries failures.";
+        "Disabled — Look it up uses incremental prepare during playback instead of overnight library scans.";
 
     /// <inheritdoc />
     public string Category => "Look it up";
@@ -39,24 +35,13 @@ public class LookItUpPrepareTask : IScheduledTask
     /// <inheritdoc />
     public async Task ExecuteAsync(IProgress<double> progress, CancellationToken cancellationToken)
     {
-        _logger.LogInformation("Scheduled Look it up library prepare starting");
-        await _prepareService
-            .RunLibraryPrepareAsync(force: false, progress, cancellationToken)
-            .ConfigureAwait(false);
+        _logger.LogInformation(
+            "Scheduled Look it up library prepare is disabled (incremental playback prepare is used instead)");
         progress.Report(100);
+        await Task.CompletedTask.ConfigureAwait(false);
     }
 
     /// <inheritdoc />
     public IEnumerable<TaskTriggerInfo> GetDefaultTriggers()
-    {
-        // Daily at 02:00 local — editable in Dashboard → Scheduled Tasks.
-        return
-        [
-            new TaskTriggerInfo
-            {
-                Type = TaskTriggerInfoType.DailyTrigger,
-                TimeOfDayTicks = TimeSpan.FromHours(2).Ticks
-            }
-        ];
-    }
+        => [];
 }

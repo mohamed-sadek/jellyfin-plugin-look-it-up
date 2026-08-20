@@ -12,10 +12,9 @@
                     <div class="sectionTitleContainer flex align-items-center">
                         <h2 class="sectionTitle">Look it up</h2>
                     </div>
-
                     <p>
-                        Precomputes timed Wikipedia annotations from subtitles, then shows short popups during playback.
-                        Prefer <strong>Prepare library</strong> over scanning while watching.
+                        Builds a <code>*.lookitup.json</code> cache incrementally while you watch.
+                        Popups are optional — turn them off to collect data without on-screen distractions.
                     </p>
 
                     <div class="checkboxContainer checkboxContainer-withDescription">
@@ -24,164 +23,119 @@
                             <span>Enable Look it up</span>
                         </label>
                     </div>
-
-                    <div class="sectionTitleContainer flex align-items-center" style="margin-top:1.5em;">
-                        <h2 class="sectionTitle">Prepare library</h2>
-                    </div>
-                    <p>
-                        Scans movies/episodes offline, extracts text subtitles, looks up names, and stores JSON for playback.
-                        You can also run this from <em>Dashboard → Scheduled Tasks → Look it up — prepare library</em>.
-                    </p>
                     <div class="checkboxContainer checkboxContainer-withDescription">
                         <label class="emby-checkbox-label">
-                            <input id="chkPrepareMovies" type="checkbox" is="emby-checkbox" />
-                            <span>Include movies</span>
+                            <input id="chkShowPopups" type="checkbox" is="emby-checkbox" />
+                            <span>Show popups during playback</span>
                         </label>
+                        <div class="fieldDescription">When off, incremental prepare still runs and sidecar JSON is still written.</div>
                     </div>
                     <div class="checkboxContainer checkboxContainer-withDescription">
                         <label class="emby-checkbox-label">
-                            <input id="chkPrepareEpisodes" type="checkbox" is="emby-checkbox" />
-                            <span>Include TV episodes</span>
-                        </label>
-                    </div>
-                    <div class="checkboxContainer checkboxContainer-withDescription">
-                        <label class="emby-checkbox-label">
-                            <input id="chkSkipPrepared" type="checkbox" is="emby-checkbox" />
-                            <span>Skip items already prepared</span>
+                            <input id="chkIncrementalPrepare" type="checkbox" is="emby-checkbox" />
+                            <span>Prepare incrementally during playback</span>
                         </label>
                     </div>
                     <div class="checkboxContainer checkboxContainer-withDescription">
                         <label class="emby-checkbox-label">
                             <input id="chkWriteSidecar" type="checkbox" is="emby-checkbox" />
-                            <span>Also write <code>*.lookitup.json</code> next to media (when writable)</span>
+                            <span>Write <code>*.lookitup.json</code> next to media</span>
                         </label>
                     </div>
                     <div class="checkboxContainer checkboxContainer-withDescription">
                         <label class="emby-checkbox-label">
-                            <input id="chkScanOnPlayback" type="checkbox" is="emby-checkbox" />
-                            <span>Allow on-demand prepare during playback (slower; not recommended)</span>
+                            <input id="chkStoreAiDecisions" type="checkbox" is="emby-checkbox" />
+                            <span>Store AI keep/reject reasons in cache</span>
                         </label>
                     </div>
-                    <div class="checkboxContainer checkboxContainer-withDescription">
-                        <label class="emby-checkbox-label">
-                            <input id="chkIncrementalPrepare" type="checkbox" is="emby-checkbox" />
-                            <span>Prepare incrementally during playback (recommended — scans ahead in time windows)</span>
-                        </label>
+
+                    <div class="sectionTitleContainer flex align-items-center" style="margin-top:1.5em;">
+                        <h2 class="sectionTitle">Incremental prepare</h2>
                     </div>
                     <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="txtIncrementalWindowMs">Incremental prepare window (ms)</label>
+                        <label class="inputLabel inputLabelUnfocused" for="txtIncrementalBootstrapMs">Bootstrap window (ms)</label>
+                        <input id="txtIncrementalBootstrapMs" type="number" is="emby-input" min="30000" max="300000" step="30000" />
+                        <div class="fieldDescription">Smaller chunks at start / after seek so opening-minute references finish in time (default 60000).</div>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="txtIncrementalWindowMs">Lookahead window (ms)</label>
                         <input id="txtIncrementalWindowMs" type="number" is="emby-input" min="60000" max="900000" step="60000" />
                         <div class="fieldDescription">How far ahead to prepare once caught up (default 300000 = 5 minutes).</div>
                     </div>
                     <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="txtIncrementalBootstrapMs">Bootstrap window at start / after seek (ms)</label>
-                        <input id="txtIncrementalBootstrapMs" type="number" is="emby-input" min="30000" max="300000" step="30000" />
-                        <div class="fieldDescription">Smaller first chunks so opening-minute references finish before playback passes them (default 60000 = 1 minute).</div>
-                    </div>
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="txtIncrementalAiPerWindow">AI names per playback window</label>
+                        <label class="inputLabel inputLabelUnfocused" for="txtIncrementalAiPerWindow">AI names per window</label>
                         <input id="txtIncrementalAiPerWindow" type="number" is="emby-input" min="5" max="250" />
-                        <div class="fieldDescription">Max Groq verifications per incremental window (default 40). Heuristics send more candidates; AI decides what gets a popup.</div>
                     </div>
-
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="txtPrepareItemId">Prepare one item (id)</label>
-                        <input id="txtPrepareItemId" type="text" is="emby-input" placeholder="72b39aa7-cd22-99a0-06b8-7945fa520a04" />
-                        <div class="fieldDescription">Use this for testing a single episode/movie. Do not use Prepare library for that.</div>
-                    </div>
-                    <div style="display:flex;gap:12px;flex-wrap:wrap;margin:1em 0;">
-                        <button is="emby-button" type="button" id="btnPreviewNames" class="raised emby-button">
-                            <span>Preview names (no AI)</span>
-                        </button>
-                        <button is="emby-button" type="button" id="btnPrepareOne" class="raised button-submit emby-button">
-                            <span>Prepare this item</span>
-                        </button>
-                        <button is="emby-button" type="button" id="btnCancelPrepare" class="raised button-cancel emby-button">
-                            <span>Stop library prepare</span>
-                        </button>
-                        <button is="emby-button" type="button" id="btnRefreshStatus" class="raised emby-button">
-                            <span>Refresh status</span>
-                        </button>
-                    </div>
-                    <div style="display:flex;gap:12px;flex-wrap:wrap;margin:0 0 1em;">
-                        <button is="emby-button" type="button" id="btnRunOvernightNow" class="raised button-submit emby-button">
-                            <span>Run overnight prepare now (test — this show only)</span>
-                        </button>
-                        <button is="emby-button" type="button" id="btnPrepareLibrary" class="raised emby-button">
-                            <span>Prepare entire library…</span>
-                        </button>
-                        <button is="emby-button" type="button" id="btnPrepareForce" class="raised emby-button">
-                            <span>Force re-prepare entire library…</span>
-                        </button>
-                        <button is="emby-button" type="button" id="btnClearGenerated" class="raised button-cancel emby-button">
-                            <span>Delete all generated files…</span>
-                        </button>
-                    </div>
-                    <div class="fieldDescription" style="margin-bottom:1em;">
-                        <strong>Run overnight prepare now (test)</strong> runs the overnight prepare pipeline
-                        (skip prepared, rate limits, OpenSubtitles, in-scope retries) for
-                        <strong>one series only</strong>:
-                        <code>828c0e1f7853d004f546f66370c8f79a</code>.
-                        Use <em>Prepare entire library</em> for the full catalog / scheduled-task equivalent.
-                        <br /><strong>Delete all generated files</strong> removes annotation caches, extracted/downloaded subtitle caches,
-                        media-folder <code>*.lookitup.json</code> sidecars, and the prepare retry queue. Plugin settings and API keys are kept.
-                    </div>
-                    <pre id="prepareStatusBox" style="white-space:pre-wrap;word-break:break-word;background:rgba(0,0,0,.08);padding:12px;border-radius:8px;min-height:4em;">Status will appear here.</pre>
-
-                    <div class="sectionTitleContainer flex align-items-center" style="margin-top:1.5em;">
-                        <h2 class="sectionTitle">Lookup settings</h2>
-                    </div>
-
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="txtWikipediaLanguage">Wikipedia language</label>
-                        <input id="txtWikipediaLanguage" type="text" is="emby-input" />
-                        <div class="fieldDescription">Language code for Wikipedia summaries (e.g. en, fr, de).</div>
-                    </div>
-
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="txtPreferredSubtitleLanguages">Preferred subtitle languages</label>
-                        <input id="txtPreferredSubtitleLanguages" type="text" is="emby-input" />
-                        <div class="fieldDescription">Comma-separated language codes (e.g. en,eng).</div>
-                    </div>
-
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="txtMaxAnnotations">Max annotations per item</label>
                         <input id="txtMaxAnnotations" type="number" is="emby-input" min="1" max="200" />
                     </div>
 
+                    <div class="sectionTitleContainer flex align-items-center" style="margin-top:1.5em;">
+                        <h2 class="sectionTitle">Subtitles</h2>
+                    </div>
                     <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="txtMinEntityLength">Minimum entity length</label>
-                        <input id="txtMinEntityLength" type="number" is="emby-input" min="2" max="40" />
+                        <label class="inputLabel inputLabelUnfocused" for="txtPreferredSubtitleLanguages">Preferred languages</label>
+                        <input id="txtPreferredSubtitleLanguages" type="text" is="emby-input" />
+                        <div class="fieldDescription">Comma-separated codes (e.g. en,eng).</div>
+                    </div>
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label class="emby-checkbox-label">
+                            <input id="chkOpenSubtitlesEnabled" type="checkbox" is="emby-checkbox" />
+                            <span>Download from OpenSubtitles when no local/embedded subs</span>
+                        </label>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="txtOpenSubtitlesApiKey">OpenSubtitles API key</label>
+                        <input id="txtOpenSubtitlesApiKey" type="password" is="emby-input" autocomplete="new-password" readonly onfocus="this.removeAttribute('readonly');" />
+                    </div>
+
+                    <div class="sectionTitleContainer flex align-items-center" style="margin-top:1.5em;">
+                        <h2 class="sectionTitle">AI verification</h2>
+                    </div>
+                    <div class="selectContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="selAiProvider">Provider</label>
+                        <select id="selAiProvider" is="emby-select" class="emby-select-withcolor emby-select">
+                            <option value="Groq">Groq</option>
+                            <option value="OpenAI">OpenAI</option>
+                            <option value="OpenRouter">OpenRouter</option>
+                            <option value="Ollama">Ollama (local)</option>
+                            <option value="None">None (legacy Wikipedia)</option>
+                        </select>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="txtAiApiKey">API key</label>
+                        <input id="txtAiApiKey" type="password" is="emby-input" autocomplete="new-password" readonly onfocus="this.removeAttribute('readonly');" />
+                        <div class="fieldDescription">Leave blank to keep the saved key.</div>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="txtAiModel">Model</label>
+                        <input id="txtAiModel" type="text" is="emby-input" />
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="txtAiBaseUrl">Base URL</label>
+                        <input id="txtAiBaseUrl" type="text" is="emby-input" />
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="txtPrepareMaxRpm">Max AI calls per minute</label>
+                        <input id="txtPrepareMaxRpm" type="number" is="emby-input" min="1" max="120" />
                     </div>
 
                     <div class="sectionTitleContainer flex align-items-center" style="margin-top:1.5em;">
                         <h2 class="sectionTitle">Popup appearance</h2>
                     </div>
-                    <p>These apply at playback time (saved in plugin config; no need to re-prepare).</p>
-
+                    <p>Only applies when popups are enabled.</p>
                     <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="txtPopupDurationSec">How long it stays (seconds)</label>
+                        <label class="inputLabel inputLabelUnfocused" for="txtPopupDurationSec">Duration (seconds)</label>
                         <input id="txtPopupDurationSec" type="number" is="emby-input" min="1" max="30" step="1" />
-                        <div class="fieldDescription">1–30 seconds on screen after a name triggers.</div>
                     </div>
                     <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="txtPopupDelaySec">Delay before showing (seconds)</label>
+                        <label class="inputLabel inputLabelUnfocused" for="txtPopupDelaySec">Delay before show (seconds)</label>
                         <input id="txtPopupDelaySec" type="number" is="emby-input" min="0" max="10" step="0.5" />
-                        <div class="fieldDescription">Wait after the subtitle cue before the popup appears. Default 1 second. Use 0 for immediate.</div>
                     </div>
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="txtPopupFontSize">Font size (px)</label>
                         <input id="txtPopupFontSize" type="number" is="emby-input" min="10" max="48" />
-                    </div>
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="txtPopupTextColor">Text color</label>
-                        <input id="txtPopupTextColor" type="text" is="emby-input" placeholder="#f7fafc" />
-                        <div class="fieldDescription">Any CSS color, e.g. <code>#f7fafc</code> or <code>white</code>.</div>
-                    </div>
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="txtPopupBgColor">Background color</label>
-                        <input id="txtPopupBgColor" type="text" is="emby-input" placeholder="rgba(8, 12, 20, 0.96)" />
-                        <div class="fieldDescription">Use rgba for translucency, e.g. <code>rgba(8, 12, 20, 0.96)</code>.</div>
                     </div>
                     <div class="selectContainer">
                         <label class="inputLabel inputLabelUnfocused" for="selPopupPlacement">Placement</label>
@@ -195,111 +149,24 @@
                             <option value="Center">Center</option>
                         </select>
                     </div>
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="txtPopupEdgeOffset">Edge offset (%)</label>
-                        <input id="txtPopupEdgeOffset" type="number" is="emby-input" min="2" max="40" />
-                        <div class="fieldDescription">Distance from the top/bottom edge of the screen (viewport %).</div>
-                    </div>
 
                     <div class="sectionTitleContainer flex align-items-center" style="margin-top:1.5em;">
-                        <h2 class="sectionTitle">AI extraction</h2>
+                        <h2 class="sectionTitle">Web client</h2>
                     </div>
-                    <p>
-                        During <strong>prepare</strong>, every local name candidate from subtitles is verified with AI
-                        (one request each, rate-limited in batches). Use the safety cap below if needed.
-                        If Groq is flaky, switch to <strong>OpenAI</strong> or <strong>OpenRouter</strong>.
-                    </p>
-                    <div class="selectContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="selAiProvider">AI provider</label>
-                        <select id="selAiProvider" is="emby-select" class="emby-select-withcolor emby-select">
-                            <option value="Groq">Groq</option>
-                            <option value="OpenAI">OpenAI</option>
-                            <option value="OpenRouter">OpenRouter</option>
-                            <option value="Ollama">Ollama (local)</option>
-                            <option value="None">None (legacy Wikipedia)</option>
-                        </select>
-                        <div class="fieldDescription">Changing provider fills a recommended model and base URL. You still need that provider’s API key.</div>
-                    </div>
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="txtAiApiKey">AI API key</label>
-                        <input id="txtAiApiKey" type="password" is="emby-input" autocomplete="new-password" data-lpignore="true" data-1p-ignore="true" readonly onfocus="this.removeAttribute('readonly');" />
-                        <div class="fieldDescription">Leave blank to keep the existing key. Only paste a new key when replacing it. Groq: console.groq.com/keys · OpenAI: platform.openai.com/api-keys · OpenRouter: openrouter.ai/keys</div>
-                    </div>
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="txtAiModel">AI model</label>
-                        <input id="txtAiModel" type="text" is="emby-input" />
-                        <div class="fieldDescription">Groq: <code>openai/gpt-oss-20b</code>. OpenAI: <code>gpt-4o-mini</code>. OpenRouter: <code>openai/gpt-4o-mini</code>.</div>
-                    </div>
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="txtAiBaseUrl">AI base URL</label>
-                        <input id="txtAiBaseUrl" type="text" is="emby-input" />
-                        <div class="fieldDescription">Usually filled by the provider preset. Ollama default: <code>http://127.0.0.1:11434/v1</code>.</div>
-                    </div>
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="txtAiNamesPerPrepare">AI names per prepare (0 = all)</label>
-                        <input id="txtAiNamesPerPrepare" type="number" is="emby-input" min="0" max="200" />
-                        <div class="fieldDescription">Safety cap on AI verifies per item. Use <code>0</code> to send every local candidate (up to 200). Prepare runs in rate-limited batches.</div>
-                    </div>
-                    <div class="checkboxContainer checkboxContainer-withDescription">
-                        <label class="emby-checkbox-label">
-                            <input id="chkStoreAiDecisions" type="checkbox" is="emby-checkbox" />
-                            <span>Store AI keep/reject reasons in cache</span>
-                        </label>
-                        <div class="fieldDescription">Writes an <code>aiDecisions</code> audit trail to *.lookitup.json and API responses — useful for debugging why terms were kept or dropped.</div>
-                    </div>
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="txtPrepareDelayMs">Delay between items (ms)</label>
-                        <input id="txtPrepareDelayMs" type="number" is="emby-input" min="0" max="60000" />
-                    </div>
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="txtPrepareMaxRpm">Max AI calls per minute</label>
-                        <input id="txtPrepareMaxRpm" type="number" is="emby-input" min="1" max="120" />
-                        <div class="fieldDescription">Global Groq/OpenAI pacing for overnight prepare.</div>
-                    </div>
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="txtPrepareMaxRetries">Max prepare retries</label>
-                        <input id="txtPrepareMaxRetries" type="number" is="emby-input" min="1" max="10" />
-                    </div>
-
-                    <div class="sectionTitleContainer flex align-items-center" style="margin-top:1.5em;">
-                        <h2 class="sectionTitle">OpenSubtitles</h2>
-                    </div>
-                    <p>When no matching local/embedded subtitle is found, download one matched to this video file (moviehash preferred).</p>
-                    <div class="checkboxContainer checkboxContainer-withDescription">
-                        <label class="emby-checkbox-label">
-                            <input id="chkOpenSubtitlesEnabled" type="checkbox" is="emby-checkbox" />
-                            <span>Enable OpenSubtitles download</span>
-                        </label>
-                    </div>
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="txtOpenSubtitlesApiKey">OpenSubtitles API key</label>
-                        <input id="txtOpenSubtitlesApiKey" type="password" is="emby-input" autocomplete="new-password" data-lpignore="true" data-1p-ignore="true" readonly onfocus="this.removeAttribute('readonly');" />
-                        <div class="fieldDescription">From opensubtitles.com → Consumer / API. Leave blank to keep the existing key.</div>
-                    </div>
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="txtOpenSubtitlesUsername">OpenSubtitles username (optional)</label>
-                        <input id="txtOpenSubtitlesUsername" type="text" is="emby-input" />
-                    </div>
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="txtOpenSubtitlesPassword">OpenSubtitles password (optional)</label>
-                        <input id="txtOpenSubtitlesPassword" type="password" is="emby-input" autocomplete="new-password" data-lpignore="true" data-1p-ignore="true" readonly onfocus="this.removeAttribute('readonly');" />
-                        <div class="fieldDescription">Optional login for higher download quota. Leave blank to keep existing password.</div>
-                    </div>
-
-                    <div class="sectionTitleContainer flex align-items-center" style="margin-top:1.5em;">
-                        <h2 class="sectionTitle">Web client overlay</h2>
-                    </div>
-                    <p>
-                        Load the overlay with <strong>JavaScript Injector</strong> (or File Transformation).
-                        Paste <em>JavaScript</em> — not an HTML <code>&lt;script&gt;</code> tag (that breaks <code>public.js</code> with <code>Unexpected token '&lt;'</code>):
-                    </p>
+                    <p>Paste into JavaScript Injector (not an HTML <code>&lt;script&gt;</code> tag):</p>
                     <pre style="white-space:pre-wrap;word-break:break-all;background:rgba(0,0,0,.08);padding:12px;border-radius:8px;">(function () {
   var s = document.createElement('script');
-  s.src = '/LookItUp/script.js?v=1.2.38';
+  s.src = '/LookItUp/script.js?v=1.2.39';
   s.async = true;
   document.head.appendChild(s);
 })();</pre>
-                    <div class="fieldDescription">Hard-refresh after saving. Console should show <code>overlay ready 1.2.20.0</code> and <code>popup settings applied</code>.</div>
+
+                    <div style="margin:1.5em 0;">
+                        <button is="emby-button" type="button" id="btnClearGenerated" class="raised button-cancel emby-button">
+                            <span>Delete all generated cache files…</span>
+                        </button>
+                    </div>
+                    <pre id="statusBox" style="white-space:pre-wrap;word-break:break-word;background:rgba(0,0,0,.08);padding:12px;border-radius:8px;min-height:3em;"></pre>
 
                     <div>
                         <button is="emby-button" type="submit" class="raised button-submit block emby-button">
@@ -313,7 +180,6 @@
         <script type="text/javascript">
             var LookItUpConfig = {
                 pluginUniqueId: 'a8ab0fed-cac9-406d-b98b-58161bf970b8',
-                statusTimer: null,
                 providerPresets: {
                     Groq: { model: 'openai/gpt-oss-20b', baseUrl: 'https://api.groq.com/openai/v1' },
                     OpenAI: { model: 'gpt-4o-mini', baseUrl: 'https://api.openai.com/v1' },
@@ -350,442 +216,109 @@
                 }
             }
 
-            function renderPrepareStatus(s) {
-                var box = document.querySelector('#prepareStatusBox');
-                if (!s) {
-                    box.textContent = 'No status.';
-                    return;
-                }
-                box.textContent = [
-                    'Running: ' + !!s.IsRunning,
-                    'Progress: ' + (s.Completed || 0) + ' / ' + (s.Total || 0) + ' (' + (s.Percent || 0) + '%)',
-                    'With annotations: ' + (s.WithAnnotations || 0),
-                    'Skipped: ' + (s.Skipped || 0),
-                    'Failed: ' + (s.Failed || 0),
-                    'Queue pending/failed: ' + (s.QueuePending || 0) + ' / ' + (s.QueueFailed || 0),
-                    'OpenSubtitles downloads: ' + (s.OpenSubtitlesDownloads || 0),
-                    'Current: ' + (s.CurrentItem || '-'),
-                    'Note: ' + (s.StatusNote || '-'),
-                    'Last error: ' + (s.LastError || '-'),
-                    'Started: ' + (s.StartedAtUtc || '-'),
-                    'Finished: ' + (s.FinishedAtUtc || '-')
-                ].join('\n');
-            }
-
-            function refreshPrepareStatus() {
-                return ApiClient.ajax({
-                    url: ApiClient.getUrl('LookItUp/prepare/status'),
-                    type: 'GET',
-                    dataType: 'json'
-                }).then(function (s) {
-                    // Support camelCase too
-                    renderPrepareStatus({
-                        IsRunning: s.IsRunning ?? s.isRunning,
-                        Completed: s.Completed ?? s.completed,
-                        Total: s.Total ?? s.total,
-                        Percent: s.Percent ?? s.percent,
-                        WithAnnotations: s.WithAnnotations ?? s.withAnnotations,
-                        Skipped: s.Skipped ?? s.skipped,
-                        Failed: s.Failed ?? s.failed,
-                        QueuePending: s.QueuePending ?? s.queuePending,
-                        QueueFailed: s.QueueFailed ?? s.queueFailed,
-                        OpenSubtitlesDownloads: s.OpenSubtitlesDownloads ?? s.openSubtitlesDownloads,
-                        StatusNote: s.StatusNote ?? s.statusNote,
-                        CurrentItem: s.CurrentItem ?? s.currentItem,
-                        LastError: s.LastError ?? s.lastError,
-                        StartedAtUtc: s.StartedAtUtc ?? s.startedAtUtc,
-                        FinishedAtUtc: s.FinishedAtUtc ?? s.finishedAtUtc
-                    });
-                    if ((s.IsRunning ?? s.isRunning) && !LookItUpConfig.statusTimer) {
-                        LookItUpConfig.statusTimer = setInterval(refreshPrepareStatus, 2000);
-                    }
-                    if (!(s.IsRunning ?? s.isRunning) && LookItUpConfig.statusTimer) {
-                        clearInterval(LookItUpConfig.statusTimer);
-                        LookItUpConfig.statusTimer = null;
-                    }
-                }).catch(function (err) {
-                    document.querySelector('#prepareStatusBox').textContent = 'Could not load prepare status: ' + err;
-                });
-            }
-
-            function applyStatusObject(status, startedFallback) {
-                renderPrepareStatus({
-                    IsRunning: status.IsRunning ?? status.isRunning ?? startedFallback,
-                    Completed: status.Completed ?? status.completed,
-                    Total: status.Total ?? status.total,
-                    Percent: status.Percent ?? status.percent,
-                    WithAnnotations: status.WithAnnotations ?? status.withAnnotations,
-                    Skipped: status.Skipped ?? status.skipped,
-                    Failed: status.Failed ?? status.failed,
-                    CurrentItem: status.CurrentItem ?? status.currentItem,
-                    LastError: status.LastError ?? status.lastError,
-                    StartedAtUtc: status.StartedAtUtc ?? status.startedAtUtc,
-                    FinishedAtUtc: status.FinishedAtUtc ?? status.finishedAtUtc
-                });
-            }
-
-            function startPrepare(force, confirmMsg, startedMsg) {
-                var msg = confirmMsg || (force
-                    ? 'Force re-prepare the ENTIRE library? This can take a long time and use AI credits.'
-                    : 'Prepare the ENTIRE library? For one episode, use “Prepare this item” instead.');
-                if (!window.confirm(msg)) {
-                    return;
-                }
-                Dashboard.showLoadingMsg();
-                ApiClient.ajax({
-                    url: ApiClient.getUrl('LookItUp/prepare') + (force ? '?force=true' : ''),
-                    type: 'POST',
-                    dataType: 'json'
-                }).then(function (result) {
-                    Dashboard.hideLoadingMsg();
-                    applyStatusObject(result.status || result.Status || result, result.started);
-                    if (!LookItUpConfig.statusTimer) {
-                        LookItUpConfig.statusTimer = setInterval(refreshPrepareStatus, 2000);
-                    }
-                    Dashboard.alert(result.started === false
-                        ? 'A prepare job is already running. Watch the status box below.'
-                        : (startedMsg || 'Library prepare started. Use Stop library prepare to cancel.'));
-                    refreshPrepareStatus();
-                }).catch(function (err) {
-                    Dashboard.hideLoadingMsg();
-                    Dashboard.alert('Failed to start prepare: ' + err);
-                });
-            }
-
-            function startOvernightPrepareNow() {
-                // Test scope: one series only (not the full library).
-                var seriesId = '828c0e1f7853d004f546f66370c8f79a';
-                var msg = [
-                    'Run overnight prepare for THIS SHOW only?',
-                    '',
-                    'Series id: ' + seriesId,
-                    '',
-                    'Same pipeline as overnight (skip prepared, retries in-scope, rate limits, OpenSubtitles).',
-                    'Does not prepare the rest of the library.'
-                ].join('\n');
-                if (!window.confirm(msg)) {
-                    return;
-                }
-                Dashboard.showLoadingMsg();
-                document.querySelector('#prepareStatusBox').textContent =
-                    'Starting overnight-style prepare for series ' + seriesId + ' …';
-                ApiClient.ajax({
-                    url: ApiClient.getUrl('LookItUp/' + seriesId + '/prepare-series'),
-                    type: 'POST',
-                    dataType: 'json'
-                }).then(function (result) {
-                    Dashboard.hideLoadingMsg();
-                    applyStatusObject(result.status || result.Status || result, result.started !== false);
-                    if (!LookItUpConfig.statusTimer) {
-                        LookItUpConfig.statusTimer = setInterval(refreshPrepareStatus, 2000);
-                    }
-                    Dashboard.alert(result.started === false
-                        ? ((result.error || result.Error || 'Prepare did not start.') + ' Watch the status box.')
-                        : 'Overnight-style prepare started for this show only. Status updates every 2s.');
-                    refreshPrepareStatus();
-                }).catch(function (err) {
-                    Dashboard.hideLoadingMsg();
-                    Dashboard.alert('Failed to start show prepare: ' + err);
-                });
-            }
-
-            function cancelPrepare() {
-                Dashboard.showLoadingMsg();
-                ApiClient.ajax({
-                    url: ApiClient.getUrl('LookItUp/prepare/cancel'),
-                    type: 'POST',
-                    dataType: 'json'
-                }).then(function (result) {
-                    Dashboard.hideLoadingMsg();
-                    applyStatusObject(result.status || result.Status || result, false);
-                    Dashboard.alert(result.cancelled
-                        ? 'Stop requested. Current item may finish, then the job will halt.'
-                        : 'No library prepare job was running.');
-                    refreshPrepareStatus();
-                }).catch(function (err) {
-                    Dashboard.hideLoadingMsg();
-                    Dashboard.alert('Failed to cancel: ' + err);
-                });
-            }
-
             function clearGeneratedFiles() {
-                var msg = [
-                    'Delete ALL generated Look it up files?',
-                    '',
-                    'This removes:',
-                    '• annotation caches',
-                    '• extracted / OpenSubtitles subtitle caches',
-                    '• *.lookitup.json sidecars next to media',
-                    '• prepare retry queue',
-                    '',
-                    'Plugin settings and API keys are kept.',
-                    'You will need to prepare again for popups to appear.',
-                    '',
-                    'This cannot be undone.'
-                ].join('\n');
-                if (!window.confirm(msg)) {
+                if (!window.confirm('Delete ALL Look it up cache files and sidecars? Settings are kept.')) {
                     return;
                 }
                 Dashboard.showLoadingMsg();
-                document.querySelector('#prepareStatusBox').textContent = 'Deleting all generated Look it up files…';
+                document.querySelector('#statusBox').textContent = 'Deleting…';
                 ApiClient.ajax({
                     url: ApiClient.getUrl('LookItUp/clear-generated'),
                     type: 'POST',
                     dataType: 'json'
                 }).then(function (result) {
                     Dashboard.hideLoadingMsg();
-                    var lines = [
-                        'Deleted generated Look it up files.',
-                        'Cache JSON: ' + (result.cacheFilesDeleted ?? result.CacheFilesDeleted ?? 0),
-                        'Subtitle cache: ' + (result.subtitleCacheFilesDeleted ?? result.SubtitleCacheFilesDeleted ?? 0),
-                        'OpenSubtitles cache: ' + (result.openSubtitlesFilesDeleted ?? result.OpenSubtitlesFilesDeleted ?? 0),
-                        'Media sidecars: ' + (result.sidecarFilesDeleted ?? result.SidecarFilesDeleted ?? 0),
-                        'Prepare queue cleared: ' + ((result.prepareQueueCleared ?? result.PrepareQueueCleared) ? 'yes' : 'no'),
-                        'Prepare job cancelled: ' + ((result.prepareJobCancelled ?? result.PrepareJobCancelled) ? 'yes' : 'no'),
-                        'Total files: ' + (result.totalFilesDeleted ?? result.TotalFilesDeleted ?? 0)
-                    ];
-                    document.querySelector('#prepareStatusBox').textContent = lines.join('\n');
-                    Dashboard.alert('Deleted ' + (result.totalFilesDeleted ?? result.TotalFilesDeleted ?? 0) + ' generated files.');
-                    refreshPrepareStatus();
+                    document.querySelector('#statusBox').textContent = [
+                        'Deleted cache files.',
+                        'Caches: ' + (result.cacheFilesDeleted ?? result.CacheFilesDeleted ?? 0),
+                        'Sidecars: ' + (result.sidecarFilesDeleted ?? result.SidecarFilesDeleted ?? 0)
+                    ].join('\n');
                 }).catch(function (err) {
                     Dashboard.hideLoadingMsg();
                     Dashboard.alert('Delete failed: ' + err);
                 });
             }
 
-            function previewNames() {
-                var id = (document.querySelector('#txtPrepareItemId').value || '').trim();
-                if (!id) {
-                    Dashboard.alert('Enter an item id first.');
-                    return;
-                }
+            document.querySelector('#lookItUpConfigPage').addEventListener('pageshow', function () {
                 Dashboard.showLoadingMsg();
-                document.querySelector('#prepareStatusBox').textContent = 'Finding name candidates (no AI): ' + id + ' …';
-                ApiClient.ajax({
-                    url: ApiClient.getUrl('LookItUp/' + id + '/candidates'),
-                    type: 'GET',
-                    dataType: 'json'
-                }).then(function (result) {
+                ApiClient.getPluginConfiguration(LookItUpConfig.pluginUniqueId).then(function (config) {
+                    document.querySelector('#chkEnabled').checked = config.Enabled !== false;
+                    document.querySelector('#chkShowPopups').checked = cfgGet(config, 'ShowPopupsDuringPlayback', 'showPopupsDuringPlayback', true) !== false;
+                    document.querySelector('#chkIncrementalPrepare').checked = cfgGet(config, 'IncrementalPrepareOnPlayback', 'incrementalPrepareOnPlayback', true) !== false;
+                    document.querySelector('#chkWriteSidecar').checked = !!config.WriteSidecarFiles;
+                    document.querySelector('#chkStoreAiDecisions').checked = cfgGet(config, 'StoreAiDecisions', 'storeAiDecisions', true) !== false;
+                    document.querySelector('#txtIncrementalBootstrapMs').value = cfgGet(config, 'IncrementalPrepareBootstrapWindowMs', 'incrementalPrepareBootstrapWindowMs', 60000);
+                    document.querySelector('#txtIncrementalWindowMs').value = cfgGet(config, 'IncrementalPrepareWindowMs', 'incrementalPrepareWindowMs', 300000);
+                    document.querySelector('#txtIncrementalAiPerWindow').value = cfgGet(config, 'IncrementalAiNamesPerWindow', 'incrementalAiNamesPerWindow', 40);
+                    document.querySelector('#txtMaxAnnotations').value = config.MaxAnnotationsPerItem || 60;
+                    document.querySelector('#txtPreferredSubtitleLanguages').value = config.PreferredSubtitleLanguages || 'en';
+                    document.querySelector('#chkOpenSubtitlesEnabled').checked = !!(config.OpenSubtitlesEnabled || config.openSubtitlesEnabled);
+                    document.querySelector('#txtOpenSubtitlesApiKey').placeholder = (config.OpenSubtitlesApiKey || config.openSubtitlesApiKey) ? '(saved)' : '(not set)';
+                    document.querySelector('#txtOpenSubtitlesApiKey').value = '';
+                    var provider = config.AiProvider || 'Groq';
+                    document.querySelector('#selAiProvider').value = provider;
+                    document.querySelector('#txtAiApiKey').value = '';
+                    document.querySelector('#txtAiApiKey').placeholder = (config.AiApiKey || config.aiApiKey) ? '(saved)' : '(not set)';
+                    document.querySelector('#txtAiModel').value = config.AiModel || 'openai/gpt-oss-20b';
+                    document.querySelector('#txtAiBaseUrl').value = config.AiBaseUrl || 'https://api.groq.com/openai/v1';
+                    document.querySelector('#txtPrepareMaxRpm').value = cfgGet(config, 'PrepareMaxAiCallsPerMinute', 'prepareMaxAiCallsPerMinute', 30);
+                    document.querySelector('#txtPopupDurationSec').value = Math.max(1, Math.round((cfgGet(config, 'PopupDurationMs', 'popupDurationMs', 3000) || 3000) / 1000));
+                    document.querySelector('#txtPopupDelaySec').value = Math.max(0, Math.round((Number(cfgGet(config, 'PopupDelayMs', 'popupDelayMs', 1000)) || 1000) / 100) / 10);
+                    document.querySelector('#txtPopupFontSize').value = cfgGet(config, 'PopupFontSizePx', 'popupFontSizePx', 16);
+                    document.querySelector('#selPopupPlacement').value = cfgGet(config, 'PopupPlacement', 'popupPlacement', 'BottomCenter');
                     Dashboard.hideLoadingMsg();
-                    var list = result.candidates || result.Candidates || [];
-                    var lines = [
-                        'Name candidates (would be sent to AI later).',
-                        'Item: ' + (result.itemName || result.ItemName || id),
-                        'Subtitle: ' + (result.subtitle || result.Subtitle || '-'),
-                        'Cues: ' + (result.cueCount ?? result.CueCount ?? 0),
-                        'Count: ' + (result.count ?? result.Count ?? list.length),
-                        'Excluded cast tokens: ' + (result.excludedCastCount ?? result.ExcludedCastCount ?? 0),
-                        'Excluded sample: ' + ((result.excludedCastSample || result.ExcludedCastSample || []).slice(0, 12).join(', ') || '(none)'),
-                        ''
-                    ];
-                    list.forEach(function (c, i) {
-                        lines.push(
-                            (i + 1) + '. [' + (c.start || c.Start || '') + '] ' +
-                            (c.term || c.Term || '') +
-                            '  (' + (c.reason || c.Reason || '') + ', score ' + (c.score ?? c.Score ?? '') + ')' +
-                            '\n    cue: ' + (c.cueText || c.CueText || '')
-                        );
-                    });
-                    if (result.warning || result.Warning) {
-                        lines.push('Warning: ' + (result.warning || result.Warning));
-                    }
-                    document.querySelector('#prepareStatusBox').textContent = lines.join('\n');
-                    Dashboard.alert('Found ' + list.length + ' name candidates (no AI).');
-                }).catch(function (err) {
-                    Dashboard.hideLoadingMsg();
-                    Dashboard.alert('Preview names failed: ' + err);
                 });
-            }
-
-            function prepareOneItem() {
-                var id = (document.querySelector('#txtPrepareItemId').value || '').trim();
-                if (!id) {
-                    Dashboard.alert('Enter an item id first.');
-                    return;
-                }
-                Dashboard.showLoadingMsg();
-                document.querySelector('#prepareStatusBox').textContent = 'Preparing one item: ' + id + ' …';
-                ApiClient.ajax({
-                    url: ApiClient.getUrl('LookItUp/' + id + '/prepare'),
-                    type: 'POST',
-                    dataType: 'json'
-                }).then(function (result) {
-                    Dashboard.hideLoadingMsg();
-                    var count = result.count ?? result.Count ?? 0;
-                    var warning = result.warning || result.Warning || '';
-                    var mode = result.mode || result.Mode || '';
-                    var aiUrl = result.aiBaseUrl || result.AiBaseUrl || '';
-                    var aiModel = result.aiModel || result.AiModel || '';
-                    var terms = (result.annotations || result.Annotations || []).slice(0, 15).map(function (a) {
-                        return (a.term || a.Term || '');
-                    }).filter(Boolean);
-                    document.querySelector('#prepareStatusBox').textContent = [
-                        'Single-item prepare finished.',
-                        'Item: ' + id,
-                        'Mode: ' + mode,
-                        'AI endpoint: ' + (aiUrl || '-'),
-                        'AI model: ' + (aiModel || '-'),
-                        'Annotations: ' + count,
-                        'Sample: ' + (terms.join(', ') || '(none)'),
-                        warning ? ('Warning: ' + warning) : ''
-                    ].filter(Boolean).join('\n');
-                    Dashboard.alert(warning && count === 0
-                        ? ('AI prepare returned 0 annotations.\n' + warning)
-                        : ('Prepared item with ' + count + ' annotations.'));
-                }).catch(function (err) {
-                    Dashboard.hideLoadingMsg();
-                    Dashboard.alert('Single-item prepare failed: ' + err);
-                });
-            }
-
-            document.querySelector('#lookItUpConfigPage')
-                .addEventListener('pageshow', function () {
-                    Dashboard.showLoadingMsg();
-                    ApiClient.getPluginConfiguration(LookItUpConfig.pluginUniqueId).then(function (config) {
-                        document.querySelector('#chkEnabled').checked = config.Enabled;
-                        document.querySelector('#chkPrepareMovies').checked = config.PrepareMovies !== false;
-                        document.querySelector('#chkPrepareEpisodes').checked = config.PrepareEpisodes !== false;
-                        document.querySelector('#chkSkipPrepared').checked = config.SkipAlreadyPrepared !== false;
-                        document.querySelector('#chkWriteSidecar').checked = !!config.WriteSidecarFiles;
-                        document.querySelector('#chkScanOnPlayback').checked = !!config.ScanOnPlayback;
-                        document.querySelector('#chkIncrementalPrepare').checked = cfgGet(config, 'IncrementalPrepareOnPlayback', 'incrementalPrepareOnPlayback', true) !== false;
-                        document.querySelector('#txtIncrementalWindowMs').value = cfgGet(config, 'IncrementalPrepareWindowMs', 'incrementalPrepareWindowMs', 300000);
-                        document.querySelector('#txtIncrementalBootstrapMs').value = cfgGet(config, 'IncrementalPrepareBootstrapWindowMs', 'incrementalPrepareBootstrapWindowMs', 60000);
-                        document.querySelector('#txtIncrementalAiPerWindow').value = cfgGet(config, 'IncrementalAiNamesPerWindow', 'incrementalAiNamesPerWindow', 40);
-                        document.querySelector('#txtWikipediaLanguage').value = config.WikipediaLanguage || 'en';
-                        document.querySelector('#txtPreferredSubtitleLanguages').value = config.PreferredSubtitleLanguages || 'en';
-                        document.querySelector('#txtMaxAnnotations').value = config.MaxAnnotationsPerItem;
-                        document.querySelector('#txtMinEntityLength').value = config.MinEntityLength;
-                        document.querySelector('#txtPopupDurationSec').value = Math.max(1, Math.round((cfgGet(config, 'PopupDurationMs', 'popupDurationMs', 3000) || 3000) / 1000));
-                        var delayMs = cfgGet(config, 'PopupDelayMs', 'popupDelayMs', 1000);
-                        document.querySelector('#txtPopupDelaySec').value = Math.max(0, Math.round((Number(delayMs) || 1000) / 100) / 10);
-                        document.querySelector('#txtPopupFontSize').value = cfgGet(config, 'PopupFontSizePx', 'popupFontSizePx', 16);
-                        document.querySelector('#txtPopupTextColor').value = cfgGet(config, 'PopupTextColor', 'popupTextColor', '#f7fafc');
-                        document.querySelector('#txtPopupBgColor').value = cfgGet(config, 'PopupBackgroundColor', 'popupBackgroundColor', 'rgba(8, 12, 20, 0.96)');
-                        document.querySelector('#selPopupPlacement').value = cfgGet(config, 'PopupPlacement', 'popupPlacement', 'BottomCenter');
-                        document.querySelector('#txtPopupEdgeOffset').value = cfgGet(config, 'PopupEdgeOffsetPct', 'popupEdgeOffsetPct', 10);
-                        var provider = config.AiProvider || 'Groq';
-                        document.querySelector('#selAiProvider').value = provider;
-                        document.querySelector('#txtAiApiKey').value = '';
-                        var hasKey = !!(config.AiApiKey || config.aiApiKey);
-                        document.querySelector('#txtAiApiKey').placeholder = hasKey ? '(saved — leave blank to keep)' : '(not set)';
-                        document.querySelector('#txtAiModel').value = config.AiModel || config.aiModel || 'openai/gpt-oss-20b';
-                        document.querySelector('#txtAiBaseUrl').value = config.AiBaseUrl || config.aiBaseUrl || 'https://api.groq.com/openai/v1';
-                        var namesPer = config.AiNamesPerPrepare ?? config.aiNamesPerPrepare;
-                        document.querySelector('#txtAiNamesPerPrepare').value = namesPer === 0 || namesPer ? namesPer : 0;
-                        document.querySelector('#chkStoreAiDecisions').checked = cfgGet(config, 'StoreAiDecisions', 'storeAiDecisions', true) !== false;
-                        document.querySelector('#txtPrepareDelayMs').value = cfgGet(config, 'PrepareDelayMsBetweenItems', 'prepareDelayMsBetweenItems', 1500);
-                        document.querySelector('#txtPrepareMaxRpm').value = cfgGet(config, 'PrepareMaxAiCallsPerMinute', 'prepareMaxAiCallsPerMinute', 30);
-                        document.querySelector('#txtPrepareMaxRetries').value = cfgGet(config, 'PrepareMaxRetries', 'prepareMaxRetries', 3);
-                        document.querySelector('#chkOpenSubtitlesEnabled').checked = !!(config.OpenSubtitlesEnabled || config.openSubtitlesEnabled);
-                        document.querySelector('#txtOpenSubtitlesApiKey').value = '';
-                        document.querySelector('#txtOpenSubtitlesApiKey').placeholder = (config.OpenSubtitlesApiKey || config.openSubtitlesApiKey) ? '(saved — leave blank to keep)' : '(not set)';
-                        document.querySelector('#txtOpenSubtitlesUsername').value = cfgGet(config, 'OpenSubtitlesUsername', 'openSubtitlesUsername', '');
-                        document.querySelector('#txtOpenSubtitlesPassword').value = '';
-                        document.querySelector('#txtOpenSubtitlesPassword').placeholder = (config.OpenSubtitlesPassword || config.openSubtitlesPassword) ? '(saved — leave blank to keep)' : '(not set)';
-                        Dashboard.hideLoadingMsg();
-                        refreshPrepareStatus();
-                    });
-                });
+            });
 
             document.querySelector('#selAiProvider').addEventListener('change', function () {
                 applyProviderPreset(this.value, true);
             });
-            document.querySelector('#txtAiModel').addEventListener('input', function () {
-                this.dataset.fromPreset = '0';
-            });
-            document.querySelector('#txtAiBaseUrl').addEventListener('input', function () {
-                this.dataset.fromPreset = '0';
-            });
 
-            document.querySelector('#btnPreviewNames').addEventListener('click', previewNames);
-            document.querySelector('#btnPrepareOne').addEventListener('click', prepareOneItem);
-            document.querySelector('#btnCancelPrepare').addEventListener('click', cancelPrepare);
-            document.querySelector('#btnRunOvernightNow').addEventListener('click', startOvernightPrepareNow);
-            document.querySelector('#btnPrepareLibrary').addEventListener('click', function () { startPrepare(false); });
-            document.querySelector('#btnPrepareForce').addEventListener('click', function () { startPrepare(true); });
             document.querySelector('#btnClearGenerated').addEventListener('click', clearGeneratedFiles);
-            document.querySelector('#btnRefreshStatus').addEventListener('click', refreshPrepareStatus);
 
-            document.querySelector('#lookItUpConfigForm')
-                .addEventListener('submit', function (e) {
-                    e.preventDefault();
-                    Dashboard.showLoadingMsg();
-                    ApiClient.getPluginConfiguration(LookItUpConfig.pluginUniqueId).then(function (config) {
-                        config.Enabled = document.querySelector('#chkEnabled').checked;
-                        config.PrepareMovies = document.querySelector('#chkPrepareMovies').checked;
-                        config.PrepareEpisodes = document.querySelector('#chkPrepareEpisodes').checked;
-                        config.SkipAlreadyPrepared = document.querySelector('#chkSkipPrepared').checked;
-                        config.WriteSidecarFiles = document.querySelector('#chkWriteSidecar').checked;
-                        config.ScanOnPlayback = document.querySelector('#chkScanOnPlayback').checked;
-                        config.IncrementalPrepareOnPlayback = document.querySelector('#chkIncrementalPrepare').checked;
-                        config.IncrementalPrepareWindowMs = parseInt(document.querySelector('#txtIncrementalWindowMs').value, 10) || 300000;
-                        config.IncrementalPrepareBootstrapWindowMs = parseInt(document.querySelector('#txtIncrementalBootstrapMs').value, 10) || 60000;
-                        config.IncrementalAiNamesPerWindow = parseInt(document.querySelector('#txtIncrementalAiPerWindow').value, 10) || 40;
-                        config.WikipediaLanguage = document.querySelector('#txtWikipediaLanguage').value;
-                        config.PreferredSubtitleLanguages = document.querySelector('#txtPreferredSubtitleLanguages').value;
-                        config.MaxAnnotationsPerItem = parseInt(document.querySelector('#txtMaxAnnotations').value, 10);
-                        config.MinEntityLength = parseInt(document.querySelector('#txtMinEntityLength').value, 10);
-                        var durationSec = parseInt(document.querySelector('#txtPopupDurationSec').value, 10);
-                        if (!durationSec || durationSec < 1) {
-                            durationSec = 3;
-                        }
-                        if (durationSec > 30) {
-                            durationSec = 30;
-                        }
-                        config.PopupDurationMs = durationSec * 1000;
-                        var delaySec = parseFloat(document.querySelector('#txtPopupDelaySec').value);
-                        if (!Number.isFinite(delaySec) || delaySec < 0) {
-                            delaySec = 1;
-                        }
-                        if (delaySec > 10) {
-                            delaySec = 10;
-                        }
-                        config.PopupDelayMs = Math.round(delaySec * 1000);
-                        config.PopupFontSizePx = parseInt(document.querySelector('#txtPopupFontSize').value, 10) || 16;
-                        config.PopupTextColor = document.querySelector('#txtPopupTextColor').value || '#f7fafc';
-                        config.PopupBackgroundColor = document.querySelector('#txtPopupBgColor').value || 'rgba(8, 12, 20, 0.96)';
-                        config.PopupPlacement = document.querySelector('#selPopupPlacement').value || 'BottomCenter';
-                        config.PopupEdgeOffsetPct = parseInt(document.querySelector('#txtPopupEdgeOffset').value, 10) || 10;
-                        config.AiProvider = document.querySelector('#selAiProvider').value || 'Groq';
-                        config.AiModel = document.querySelector('#txtAiModel').value || 'openai/gpt-oss-20b';
-                        config.AiBaseUrl = document.querySelector('#txtAiBaseUrl').value || 'https://api.groq.com/openai/v1';
-                        var namesPer = parseInt(document.querySelector('#txtAiNamesPerPrepare').value, 10);
-                        config.AiNamesPerPrepare = Number.isFinite(namesPer) ? namesPer : 0;
-                        config.StoreAiDecisions = document.querySelector('#chkStoreAiDecisions').checked;
-                        config.PrepareDelayMsBetweenItems = parseInt(document.querySelector('#txtPrepareDelayMs').value, 10) || 1500;
-                        config.PrepareMaxAiCallsPerMinute = parseInt(document.querySelector('#txtPrepareMaxRpm').value, 10) || 30;
-                        config.PrepareMaxRetries = parseInt(document.querySelector('#txtPrepareMaxRetries').value, 10) || 3;
-                        config.OpenSubtitlesEnabled = document.querySelector('#chkOpenSubtitlesEnabled').checked;
-                        config.OpenSubtitlesUsername = document.querySelector('#txtOpenSubtitlesUsername').value || '';
-                        var newKey = (document.querySelector('#txtAiApiKey').value || '').trim();
-                        // Never send blank/whitespace — preserves saved key (and blocks password-manager junk overwrites of empty field).
-                        if (newKey.length >= 8) {
-                            config.AiApiKey = newKey;
-                        } else {
-                            delete config.AiApiKey;
-                            delete config.aiApiKey;
-                        }
-                        var osKey = (document.querySelector('#txtOpenSubtitlesApiKey').value || '').trim();
-                        if (osKey.length >= 8) {
-                            config.OpenSubtitlesApiKey = osKey;
-                        } else {
-                            delete config.OpenSubtitlesApiKey;
-                            delete config.openSubtitlesApiKey;
-                        }
-                        var osPass = (document.querySelector('#txtOpenSubtitlesPassword').value || '').trim();
-                        if (osPass.length >= 1) {
-                            config.OpenSubtitlesPassword = osPass;
-                        } else {
-                            delete config.OpenSubtitlesPassword;
-                            delete config.openSubtitlesPassword;
-                        }
-                        ApiClient.updatePluginConfiguration(LookItUpConfig.pluginUniqueId, config).then(function (result) {
-                            Dashboard.processPluginConfigurationUpdateResult(result);
-                        });
+            document.querySelector('#lookItUpConfigForm').addEventListener('submit', function (e) {
+                e.preventDefault();
+                Dashboard.showLoadingMsg();
+                ApiClient.getPluginConfiguration(LookItUpConfig.pluginUniqueId).then(function (config) {
+                    config.Enabled = document.querySelector('#chkEnabled').checked;
+                    config.ShowPopupsDuringPlayback = document.querySelector('#chkShowPopups').checked;
+                    config.IncrementalPrepareOnPlayback = document.querySelector('#chkIncrementalPrepare').checked;
+                    config.WriteSidecarFiles = document.querySelector('#chkWriteSidecar').checked;
+                    config.StoreAiDecisions = document.querySelector('#chkStoreAiDecisions').checked;
+                    config.IncrementalPrepareBootstrapWindowMs = parseInt(document.querySelector('#txtIncrementalBootstrapMs').value, 10) || 60000;
+                    config.IncrementalPrepareWindowMs = parseInt(document.querySelector('#txtIncrementalWindowMs').value, 10) || 300000;
+                    config.IncrementalAiNamesPerWindow = parseInt(document.querySelector('#txtIncrementalAiPerWindow').value, 10) || 40;
+                    config.MaxAnnotationsPerItem = parseInt(document.querySelector('#txtMaxAnnotations').value, 10) || 60;
+                    config.PreferredSubtitleLanguages = document.querySelector('#txtPreferredSubtitleLanguages').value || 'en';
+                    config.OpenSubtitlesEnabled = document.querySelector('#chkOpenSubtitlesEnabled').checked;
+                    config.AiProvider = document.querySelector('#selAiProvider').value || 'Groq';
+                    config.AiModel = document.querySelector('#txtAiModel').value || 'openai/gpt-oss-20b';
+                    config.AiBaseUrl = document.querySelector('#txtAiBaseUrl').value || 'https://api.groq.com/openai/v1';
+                    config.PrepareMaxAiCallsPerMinute = parseInt(document.querySelector('#txtPrepareMaxRpm').value, 10) || 30;
+                    config.PopupDurationMs = Math.min(30000, Math.max(1000, (parseInt(document.querySelector('#txtPopupDurationSec').value, 10) || 3) * 1000));
+                    config.PopupDelayMs = Math.min(10000, Math.max(0, Math.round((parseFloat(document.querySelector('#txtPopupDelaySec').value) || 1) * 1000)));
+                    config.PopupFontSizePx = parseInt(document.querySelector('#txtPopupFontSize').value, 10) || 16;
+                    config.PopupPlacement = document.querySelector('#selPopupPlacement').value || 'BottomCenter';
+                    var newKey = (document.querySelector('#txtAiApiKey').value || '').trim();
+                    if (newKey.length >= 8) {
+                        config.AiApiKey = newKey;
+                    } else {
+                        delete config.AiApiKey;
+                        delete config.aiApiKey;
+                    }
+                    var osKey = (document.querySelector('#txtOpenSubtitlesApiKey').value || '').trim();
+                    if (osKey.length >= 8) {
+                        config.OpenSubtitlesApiKey = osKey;
+                    } else {
+                        delete config.OpenSubtitlesApiKey;
+                        delete config.openSubtitlesApiKey;
+                    }
+                    ApiClient.updatePluginConfiguration(LookItUpConfig.pluginUniqueId, config).then(function (result) {
+                        Dashboard.processPluginConfigurationUpdateResult(result);
                     });
-                    return false;
                 });
+                return false;
+            });
         </script>
     </div>
 </body>

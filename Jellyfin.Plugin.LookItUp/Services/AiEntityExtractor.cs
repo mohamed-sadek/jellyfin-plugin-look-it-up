@@ -348,6 +348,12 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 }
 
                 var term = string.IsNullOrWhiteSpace(parsed.Term) ? candidate.Term : parsed.Term!.Trim();
+                if (TryGetLocalKeepReject(term, candidate.CueText, out var localReason, out var localCategory))
+                {
+                    _logger.LogInformation("Look it up AI kept {Term} but local filter dropped it: {Reason}", term, localReason);
+                    return (null, BuildDecision(candidate, false, localReason, localCategory), null);
+                }
+
                 if (IsTooBasicToKeep(term))
                 {
                     const string filterReason = "Local filter: term is too common for a popup";
@@ -393,7 +399,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 return (new AiEntityMention
                 {
                     Term = term,
-                    Kind = NormalizeKind(parsed.Kind),
+                    Kind = FixMentionKind(term, NormalizeKind(parsed.Kind), summary),
                     Summary = summary,
                     StartMs = candidate.StartMs,
                     EndMs = Math.Max(candidate.EndMs, candidate.StartMs + 3000)
@@ -435,6 +441,81 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             Category = category,
             AtUtc = DateTime.UtcNow
         };
+
+    private static bool TryGetLocalKeepReject(
+        string term,
+        string? cueText,
+        out string reason,
+        out string category)
+    {
+        if (IsTaxiHailNotShow(term, cueText))
+        {
+            reason = "Local filter: shouting to hail a cab, not the TV sitcom";
+            category = "ordinary-prop";
+            return true;
+        }
+
+        if (IsEpisodicFakeHoliday(term))
+        {
+            reason = "Local filter: in-joke fake holiday name, not a real observance";
+            category = "in-show";
+            return true;
+        }
+
+        reason = string.Empty;
+        category = string.Empty;
+        return false;
+    }
+
+    private static bool IsTaxiHailNotShow(string term, string? cueText)
+    {
+        if (!term.Equals("Taxi", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var cue = (cueText ?? string.Empty).Trim();
+        return cue.Equals("Taxi!", StringComparison.OrdinalIgnoreCase)
+               || cue.Equals("Taxi", StringComparison.OrdinalIgnoreCase)
+               || Regex.IsMatch(cue, @"^Taxi!?\s*$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    }
+
+    private static bool IsEpisodicFakeHoliday(string term)
+    {
+        if (!term.EndsWith(" Day", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var words = term.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return words.Length >= 2 && words.Length <= 4;
+    }
+
+    private static string FixMentionKind(string term, string kind, string summary)
+    {
+        if (string.Equals(kind, "film", StringComparison.OrdinalIgnoreCase))
+        {
+            return "film";
+        }
+
+        var knownFilms = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "Deliverance", "Midnight Cowboy", "Runaway Train"
+        };
+        if (knownFilms.Contains(term.Trim()))
+        {
+            return "film";
+        }
+
+        if (string.Equals(kind, "person", StringComparison.OrdinalIgnoreCase)
+            && (summary.Contains(" film", StringComparison.OrdinalIgnoreCase)
+                || summary.Contains(" movie", StringComparison.OrdinalIgnoreCase)))
+        {
+            return "film";
+        }
+
+        return kind;
+    }
 
     private static string InferRejectCategory(string reason)
     {
@@ -500,8 +581,13 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 "basic nature words (sun, moon, earth, god), generic family words (mom, dad)\n" +
                 "- Ordinary consumer products used casually (car models, everyday brands, generic props) " +
                 "when dialogue is comparison/shopping/small-talk without cultural significance\n" +
+                "- Shouting \"Taxi!\" to hail a cab (not the TV sitcom Taxi)\n" +
+                "- Fake in-joke holiday names like \"Jon Voight Day\" or \"Joe Pepitone Day\" in comedy lists\n" +
+                "- Generic city mentions with no notable context (e.g. \"worked a club in Dallas\")\n" +
                 "- Subtitle credits, dialogue filler, ordinary capitalized grammar\n" +
                 "- Borderline terms where context gives enough clue — when uncertain, reject\n" +
+                "When several Jon Voight films are listed in one breath (Deliverance, Midnight Cowboy, Runaway Train), " +
+                "KEEP each film title — they are cultural references, not song titles.\n" +
                 castHint +
                 "Always explain your decision in one sentence.\n" +
                 "Schema KEEP: {\"keep\":true,\"term\":\"Jon Voight\",\"kind\":\"person\"," +
@@ -919,7 +1005,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             Timeout = TimeSpan.FromSeconds(90)
         };
         client.DefaultRequestHeaders.UserAgent.Add(
-            new ProductInfoHeaderValue("Jellyfin.Plugin.LookItUp", "1.2.38"));
+            new ProductInfoHeaderValue("Jellyfin.Plugin.LookItUp", "1.2.39"));
         return client;
     }
 

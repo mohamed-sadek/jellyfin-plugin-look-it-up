@@ -30,6 +30,7 @@ public class PluginConfiguration : BasePluginConfiguration
         IncrementalPrepareBootstrapWindowMs = 60_000;
         IncrementalAiNamesPerWindow = 40;
         StoreAiDecisions = true;
+        ShowPopupsDuringPlayback = true;
         WriteSidecarFiles = true;
         PrepareMovies = true;
         PrepareEpisodes = true;
@@ -105,6 +106,12 @@ public class PluginConfiguration : BasePluginConfiguration
 
     /// <summary>Gets or sets whether to persist AI keep/reject reasons in cache JSON for debugging.</summary>
     public bool StoreAiDecisions { get; set; }
+
+    /// <summary>
+    /// Gets or sets whether timed popups appear during playback.
+    /// When false, incremental prepare still runs and sidecar JSON is still written.
+    /// </summary>
+    public bool ShowPopupsDuringPlayback { get; set; }
 
     /// <summary>Gets or sets whether to write *.lookitup.json sidecars.</summary>
     public bool WriteSidecarFiles { get; set; }
