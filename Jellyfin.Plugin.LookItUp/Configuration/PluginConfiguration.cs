@@ -44,7 +44,7 @@ public class PluginConfiguration : BasePluginConfiguration
         PrepareDelayMsBetweenItems = 1500;
         PrepareMaxAiCallsPerMinute = 30;
         PrepareMaxRetries = 3;
-        OpenSubtitlesEnabled = false;
+        OpenSubtitlesEnabled = true;
         OpenSubtitlesApiKey = string.Empty;
         OpenSubtitlesUsername = string.Empty;
         OpenSubtitlesPassword = string.Empty;
@@ -151,7 +151,7 @@ public class PluginConfiguration : BasePluginConfiguration
     /// <summary>Gets or sets max prepare retries for a failed item.</summary>
     public int PrepareMaxRetries { get; set; }
 
-    /// <summary>Gets or sets whether OpenSubtitles download is enabled.</summary>
+    /// <summary>Legacy flag; OpenSubtitles fallback is always attempted when credentials exist.</summary>
     public bool OpenSubtitlesEnabled { get; set; }
 
     /// <summary>Gets or sets the OpenSubtitles.com API key.</summary>

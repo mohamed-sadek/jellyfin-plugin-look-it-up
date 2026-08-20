@@ -1655,40 +1655,62 @@ public class LookItUpService : ILookItUpService
             }
         }
 
-        // 2) OpenSubtitles (moviehash first) when enabled
-        var config = Plugin.Instance?.Configuration;
-        if (config is not null && _openSubtitles.IsConfigured(config))
-        {
-            var dest = Path.Combine(_openSubtitlesDir, $"{item.Id:N}.srt");
-            var os = await _openSubtitles
-                .TryDownloadAsync(item, config, dest, cancellationToken)
-                .ConfigureAwait(false);
-            if (os is not null)
-            {
-                _logger.LogInformation(
-                    "Using OpenSubtitles for {Item}: matchedBy={MatchedBy}",
-                    item.Name,
-                    os.MatchedBy);
-                return new SubtitleContent(os.Content, os.Path, "opensubtitles", os.MatchedBy, os.MovieHash);
-            }
-        }
-
-        // 3) Cached embedded extract (skip ffmpeg on repeat preview/prepare)
+        // 2) Cached embedded extract (skip ffmpeg on repeat preview/prepare)
         if (TryReadCachedEmbeddedSubtitle(item, out var cached))
         {
             _logger.LogInformation("Using cached embedded subtitles for {Item}", item.Name);
             return cached;
         }
 
-        // 4) Embedded text tracks via ffmpeg
+        // 3) Embedded text tracks via ffmpeg
         var extracted = await ExtractEmbeddedSubtitleAsync(item, preferred, cancellationToken)
             .ConfigureAwait(false);
         if (extracted is not null)
         {
             TryWriteCachedEmbeddedSubtitle(item, extracted);
+            return extracted;
         }
 
-        return extracted;
+        // 4) OpenSubtitles fallback when no local/embedded text subs were found
+        return await TryDownloadOpenSubtitlesAsync(item, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<SubtitleContent?> TryDownloadOpenSubtitlesAsync(
+        BaseItem item,
+        CancellationToken cancellationToken)
+    {
+        var config = Plugin.Instance?.Configuration;
+        if (config is null || !_openSubtitles.IsConfigured(config))
+        {
+            return null;
+        }
+
+        try
+        {
+            var dest = Path.Combine(_openSubtitlesDir, $"{item.Id:N}.srt");
+            var os = await _openSubtitles
+                .TryDownloadAsync(item, config, dest, cancellationToken)
+                .ConfigureAwait(false);
+            if (os is null)
+            {
+                return null;
+            }
+
+            _logger.LogInformation(
+                "Using OpenSubtitles for {Item}: matchedBy={MatchedBy}",
+                item.Name,
+                os.MatchedBy);
+            return new SubtitleContent(os.Content, os.Path, "opensubtitles", os.MatchedBy, os.MovieHash);
+        }
+        catch (OpenSubtitlesRateLimitedException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "OpenSubtitles fallback failed for {Item}", item.Name);
+            return null;
+        }
     }
 
     private bool TryReadCachedEmbeddedSubtitle(BaseItem item, out SubtitleContent? content)

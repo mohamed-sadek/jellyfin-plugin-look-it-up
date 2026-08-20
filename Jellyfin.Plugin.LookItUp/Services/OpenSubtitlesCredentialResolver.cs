@@ -92,15 +92,10 @@ public static class OpenSubtitlesCredentialResolver
     }
 
     /// <summary>
-    /// Returns true when OpenSubtitles download can run (enabled + login credentials available).
+    /// Returns true when OpenSubtitles credentials are available (including Jellyfin plugin import).
     /// </summary>
     public static bool IsConfigured(PluginConfiguration config, IApplicationPaths appPaths)
     {
-        if (!config.OpenSubtitlesEnabled)
-        {
-            return false;
-        }
-
         var creds = Resolve(config, appPaths);
         return !string.IsNullOrWhiteSpace(creds.ApiKey)
                && !string.IsNullOrWhiteSpace(creds.Username)

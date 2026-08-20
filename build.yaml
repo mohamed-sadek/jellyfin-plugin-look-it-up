@@ -1,7 +1,7 @@
 ---
 name: "Look it up"
 guid: "a8ab0fed-cac9-406d-b98b-58161bf970b8"
-version: "1.2.41.0"
+version: "1.2.42.0"
 targetAbi: "10.11.0.0"
 framework: "net9.0"
 overview: "AI-prepare subtitle references, then show short popups during playback"
@@ -13,4 +13,5 @@ owner: "lookitup"
 artifacts:
   - "Jellyfin.Plugin.LookItUp.dll"
 changelog: >
-  Fix prepare-ahead 404 when client sends MediaSourceId instead of library ItemId; sticky playback item id in overlay script.
+  OpenSubtitles always falls back when no text subs; stronger MediaSourceId→ItemId resolution;
+  remove detail-page prepare popup (background-only prepare).

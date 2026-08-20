@@ -16,7 +16,7 @@ namespace Jellyfin.Plugin.LookItUp.Services;
 public interface IOpenSubtitlesClient
 {
     /// <summary>
-    /// Returns true when OpenSubtitles download is enabled and credentials are available.
+    /// Returns true when OpenSubtitles credentials are available.
     /// </summary>
     bool IsConfigured(PluginConfiguration config);
 

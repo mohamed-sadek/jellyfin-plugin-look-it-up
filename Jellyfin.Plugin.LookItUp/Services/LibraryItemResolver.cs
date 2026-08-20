@@ -28,19 +28,38 @@ public static class LibraryItemResolver
     {
         var idNoDash = mediaSourceId.ToString("N", System.Globalization.CultureInfo.InvariantCulture);
         var idDashed = mediaSourceId.ToString("D", System.Globalization.CultureInfo.InvariantCulture);
-        var query = new InternalItemsQuery
-        {
-            Recursive = true,
-            MediaTypes = [MediaType.Video],
-            IsVirtualItem = false,
-            Limit = 5000
-        };
+        var startIndex = 0;
+        const int pageSize = 2000;
 
-        foreach (var candidate in libraryManager.GetItemList(query))
+        while (true)
         {
-            if (ItemHasMediaSourceId(candidate, idNoDash, idDashed))
+            var query = new InternalItemsQuery
             {
-                return candidate;
+                Recursive = true,
+                MediaTypes = [MediaType.Video],
+                IsVirtualItem = false,
+                Limit = pageSize,
+                StartIndex = startIndex
+            };
+
+            var batch = libraryManager.GetItemList(query);
+            if (batch.Count == 0)
+            {
+                break;
+            }
+
+            foreach (var candidate in batch)
+            {
+                if (ItemHasMediaSourceId(candidate, idNoDash, idDashed))
+                {
+                    return candidate;
+                }
+            }
+
+            startIndex += batch.Count;
+            if (batch.Count < pageSize)
+            {
+                break;
             }
         }
 

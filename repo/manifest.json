@@ -8,13 +8,22 @@
     "category": "General",
     "versions": [
       {
+        "version": "1.2.42.0",
+        "changelog": "OpenSubtitles always falls back when no text subs; stronger MediaSourceId→ItemId resolution via Events/Sessions; remove detail-page prepare popup",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.42.0/look-it-up_1.2.42.0.zip",
+        "checksum": "c64d6dffa5e4d7bf74745cbde5fca2c7",
+        "timestamp": "2026-08-20T20:10:00Z"
+      },
+      {
         "version": "1.2.41.0",
         "changelog": "Fix prepare-ahead 404 when client sends MediaSourceId instead of library ItemId; sticky playback item id in overlay",
         "targetAbi": "10.11.0.0",
         "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.41.0/look-it-up_1.2.41.0.zip",
         "checksum": "dac104bc8774ba6b515e31c3bd10412b",
         "timestamp": "2026-08-20T19:55:00Z"
-      },      {
+      },
+      {
         "version": "1.2.40.0",
         "changelog": "Import OpenSubtitles login from Jellyfin OpenSubtitles plugin when LookItUp fields are empty; shared Jellyfin API key by default for PGS/BluRay fallback",
         "targetAbi": "10.11.0.0",

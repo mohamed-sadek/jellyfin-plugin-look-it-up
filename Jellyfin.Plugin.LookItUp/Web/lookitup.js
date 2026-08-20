@@ -1,13 +1,10 @@
 (function () {
   'use strict';
 
-  const CLIENT_VERSION = '1.2.41.0';
+  const CLIENT_VERSION = '1.2.42.0';
   const STYLE_ID = 'lookitup-styles';
   const STACK_ID = 'lookitup-stack';
   const POPUP_ID = 'lookitup-popup'; // legacy single-popup id (removed on upgrade)
-  const SERIES_BTN_ID = 'lookitup-prepare-series-btn';
-  const SERIES_STATUS_ID = 'lookitup-prepare-series-status';
-  const DETAIL_PANEL_ID = 'lookitup-detail-panel';
   const POLL_MS = 200;
   const DEFAULT_POPUP_MS = 3000;
   const DEFAULT_POPUP_DELAY_MS = 1000;
@@ -55,11 +52,6 @@
   let lastCueLogTerm = null;
   let lastSettingsFetchAt = 0;
   let settingsFetchInFlight = false;
-  let seriesUiItemId = null;
-  let seriesUiInFlight = false;
-  let seriesStatusTimer = null;
-  let adminUserCached = null;
-  let adminUserCheckedAt = 0;
   let incrementalPrepareOnPlayback = true;
   let incrementalPrepareWindowMs = DEFAULT_INCREMENTAL_WINDOW_MS;
   let showPopupsDuringPlayback = true;
@@ -68,6 +60,10 @@
   let prepareAheadInFlight = false;
   let lastPrepareAheadAt = 0;
   let trustedPlaybackItemId = null;
+  let discoveredPlaybackManager = null;
+  let lastBadItemId = null;
+  let sessionResolveInFlight = false;
+  let sessionResolveAt = 0;
   // Terms already shown for their current cue window (don't re-show after auto-hide).
   const shownThisPass = new Set();
 
@@ -292,74 +288,6 @@
         color: ${text} !important;
         opacity: 0.92 !important;
       }
-      #${SERIES_BTN_ID}, #${SERIES_STATUS_ID} {
-        position: fixed !important;
-        z-index: 100000 !important;
-        font: 600 14px/1.3 system-ui, -apple-system, "Segoe UI", sans-serif !important;
-      }
-      #${SERIES_BTN_ID} {
-        right: 20px !important;
-        bottom: 20px !important;
-        border: 0 !important;
-        border-radius: 999px !important;
-        padding: 12px 18px !important;
-        background: #00a4dc !important;
-        color: #fff !important;
-        cursor: pointer !important;
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35) !important;
-      }
-      #${SERIES_BTN_ID}:disabled {
-        opacity: 0.65 !important;
-        cursor: default !important;
-      }
-      #${SERIES_STATUS_ID} {
-        right: 20px !important;
-        bottom: 68px !important;
-        max-width: min(360px, 90vw) !important;
-        padding: 10px 14px !important;
-        border-radius: 10px !important;
-        background: rgba(8, 12, 20, 0.92) !important;
-        color: #f7fafc !important;
-        display: none !important;
-      }
-      #${SERIES_STATUS_ID}.visible {
-        display: block !important;
-      }
-      #${DETAIL_PANEL_ID} {
-        position: fixed !important;
-        z-index: 100000 !important;
-        right: 20px !important;
-        bottom: 20px !important;
-        max-width: min(420px, 92vw) !important;
-        padding: 12px 14px !important;
-        border-radius: 12px !important;
-        background: rgba(8, 12, 20, 0.94) !important;
-        color: #f7fafc !important;
-        font: 600 13px/1.35 system-ui, -apple-system, "Segoe UI", sans-serif !important;
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4) !important;
-        display: none !important;
-      }
-      #${DETAIL_PANEL_ID}.visible {
-        display: block !important;
-      }
-      #${DETAIL_PANEL_ID} .lookitup-detail-actions {
-        display: flex !important;
-        flex-wrap: wrap !important;
-        gap: 8px !important;
-        margin-top: 10px !important;
-      }
-      #${DETAIL_PANEL_ID} button {
-        border: 0 !important;
-        border-radius: 999px !important;
-        padding: 8px 12px !important;
-        background: #00a4dc !important;
-        color: #fff !important;
-        cursor: pointer !important;
-        font: inherit !important;
-      }
-      #${DETAIL_PANEL_ID} button.secondary {
-        background: rgba(255, 255, 255, 0.14) !important;
-      }
     `;
   }
 
@@ -578,7 +506,251 @@
   }
 
   function getPlaybackManager() {
+    if (discoveredPlaybackManager) {
+      return discoveredPlaybackManager;
+    }
     return window.playbackManager || window.PlaybackManager || null;
+  }
+
+  function isPlaybackManager(obj) {
+    return !!(
+      obj
+      && typeof obj.currentItem === 'function'
+      && typeof obj.getPlayerState === 'function'
+      && typeof obj.getCurrentPlayer === 'function'
+    );
+  }
+
+  function capturePlaybackItemFromState(state) {
+    const item = state?.NowPlayingItem || state?.nowPlayingItem;
+    const id = readItemIdFromPlaybackObject(item);
+    if (id) {
+      trustedPlaybackItemId = id;
+      lastBadItemId = null;
+    }
+    return id;
+  }
+
+  function bindDiscoveredPlaybackManager(pm) {
+    if (!pm || pm._lookitupBound || !window.Events) {
+      return;
+    }
+    pm._lookitupBound = true;
+    discoveredPlaybackManager = pm;
+    const Events = window.Events;
+    Events.on(pm, 'playbackstart', function (_e, _player, state) {
+      capturePlaybackItemFromState(state);
+    });
+    Events.on(pm, 'playerchange', function () {
+      try {
+        const player = pm.getCurrentPlayer();
+        if (player) {
+          capturePlaybackItemFromState(pm.getPlayerState(player));
+        }
+      } catch (_) {
+        /* ignore */
+      }
+    });
+    try {
+      const player = pm.getCurrentPlayer();
+      if (player) {
+        capturePlaybackItemFromState(pm.getPlayerState(player));
+      }
+    } catch (_) {
+      /* ignore */
+    }
+  }
+
+  function installPlaybackManagerDiscovery() {
+    const Events = window.Events;
+    if (!Events || Events._lookitupDiscoveryInstalled) {
+      return;
+    }
+    Events._lookitupDiscoveryInstalled = true;
+
+    if (typeof Events.on === 'function') {
+      const origOn = Events.on.bind(Events);
+      Events.on = function (obj, name, fn) {
+        if (isPlaybackManager(obj)) {
+          bindDiscoveredPlaybackManager(obj);
+        }
+        return origOn(obj, name, fn);
+      };
+    }
+
+    if (typeof Events.trigger === 'function') {
+      const origTrigger = Events.trigger.bind(Events);
+      Events.trigger = function (obj, name, args) {
+        if (isPlaybackManager(obj)) {
+          bindDiscoveredPlaybackManager(obj);
+          if (name === 'playbackstart' && args && args.length > 1) {
+            capturePlaybackItemFromState(args[1]);
+          }
+        }
+        return origTrigger(obj, name, args);
+      };
+    }
+  }
+
+  function invalidateResolvedItemId(badId) {
+    if (badId) {
+      lastBadItemId = badId;
+    }
+    trustedPlaybackItemId = null;
+    if (currentItemId && (!badId || currentItemId === badId)) {
+      currentItemId = null;
+      annotations = [];
+      shownThisPass.clear();
+      preparedThroughMs = 0;
+      fullyPrepared = false;
+      lastPrepareAheadAt = 0;
+    }
+    lastResolvedLogId = null;
+    queueSessionItemResolve(true);
+  }
+
+  function queueSessionItemResolve(force) {
+    if (sessionResolveInFlight) {
+      return;
+    }
+    if (!force && Date.now() - sessionResolveAt < 3000) {
+      return;
+    }
+    sessionResolveAt = Date.now();
+    sessionResolveInFlight = true;
+    resolveItemIdFromSession()
+      .catch(() => {})
+      .finally(() => {
+        sessionResolveInFlight = false;
+      });
+  }
+
+  async function resolveItemIdFromSession() {
+    const api = getApiClient();
+    const video = getVideoElement();
+    if (!api || !video || video.paused || video.readyState < 2) {
+      return null;
+    }
+
+    const sessions = await api.ajax({
+      url: api.getUrl('Sessions'),
+      type: 'GET',
+      dataType: 'json'
+    });
+
+    const deviceId = typeof api.deviceId === 'function' ? api.deviceId() : null;
+    let best = null;
+
+    for (const session of sessions || []) {
+      const np = session?.NowPlayingItem || session?.nowPlayingItem;
+      if (!np || String(np.MediaType || np.mediaType || '').toLowerCase() !== 'video') {
+        continue;
+      }
+      const playing = session?.PlayState?.IsPaused === false;
+      if (!playing) {
+        continue;
+      }
+      const id = readItemIdFromPlaybackObject(np);
+      if (!id) {
+        continue;
+      }
+      if (deviceId && session.DeviceId === deviceId) {
+        trustedPlaybackItemId = id;
+        lastBadItemId = null;
+        return id;
+      }
+      best = id;
+    }
+
+    if (best) {
+      trustedPlaybackItemId = best;
+      lastBadItemId = null;
+      return best;
+    }
+
+    return null;
+  }
+
+  function readItemIdFromPlaybackManager() {
+    const pm = getPlaybackManager();
+    if (!pm) {
+      return null;
+    }
+
+    const player = getActivePlayer(pm);
+    if (!player) {
+      return null;
+    }
+
+    try {
+      const id = readItemIdFromPlaybackObject(pm.currentItem(player));
+      if (id) {
+        trustedPlaybackItemId = id;
+        lastBadItemId = null;
+        return id;
+      }
+    } catch (_) {
+      /* ignore */
+    }
+
+    try {
+      const state = pm.getPlayerState(player);
+      const id = capturePlaybackItemFromState(state);
+      if (id) {
+        return id;
+      }
+    } catch (_) {
+      /* ignore */
+    }
+
+    return null;
+  }
+
+  function getPlaybackItemIdFromLocation() {
+    const hash = String(location.hash || '');
+    const href = String(location.href || '');
+    let match = hash.match(/(?:^|[#!/])video(?:\?|&|\/)[^#]*\bid=([0-9a-fA-F-]{32,36})/i);
+    if (!match) {
+      match = hash.match(/(?:^|[#!/])video(?:\?|&|\/)[^#]*\bitemId=([0-9a-fA-F-]{32,36})/i);
+    }
+    if (!match && /video/i.test(hash)) {
+      match = href.match(/[?&#](?:id|itemId|videoId)=([0-9a-fA-F-]{32,36})/i);
+    }
+    return match ? formatGuid(match[1]) : null;
+  }
+
+  function getItemIdFromNowPlayingDom() {
+    const selectors = [
+      '.nowPlayingBarImage',
+      '.nowPlayingBar .nowPlayingImage',
+      '.nowPlayingBar img',
+      '.osdImage',
+      '.videoOsdBackdrop'
+    ];
+    for (const sel of selectors) {
+      const el = document.querySelector(sel);
+      if (!el) {
+        continue;
+      }
+      const bg = el.style && el.style.backgroundImage ? el.style.backgroundImage : '';
+      const src = el.currentSrc || el.src || '';
+      const id = extractItemId(bg || src);
+      if (id) {
+        return id;
+      }
+    }
+    return null;
+  }
+
+  function extractItemIdFromStreamUrl(text) {
+    if (!text) {
+      return null;
+    }
+    const str = String(text);
+    const guid =
+      '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9a-fA-F]{32})';
+    const match = str.match(new RegExp('/Videos/' + guid + '(?=[/?#]|$)', 'i'));
+    return match ? formatGuid(match[1]) : null;
   }
 
   function getActivePlayer(pm) {
@@ -665,78 +837,63 @@
   }
 
   function getCurrentItemId() {
-    const pm = getPlaybackManager();
-    const player = getActivePlayer(pm);
+    installPlaybackManagerDiscovery();
 
-    try {
-      if (pm && player && typeof pm.currentItem === 'function') {
-        const id = readItemIdFromPlaybackObject(pm.currentItem(player));
-        if (id) {
-          trustedPlaybackItemId = id;
-          return id;
-        }
-      }
-    } catch (err) {
-      console.debug('[Look it up] currentItem(player) failed', err);
+    const fromPm = readItemIdFromPlaybackManager();
+    if (fromPm && fromPm !== lastBadItemId) {
+      return fromPm;
     }
 
-    try {
-      if (player && typeof player.currentItem === 'function') {
-        const id = readItemIdFromPlaybackObject(player.currentItem());
-        if (id) {
-          trustedPlaybackItemId = id;
-          return id;
-        }
-      }
-    } catch (_) {
-      /* ignore */
-    }
-
-    try {
-      if (pm && typeof pm.getPlayerState === 'function') {
-        const state = pm.getPlayerState(player || undefined);
-        const item = state?.NowPlayingItem || state?.nowPlayingItem;
-        const id = readItemIdFromPlaybackObject(item);
-        if (id) {
-          trustedPlaybackItemId = id;
-          return id;
-        }
-      }
-    } catch (_) {
-      /* ignore */
-    }
-
-    if (trustedPlaybackItemId) {
+    if (trustedPlaybackItemId && trustedPlaybackItemId !== lastBadItemId) {
       return trustedPlaybackItemId;
+    }
+
+    for (const candidate of [getPlaybackItemIdFromLocation(), getDetailsItemIdFromLocation()]) {
+      if (candidate && candidate !== lastBadItemId) {
+        trustedPlaybackItemId = candidate;
+        return candidate;
+      }
+    }
+
+    const fromDom = getItemIdFromNowPlayingDom();
+    if (fromDom && fromDom !== lastBadItemId) {
+      trustedPlaybackItemId = fromDom;
+      return fromDom;
     }
 
     for (const candidate of [location.hash, location.href]) {
       const id = extractItemId(candidate);
-      if (id) {
+      if (id && id !== lastBadItemId) {
         trustedPlaybackItemId = id;
         return id;
       }
     }
 
     const video = getVideoElement();
-    const candidates = [video?.currentSrc, video?.src];
+    if (video && !video.paused && video.readyState >= 2) {
+      queueSessionItemResolve(false);
+    }
 
+    // Stream URLs often carry MediaSourceId (transcode) — never trust over playback state.
+    const streamCandidates = [video?.currentSrc, video?.src];
     if (video) {
       try {
-        Array.from(video.querySelectorAll('source')).forEach((el) => candidates.push(el.src));
+        Array.from(video.querySelectorAll('source')).forEach((el) => streamCandidates.push(el.src));
       } catch (_) {
         /* ignore */
       }
     }
 
-    for (const candidate of candidates) {
-      const id = extractItemId(candidate);
-      if (id) {
+    for (const candidate of streamCandidates) {
+      const id = extractItemIdFromStreamUrl(candidate);
+      if (id && id !== lastBadItemId) {
         if (lastResolvedLogId !== id) {
           lastResolvedLogId = id;
-          console.info('[Look it up] resolved item id from media url', id);
+          console.warn(
+            '[Look it up] only stream-url id available (may be MediaSourceId); waiting for playback/session id',
+            id
+          );
         }
-        trustedPlaybackItemId = id;
         return id;
       }
     }
@@ -987,9 +1144,9 @@
       console.warn('[Look it up] prepare-ahead failed', err);
       const status = err && (err.status || err.statusCode || err.Status);
       if (status === 404) {
-        trustedPlaybackItemId = null;
+        invalidateResolvedItemId(itemId);
         console.warn(
-          '[Look it up] prepare-ahead 404 — client may have sent MediaSourceId instead of library ItemId; will re-resolve on next tick'
+          '[Look it up] prepare-ahead 404 — sent wrong id (often MediaSourceId from transcode URL); re-resolving from playback'
         );
       }
     } finally {
@@ -1096,6 +1253,10 @@
         /* ignore */
       }
       console.warn('[Look it up] failed to load annotations', detail || err);
+      const status = err && (err.status || err.statusCode || err.Status);
+      if (status === 404) {
+        invalidateResolvedItemId(itemId);
+      }
       annotations = [];
     } finally {
       loadInFlight = false;
@@ -1222,6 +1383,10 @@
     missingItemTicks = 0;
 
     if (itemId !== currentItemId) {
+      if (lastBadItemId && itemId === lastBadItemId) {
+        queueSessionItemResolve(false);
+        return;
+      }
       currentItemId = itemId;
       trustedPlaybackItemId = itemId;
       annotations = [];
@@ -1315,15 +1480,14 @@
   }
 
   function start() {
+    installPlaybackManagerDiscovery();
+    removeLegacyDetailPrepareUi();
     ensureStack();
     ensureStyles();
     setInterval(tick, POLL_MS);
-    setInterval(syncSeriesPrepareUi, 1500);
-    window.addEventListener('hashchange', () => { syncSeriesPrepareUi(); });
     console.info('[Look it up] overlay ready', CLIENT_VERSION);
     logServerVersion(0);
     refreshPopupSettings(true);
-    syncSeriesPrepareUi();
   }
 
   function getDetailsItemIdFromLocation() {
@@ -1343,235 +1507,17 @@
     return formatGuid(match[1]);
   }
 
-  function ensureSeriesUi() {
-    ensureStyles();
-    let btn = document.getElementById(SERIES_BTN_ID);
-    if (!btn) {
-      btn = document.createElement('button');
-      btn.id = SERIES_BTN_ID;
-      btn.type = 'button';
-      btn.style.display = 'none';
-      btn.textContent = 'Look it up ? prepare this show';
-      document.body.appendChild(btn);
-    }
-    let status = document.getElementById(SERIES_STATUS_ID);
-    if (!status) {
-      status = document.createElement('div');
-      status.id = SERIES_STATUS_ID;
-      document.body.appendChild(status);
-    }
-    return { btn, status };
-  }
-
-  function hideSeriesUi() {
-    const btn = document.getElementById(SERIES_BTN_ID);
-    const status = document.getElementById(SERIES_STATUS_ID);
-    const panel = document.getElementById(DETAIL_PANEL_ID);
-    if (btn) {
-      btn.style.display = 'none';
-    }
-    if (status) {
-      status.classList.remove('visible');
-      status.textContent = '';
-    }
-    if (panel) {
-      panel.classList.remove('visible');
-      panel.innerHTML = '';
-    }
-    seriesUiItemId = null;
-    if (seriesStatusTimer) {
-      clearInterval(seriesStatusTimer);
-      seriesStatusTimer = null;
-    }
-  }
-
-  function ensureDetailPanel() {
-    ensureStyles();
-    let panel = document.getElementById(DETAIL_PANEL_ID);
-    if (!panel) {
-      panel = document.createElement('div');
-      panel.id = DETAIL_PANEL_ID;
-      document.body.appendChild(panel);
-    }
-    return panel;
-  }
-
-  async function renderDetailControls(api, detailsId, itemName) {
-    const panel = ensureDetailPanel();
-    const seriesBtn = document.getElementById(SERIES_BTN_ID);
-    if (seriesBtn) {
-      seriesBtn.style.display = 'none';
-    }
-
-    let info = null;
-    try {
-      info = await api.ajax({
-        url: api.getUrl('LookItUp/' + detailsId),
-        type: 'GET',
-        dataType: 'json'
-      });
-    } catch (err) {
-      console.debug('[Look it up] detail status failed', err);
-    }
-
-    const prepared = !!(info && (info.prepared || info.Prepared));
-    const disabled = !!(info && (info.disabled || info.Disabled));
-    const count = (info && (info.annotationCount ?? info.AnnotationCount ?? info.count)) || 0;
-    const source = (info && (info.subtitleSource || info.SubtitleSource)) || '-';
-    const matchedBy = (info && (info.matchedBy || info.MatchedBy)) || '-';
-    const durationOk = info && (info.durationCheckOk ?? info.DurationCheckOk);
-    const outcome = (info && (info.prepareOutcome || info.PrepareOutcome)) || '-';
-
-    panel.innerHTML = '';
-    const title = document.createElement('div');
-    title.textContent = 'Look it up — ' + (itemName || 'item');
-    panel.appendChild(title);
-
-    const body = document.createElement('div');
-    body.style.opacity = '0.9';
-    body.style.marginTop = '6px';
-    body.style.whiteSpace = 'pre-wrap';
-    body.textContent = [
-      prepared ? ('Prepared: ' + count + ' annotation(s)') : 'Not prepared',
-      disabled ? 'Popups: DISABLED' : 'Popups: enabled',
-      'Subtitle: ' + source + ' (' + matchedBy + ')',
-      'Duration check: ' + (durationOk === false ? 'FAILED' : 'ok'),
-      'Outcome: ' + outcome
-    ].join('\n');
-    panel.appendChild(body);
-
-    const actions = document.createElement('div');
-    actions.className = 'lookitup-detail-actions';
-
-    const prepBtn = document.createElement('button');
-    prepBtn.type = 'button';
-    prepBtn.textContent = prepared ? 'Regenerate' : 'Prepare';
-    prepBtn.onclick = async function () {
-      prepBtn.disabled = true;
-      prepBtn.textContent = 'Working…';
-      try {
-        await api.ajax({
-          url: api.getUrl('LookItUp/' + detailsId + '/prepare'),
-          type: 'POST',
-          dataType: 'json',
-          contentType: 'application/json',
-          data: '{}'
-        });
-        await renderDetailControls(api, detailsId, itemName);
-      } catch (err) {
-        window.Dashboard?.alert?.('Prepare failed: ' + err);
-        prepBtn.disabled = false;
-        prepBtn.textContent = prepared ? 'Regenerate' : 'Prepare';
+  function removeLegacyDetailPrepareUi() {
+    for (const id of [
+      'lookitup-prepare-series-btn',
+      'lookitup-prepare-series-status',
+      'lookitup-detail-panel'
+    ]) {
+      const el = document.getElementById(id);
+      if (el) {
+        el.remove();
       }
-    };
-    actions.appendChild(prepBtn);
-
-    if (prepared || count > 0) {
-      const toggle = document.createElement('button');
-      toggle.type = 'button';
-      toggle.className = 'secondary';
-      toggle.textContent = disabled ? 'Enable popups' : 'Disable popups';
-      toggle.onclick = async function () {
-        toggle.disabled = true;
-        try {
-          await api.ajax({
-            url: api.getUrl('LookItUp/' + detailsId + '/' + (disabled ? 'enable' : 'disable')),
-            type: 'POST',
-            dataType: 'json',
-            contentType: 'application/json',
-            data: '{}'
-          });
-          await renderDetailControls(api, detailsId, itemName);
-        } catch (err) {
-          window.Dashboard?.alert?.('Toggle failed: ' + err);
-          toggle.disabled = false;
-        }
-      };
-      actions.appendChild(toggle);
     }
-
-    const openBtn = document.createElement('button');
-    openBtn.type = 'button';
-    openBtn.className = 'secondary';
-    openBtn.textContent = 'Open prepare page';
-    openBtn.onclick = function () {
-      openPreparePage(detailsId);
-    };
-    actions.appendChild(openBtn);
-
-    panel.appendChild(actions);
-    panel.classList.add('visible');
-  }
-
-  function setSeriesStatus(text, visible) {
-    const { status } = ensureSeriesUi();
-    status.textContent = text || '';
-    if (visible && text) {
-      status.classList.add('visible');
-    } else {
-      status.classList.remove('visible');
-    }
-  }
-
-  async function refreshSeriesPrepareStatus() {
-    const api = getApiClient();
-    if (!api) {
-      return;
-    }
-    try {
-      const s = await api.ajax({
-        url: api.getUrl('LookItUp/prepare/status'),
-        type: 'GET',
-        dataType: 'json'
-      });
-      const running = !!(s.IsRunning ?? s.isRunning);
-      const completed = s.Completed ?? s.completed ?? 0;
-      const total = s.Total ?? s.total ?? 0;
-      const current = (s.CurrentItem ?? s.currentItem) || '-';
-      const withAnn = s.WithAnnotations ?? s.withAnnotations ?? 0;
-      const failed = s.Failed ?? s.failed ?? 0;
-      const { btn } = ensureSeriesUi();
-      if (running) {
-        btn.disabled = true;
-        btn.textContent = 'Preparing? ' + completed + '/' + total;
-        setSeriesStatus(
-          'Preparing: ' + current + '\nDone ' + completed + '/' + total +
-            ' ? with names ' + withAnn + ' ? failed ' + failed,
-          true
-        );
-      } else {
-        btn.disabled = false;
-        if (total > 0 && (s.FinishedAtUtc || s.finishedAtUtc)) {
-          setSeriesStatus(
-            'Finished: ' + withAnn + ' with names, ' + failed + ' failed of ' + total,
-            true
-          );
-        }
-        if (seriesStatusTimer) {
-          clearInterval(seriesStatusTimer);
-          seriesStatusTimer = null;
-        }
-      }
-    } catch (err) {
-      console.debug('[Look it up] prepare status failed', err);
-    }
-  }
-
-  function openPreparePage(itemId) {
-    if (!itemId) {
-      return;
-    }
-    const page = 'LookItUpPrepare';
-    const target = 'configurationpage?name=' + encodeURIComponent(page) + '&id=' + encodeURIComponent(itemId);
-    try {
-      if (window.Dashboard && typeof Dashboard.navigate === 'function') {
-        Dashboard.navigate(target);
-        return;
-      }
-    } catch (_) {
-      /* fall through */
-    }
-    window.location.hash = '#!/' + target;
   }
 
   // ---- Prepare page UI (driven from injected script.js ? config-page inline JS is unreliable) ----
@@ -1605,7 +1551,7 @@
   }
 
   function ensurePrepareItemId() {
-    PrepareUI.rootItemId = readPrepareQueryId() || PrepareUI.rootItemId || seriesUiItemId;
+    PrepareUI.rootItemId = readPrepareQueryId() || PrepareUI.rootItemId;
     return PrepareUI.rootItemId;
   }
 
@@ -2015,166 +1961,6 @@
     window.addEventListener('hashchange', scheduleInit);
     setInterval(initPreparePageIfPresent, 2000);
     initPreparePageIfPresent();
-  }
-
-  async function startSeriesPrepare(forceRebuild) {
-    // Kept for status polling compatibility; primary UX is the prepare page.
-    const api = getApiClient();
-    const itemId = seriesUiItemId || getDetailsItemIdFromLocation();
-    if (!api || !itemId) {
-      return;
-    }
-    openPreparePage(itemId);
-  }
-
-  async function fetchDetailsItem(api, detailsId) {
-    try {
-      if (typeof api.getItem === 'function') {
-        let userId = null;
-        try {
-          userId = typeof api.getCurrentUserId === 'function' ? api.getCurrentUserId() : null;
-        } catch (_) {
-          userId = null;
-        }
-        if (userId) {
-          return await api.getItem(userId, detailsId);
-        }
-      }
-    } catch (_) {
-      /* fall through */
-    }
-    return api.ajax({
-      url: api.getUrl('Items/' + detailsId),
-      type: 'GET',
-      dataType: 'json'
-    });
-  }
-
-  async function isCurrentUserAdmin(api) {
-    if (!api) {
-      return false;
-    }
-    if (adminUserCached != null && Date.now() - adminUserCheckedAt < 60000) {
-      return adminUserCached;
-    }
-    try {
-      let user = null;
-      if (typeof api.getCurrentUser === 'function') {
-        user = await api.getCurrentUser();
-      } else if (typeof api.getCurrentUserId === 'function') {
-        const userId = api.getCurrentUserId();
-        if (userId) {
-          user = await api.ajax({
-            url: api.getUrl('Users/' + userId),
-            type: 'GET',
-            dataType: 'json'
-          });
-        }
-      }
-      const policy = user && (user.Policy || user.policy);
-      adminUserCached = !!(policy && (policy.IsAdministrator || policy.isAdministrator));
-      adminUserCheckedAt = Date.now();
-      return adminUserCached;
-    } catch (err) {
-      console.debug('[Look it up] admin check failed', err);
-      adminUserCached = false;
-      adminUserCheckedAt = Date.now();
-      return false;
-    }
-  }
-
-  async function syncSeriesPrepareUi() {
-    if (seriesUiInFlight) {
-      return;
-    }
-    const video = getVideoElement();
-    if (video && !video.paused && video.readyState >= 2 && getCurrentItemId()) {
-      hideSeriesUi();
-      return;
-    }
-
-    const detailsId = getDetailsItemIdFromLocation();
-    if (!detailsId) {
-      hideSeriesUi();
-      return;
-    }
-
-    const api = getApiClient();
-    if (!api) {
-      return;
-    }
-
-    seriesUiInFlight = true;
-    try {
-      if (!(await isCurrentUserAdmin(api))) {
-        hideSeriesUi();
-        return;
-      }
-
-      const item = await fetchDetailsItem(api, detailsId);
-      const type = String((item && (item.Type || item.type)) || '');
-      if (type !== 'Series' && type !== 'Season' && type !== 'Episode' && type !== 'Movie') {
-        hideSeriesUi();
-        return;
-      }
-
-      seriesUiItemId = detailsId;
-      const name = (item && (item.Name || item.name)) || 'this title';
-
-      if (type === 'Episode' || type === 'Movie') {
-        await renderDetailControls(api, detailsId, name);
-        return;
-      }
-
-      const panel = document.getElementById(DETAIL_PANEL_ID);
-      if (panel) {
-        panel.classList.remove('visible');
-      }
-
-      const { btn } = ensureSeriesUi();
-      btn.style.display = 'block';
-      btn.title = 'Prepare all episodes for ' + name;
-      btn.disabled = false;
-      btn.textContent = type === 'Season'
-        ? 'Look it up — prepare this season'
-        : 'Look it up — prepare this show';
-      btn.onclick = async function () {
-        if (!window.confirm('Prepare all episodes with AI? Every local name candidate will be verified in batches.')) {
-          return;
-        }
-        btn.disabled = true;
-        btn.textContent = 'Starting…';
-        try {
-          const result = await api.ajax({
-            url: api.getUrl('LookItUp/' + detailsId + '/prepare-series') + '?force=false',
-            type: 'POST',
-            dataType: 'json',
-            contentType: 'application/json',
-            data: '{}'
-          });
-          if (!(result.started || result.Started)) {
-            window.Dashboard?.alert?.('Could not start: ' + (result.error || result.Error || 'unknown'));
-            btn.disabled = false;
-            btn.textContent = type === 'Season'
-              ? 'Look it up — prepare this season'
-              : 'Look it up — prepare this show';
-            return;
-          }
-          if (!seriesStatusTimer) {
-            seriesStatusTimer = setInterval(refreshSeriesPrepareStatus, 2000);
-          }
-          refreshSeriesPrepareStatus();
-        } catch (err) {
-          window.Dashboard?.alert?.('Prepare failed: ' + err);
-          btn.disabled = false;
-        }
-      };
-    } catch (err) {
-      console.debug('[Look it up] series UI item lookup failed', err);
-      hideSeriesUi();
-    } finally {
-      seriesUiInFlight = false;
-    }
   }
 
   if (document.readyState === 'loading') {
