@@ -919,7 +919,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             Timeout = TimeSpan.FromSeconds(90)
         };
         client.DefaultRequestHeaders.UserAgent.Add(
-            new ProductInfoHeaderValue("Jellyfin.Plugin.LookItUp", "1.2.37"));
+            new ProductInfoHeaderValue("Jellyfin.Plugin.LookItUp", "1.2.38"));
         return client;
     }
 

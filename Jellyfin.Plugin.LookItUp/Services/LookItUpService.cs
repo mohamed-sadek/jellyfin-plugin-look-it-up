@@ -482,9 +482,16 @@ public class LookItUpService : ILookItUpService
             }
 
             var windowMs = Math.Clamp(config.IncrementalPrepareWindowMs, 60_000, 900_000);
+            var bootstrapMs = Math.Clamp(config.IncrementalPrepareBootstrapWindowMs, 30_000, windowMs);
             playbackMs = Math.Max(0, playbackMs);
             var fromMs = cache.PreparedThroughMs;
-            var toMs = Math.Min(Math.Max(fromMs + windowMs, playbackMs + windowMs), durationMs);
+            var (fromMsResolved, toMs) = ComputePrepareWindow(
+                fromMs,
+                playbackMs,
+                durationMs,
+                windowMs,
+                bootstrapMs);
+            fromMs = fromMsResolved;
             if (fromMs >= toMs)
             {
                 return new PrepareAheadResult
@@ -1492,6 +1499,29 @@ public class LookItUpService : ILookItUpService
         cache.ScannedAtUtc = DateTime.UtcNow;
         _store.Save(cache);
         MaybeWriteSidecar(item, cache, config.WriteSidecarFiles);
+    }
+
+    /// <summary>
+    /// Picks the next prepare span. Uses smaller bootstrap chunks at start or when behind playback
+    /// so opening-minute references finish before the playhead passes them.
+    /// </summary>
+    internal static (long FromMs, long ToMs) ComputePrepareWindow(
+        long preparedThroughMs,
+        long playbackMs,
+        long durationMs,
+        int windowMs,
+        int bootstrapMs)
+    {
+        var fromMs = preparedThroughMs;
+        var useBootstrap = fromMs == 0 || fromMs < playbackMs;
+        if (useBootstrap)
+        {
+            var toMs = Math.Min(fromMs + bootstrapMs, durationMs);
+            return (fromMs, toMs);
+        }
+
+        var aheadToMs = Math.Min(Math.Max(fromMs + windowMs, playbackMs + windowMs), durationMs);
+        return (fromMs, aheadToMs);
     }
 
     private static bool PassesDurationCheck(BaseItem item, IReadOnlyList<SubtitleCue> cues)

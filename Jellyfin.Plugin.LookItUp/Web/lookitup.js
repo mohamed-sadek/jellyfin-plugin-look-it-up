@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  const CLIENT_VERSION = '1.2.37.0';
+  const CLIENT_VERSION = '1.2.38.0';
   const STYLE_ID = 'lookitup-styles';
   const STACK_ID = 'lookitup-stack';
   const POPUP_ID = 'lookitup-popup'; // legacy single-popup id (removed on upgrade)
@@ -14,6 +14,8 @@
   const MIN_MATCH_WINDOW_MS = 8000;
   const SETTINGS_REFRESH_MS = 5000;
   const PREPARE_AHEAD_MIN_INTERVAL_MS = 10000;
+  const PREPARE_AHEAD_BOOTSTRAP_INTERVAL_MS = 3000;
+  const PREPARE_AHEAD_BOOTSTRAP_UNTIL_MS = 180000;
   const DEFAULT_INCREMENTAL_WINDOW_MS = 300000;
   const MAX_STACKED_POPUPS = 3;
   const JUNK_TERMS = new Set([
@@ -870,6 +872,17 @@
     fullyPrepared = !!(pick(data, 'fullyPrepared', 'FullyPrepared'));
   }
 
+  function prepareAheadIntervalMs(playbackMs) {
+    const pos = Number(playbackMs);
+    if (
+      preparedThroughMs < PREPARE_AHEAD_BOOTSTRAP_UNTIL_MS
+      || (Number.isFinite(pos) && pos < PREPARE_AHEAD_BOOTSTRAP_UNTIL_MS)
+    ) {
+      return PREPARE_AHEAD_BOOTSTRAP_INTERVAL_MS;
+    }
+    return PREPARE_AHEAD_MIN_INTERVAL_MS;
+  }
+
   async function maybePrepareAhead(itemId, playbackMs, force) {
     if (!itemId || !incrementalPrepareOnPlayback || fullyPrepared || prepareAheadInFlight) {
       return;
@@ -878,10 +891,11 @@
       return;
     }
     const aheadTarget = playbackMs + incrementalPrepareWindowMs;
-    if (!force && preparedThroughMs >= aheadTarget) {
+    const behindPlayback = preparedThroughMs < playbackMs;
+    if (!force && !behindPlayback && preparedThroughMs >= aheadTarget) {
       return;
     }
-    if (!force && Date.now() - lastPrepareAheadAt < PREPARE_AHEAD_MIN_INTERVAL_MS) {
+    if (!force && Date.now() - lastPrepareAheadAt < prepareAheadIntervalMs(playbackMs)) {
       return;
     }
 

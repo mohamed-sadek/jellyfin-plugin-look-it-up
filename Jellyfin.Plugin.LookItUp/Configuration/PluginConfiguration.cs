@@ -27,6 +27,7 @@ public class PluginConfiguration : BasePluginConfiguration
         ScanOnPlayback = false;
         IncrementalPrepareOnPlayback = true;
         IncrementalPrepareWindowMs = 300_000;
+        IncrementalPrepareBootstrapWindowMs = 60_000;
         IncrementalAiNamesPerWindow = 40;
         StoreAiDecisions = true;
         WriteSidecarFiles = true;
@@ -92,6 +93,12 @@ public class PluginConfiguration : BasePluginConfiguration
 
     /// <summary>Gets or sets incremental prepare lookahead window in milliseconds.</summary>
     public int IncrementalPrepareWindowMs { get; set; }
+
+    /// <summary>
+    /// Gets or sets smaller prepare chunk at start or when catching up after seek,
+    /// so opening-minute references finish before playback passes them.
+    /// </summary>
+    public int IncrementalPrepareBootstrapWindowMs { get; set; }
 
     /// <summary>Gets or sets max AI verifications per incremental playback window.</summary>
     public int IncrementalAiNamesPerWindow { get; set; }
