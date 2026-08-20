@@ -8,30 +8,328 @@
     "category": "General",
     "versions": [
       {
+        "version": "1.2.37.0",
+        "changelog": "AI decision audit trail (keep/reject reasons in cache JSON); score-aware candidate batching for incremental prepare; tuned prompt for celebrities vs ordinary props",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.37.0/look-it-up_1.2.37.0.zip",
+        "checksum": "3dc84b5b6089f88b546111e05ef57fe7",
+        "timestamp": "2026-08-20T15:35:00Z"
+      },      {
+        "version": "1.2.36.0",
+        "changelog": "Broader heuristic candidate pass; AI gatekeeps cultural references more strictly",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.36.0/look-it-up_1.2.36.0.zip",
+        "checksum": "d482653b0f5aa819511b291a92af3f0f",
+        "timestamp": "2026-08-20T09:30:00Z"
+      },      {
+        "version": "1.2.35.0",
+        "changelog": "Incremental playback prepare: scans ahead during viewing and builds cache on the fly",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.35.0/look-it-up_1.2.35.0.zip",
+        "checksum": "e2a68c6811680b6acc97b80aaf2a0fb0",
+        "timestamp": "2026-08-19T13:30:00Z"
+      },      {
+        "version": "1.2.34.0",
+        "changelog": "Suppress song/album/track title popups; keep artists as people",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.34.0/look-it-up_1.2.34.0.zip",
+        "checksum": "d18b74b78e2390872dc42fcfadb30a0d",
+        "timestamp": "2026-08-09T18:23:17Z"
+      },      {
+        "version": "1.2.33.0",
+        "changelog": "Overnight test button prepares one series only; scoped prepares ignore other shows' retries",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.33.0/look-it-up_1.2.33.0.zip",
+        "checksum": "9eb6ea5a52f3caf035d233abd93de633",
+        "timestamp": "2026-08-08T09:46:27Z"
+      },      {
+        "version": "1.2.32.0",
+        "changelog": "Add Delete all generated files button (caches, sidecars, subtitle downloads, prepare queue)",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.32.0/look-it-up_1.2.32.0.zip",
+        "checksum": "832625ae1447ef22ab03dcbf5e68bfc4",
+        "timestamp": "2026-08-08T09:44:36Z"
+      },      {
+        "version": "1.2.31.0",
+        "changelog": "Add Run overnight prepare now test button on plugin config page",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.31.0/look-it-up_1.2.31.0.zip",
+        "checksum": "49c60ccf2591c998cebdab5bb35577b9",
+        "timestamp": "2026-08-08T09:40:00Z"
+      },      {
+        "version": "1.2.30.0",
+        "changelog": "Overnight rate-limited prepare with retries; OpenSubtitles moviehash; disable popups per item; prepare all candidates",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.30.0/look-it-up_1.2.30.0.zip",
+        "checksum": "5a1d9a1018b4fbf67c375f9176119a9b",
+        "timestamp": "2026-08-08T09:36:08Z"
+      },      {
+        "version": "1.2.29.0",
+        "changelog": "Fix Van Gogh-style names after Uh/dialogue particles; stack overlapping popups",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.29.0/look-it-up_1.2.29.0.zip",
+        "checksum": "c5148da063ac084cc3994dffa41bb4a7",
+        "timestamp": "2026-08-05T15:58:15Z"
+      },      {
+        "version": "1.2.28.0",
+        "changelog": "Van Gogh-style names; cultural-ref focus; drop God/Earth/OpenSubtitles and meta summaries",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.28.0/look-it-up_1.2.28.0.zip",
+        "checksum": "4580df0d864a683b392108f7170f8b2e",
+        "timestamp": "2026-08-05T15:42:19Z"
+      },      {
+        "version": "1.2.27.0",
+        "changelog": "Load all subtitle candidates; N only pre-selects; prepare sends every checked name",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.27.0/look-it-up_1.2.27.0.zip",
+        "checksum": "99847fcca0972b60fcb785520f0f7783",
+        "timestamp": "2026-08-05T15:29:08Z"
+      },      {
+        "version": "1.2.26.0",
+        "changelog": "Tell AI the series name and reject in-show characters",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.26.0/look-it-up_1.2.26.0.zip",
+        "checksum": "6dfd748d69bcf93fa9607998c1814341",
+        "timestamp": "2026-08-05T15:18:23Z"
+      },      {
+        "version": "1.2.25.0",
+        "changelog": "Honor all selected prepare terms; drop comma phrases and I'm false positives",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.25.0/look-it-up_1.2.25.0.zip",
+        "checksum": "7dbf1a04bf5d5aee84bdc3690bdcec37",
+        "timestamp": "2026-08-05T15:14:45Z"
+      },      {
+        "version": "1.2.24.0",
+        "changelog": "Drive prepare page buttons from injected script.js so clicks work reliably",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.24.0/look-it-up_1.2.24.0.zip",
+        "checksum": "c34a287871420c206415edfca23076e0",
+        "timestamp": "2026-08-05T15:04:04Z"
+      },      {
+        "version": "1.2.23.0",
+        "changelog": "Prepare page: no auto-load; bind buttons like config page; Load candidates on demand",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.23.0/look-it-up_1.2.23.0.zip",
+        "checksum": "a2b10047e18105555091cc58fef72012",
+        "timestamp": "2026-08-05T14:57:32Z"
+      },      {
+        "version": "1.2.22.0",
+        "changelog": "Fix prepare-preview hang by extracting a single subtitle stream with ffmpeg",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.22.0/look-it-up_1.2.22.0.zip",
+        "checksum": "0d04355db669c7c3ca0973f77796927b",
+        "timestamp": "2026-08-05T14:53:30Z"
+      },      {
+        "version": "1.2.21.0",
+        "changelog": "Fix Stop on prepare page (abort candidate load); cache embedded subtitle extracts",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.21.0/look-it-up_1.2.21.0.zip",
+        "checksum": "6843f40e1f04baead5eeb06a119ed115",
+        "timestamp": "2026-08-05T14:37:42Z"
+      },      {
+        "version": "1.2.20.0",
+        "changelog": "Dedicated prepare page with selectable candidates; prepare button admins-only",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.20.0/look-it-up_1.2.20.0.zip",
+        "checksum": "b3ac277729382168cd65dae730b56453",
+        "timestamp": "2026-08-05T14:26:22Z"
+      },      {
+        "version": "1.2.19.0",
+        "changelog": "Prepare whole show from series page; popup delay setting (default 1s); remove Learn more links",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.19.0/look-it-up_1.2.19.0.zip",
+        "checksum": "3ea2a3069fefa831531dc7f08a145d4f",
+        "timestamp": "2026-08-05T11:32:08Z"
+      },      {
+        "version": "1.2.18.0",
+        "changelog": "Proxy Wikipedia portraits through /LookItUp/image so CSP does not block popup photos",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.18.0/look-it-up_1.2.18.0.zip",
+        "checksum": "163e16980e7aca7c3d2df332ff6738c8",
+        "timestamp": "2026-08-05T11:04:51Z"
+      },      {
+        "version": "1.2.17.0",
+        "changelog": "Never wipe a saved AI API key when saving config with a blank key field",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.17.0/look-it-up_1.2.17.0.zip",
+        "checksum": "c711d52ee96bfb14e206b424f985583d",
+        "timestamp": "2026-08-05T11:00:47Z"
+      },      {
+        "version": "1.2.16.0",
+        "changelog": "Person popups show Wikipedia portraits; keep possessive tails (LeBaron) as separate candidates",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.16.0/look-it-up_1.2.16.0.zip",
+        "checksum": "7aca840b32b761d7d4c4ff78ace643b5",
+        "timestamp": "2026-08-05T10:54:26Z"
+      },      {
+        "version": "1.2.15.0",
+        "changelog": "Respect popup appearance settings; duration UI in seconds; cache-bust overlay script",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.15.0/look-it-up_1.2.15.0.zip",
+        "checksum": "9a2574430aba74188594246973a8ca58",
+        "timestamp": "2026-08-05T09:35:00Z"
+      },      {
+        "version": "1.2.14.0",
+        "changelog": "Configurable popup style (font, colors, placement, duration); longer AI summaries (280 chars, word-safe trim)",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.14.0/look-it-up_1.2.14.0.zip",
+        "checksum": "b2be56ce7299dbea0380cac8c36ef21f",
+        "timestamp": "2026-08-05T09:30:00Z"
+      },      {
+        "version": "1.2.13.0",
+        "changelog": "Re-anchor AI names to the earliest subtitle mention (Jon Voight at ~0:59, not later LeBaron line)",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.13.0/look-it-up_1.2.13.0.zip",
+        "checksum": "9fda3ef97360bb09c3b26283f55818a1",
+        "timestamp": "2026-08-05T09:25:00Z"
+      },      {
+        "version": "1.2.12.0",
+        "changelog": "Fix playback popups: stop force-rescan on first play, widen cue windows to 8s, show clock times in console",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.12.0/look-it-up_1.2.12.0.zip",
+        "checksum": "d88cb22baaae7c69467fc4c94a764187",
+        "timestamp": "2026-08-05T09:20:00Z"
+      },      {
+        "version": "1.2.11.0",
+        "changelog": "Easier AI provider switching (Groq / OpenAI / OpenRouter / Ollama presets) when Groq is flaky",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.11.0/look-it-up_1.2.11.0.zip",
+        "checksum": "6af3bf12ff5b9ebc4c64cc7cc2e28618",
+        "timestamp": "2026-08-05T09:15:00Z"
+      },      {
+        "version": "1.2.10.0",
+        "changelog": "Fix empty Groq replies: remap deprecated llama-3.1-8b-instant to openai/gpt-oss-20b; short JSON-mode prompts",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.10.0/look-it-up_1.2.10.0.zip",
+        "checksum": "d2cf6d182e168ab5c0564ea9bd811ecc",
+        "timestamp": "2026-08-05T09:10:00Z"
+      },      {
+        "version": "1.2.9.0",
+        "changelog": "Log full Groq responses per name; isolate failures so one bad reply cannot wipe the batch; warn with kept/rejected/failed outcomes",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.9.0/look-it-up_1.2.9.0.zip",
+        "checksum": "872b62989b831d9208d9a6ab68f129aa",
+        "timestamp": "2026-08-05T09:00:00Z"
+      },      {
+        "version": "1.2.8.0",
+        "changelog": "Per-name AI verify: top 5 candidates each get one Groq request that must confirm the candidate is a real name before summarizing",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.8.0/look-it-up_1.2.8.0.zip",
+        "checksum": "631a6462f3f46603841e66c0de0c743f",
+        "timestamp": "2026-08-05T08:50:00Z"
+      },      {
+        "version": "1.2.7.0",
+        "changelog": "Unique name candidates; exclude ALL-CAPS speaker labels; exclude Jellyfin cast/character names",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.7.0/look-it-up_1.2.7.0.zip",
+        "checksum": "a4f489783dc2d56791d728b6e80e62e9",
+        "timestamp": "2026-08-05T08:45:00Z"
+      },      {
+        "version": "1.2.6.0",
+        "changelog": "Document-level name candidate finder + Preview names (no AI) dry-run endpoint",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.6.0/look-it-up_1.2.6.0.zip",
+        "checksum": "63456035f38620cdbd2ee294b0165a48",
+        "timestamp": "2026-08-05T08:35:00Z"
+      },      {
+        "version": "1.2.5.0",
+        "changelog": "Fix Groq prepare: smaller candidate chunks, skip flaky json_object mode, avoid max_tokens failures",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.5.0/look-it-up_1.2.5.0.zip",
+        "checksum": "19441918edc6990dbd6de50add0692e1",
+        "timestamp": "2026-08-04T22:30:00Z"
+      },      {
+        "version": "1.2.4.0",
+        "changelog": "Harden AI response parsing; retry when Groq returns non-JSON prose instead of failing prepare",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.4.0/look-it-up_1.2.4.0.zip",
+        "checksum": "4b61a90af6de225f6a71195cc1937708",
+        "timestamp": "2026-08-04T22:25:00Z"
+      },      {
+        "version": "1.2.3.0",
+        "changelog": "Fast AI prepare: local NER candidates then one chat call; Groq llama-3.1-8b-instant defaults",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.3.0/look-it-up_1.2.3.0.zip",
+        "checksum": "a0f791c1706f2498cc1f24f563300ae8",
+        "timestamp": "2026-08-04T22:20:00Z"
+      },      {
+        "version": "1.2.2.0",
+        "changelog": "Fix Groq AI prepare: retry 429s, smaller batches, higher max_tokens, recover from json_validate_failed; surface AI errors on /prepare",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.2.0/look-it-up_1.2.2.0.zip",
+        "checksum": "ca29a771751c32c146b0e5bf93940270",
+        "timestamp": "2026-08-04T22:15:00Z"
+      },      {
+        "version": "1.2.1.0",
+        "changelog": "Cancel library prepare; prepare one item from plugin page; confirm before full-library scan",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.1.0/look-it-up_1.2.1.0.zip",
+        "checksum": "3d6b8d9f8929bcafe5b14f6fd9e83a98",
+        "timestamp": "2026-08-04T22:05:00Z"
+      },      {
+        "version": "1.2.0.0",
+        "changelog": "AI subtitle-context extraction (OpenAI-compatible); stop relying on bare Wikipedia name matches",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.0.0/look-it-up_1.2.0.0.zip",
+        "checksum": "650e783e38457a4a87c9ac01f532bbd3",
+        "timestamp": "2026-08-04T22:00:00Z"
+      },      {
+        "version": "1.1.0.0",
+        "changelog": "Offline library prepare job; cache-first playback; optional *.lookitup.json sidecars; AI provider placeholder",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.1.0.0/look-it-up_1.1.0.0.zip",
+        "checksum": "7a5fd5feff9c5bf2c532c94b34f0dd5d",
+        "timestamp": "2026-08-04T21:50:00Z"
+      },      {
+        "version": "1.0.7.0",
+        "changelog": "Tighter name filters; clearer cue-gap logging; force rescan on server upgrade",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.0.7.0/look-it-up_1.0.7.0.zip",
+        "checksum": "f91b12b699746f1bddcc9ca1682d125e",
+        "timestamp": "2026-08-04T21:40:00Z"
+      },      {
+        "version": "1.0.6.0",
+        "changelog": "Reduce ALL-CAPS noise; prefer real names; reject disambiguation pages; 2s popup default",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.0.6.0/look-it-up_1.0.6.0.zip",
+        "checksum": "24a5dbae327b5e624aec71c15d5d6dc0",
+        "timestamp": "2026-08-04T21:35:00Z"
+      },      {
+        "version": "1.0.5.0",
+        "changelog": "Extract embedded text subtitles so names like Jon Voight appear",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.0.5.0/look-it-up_1.0.5.0.zip",
+        "checksum": "efad8cdc5d75538f1d563d5eb98f8b42",
+        "timestamp": "2026-08-04T17:20:00Z"
+      },      {
+        "version": "1.0.4.0",
+        "changelog": "Built for Jellyfin 10.11",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.0.4.0/look-it-up_1.0.4.0.zip",
+        "checksum": "6c6a69dcbc95a8e606e5249941820551",
+        "timestamp": "2026-08-04T17:10:00Z"
+      },      {
         "version": "1.0.3.0",
-        "changelog": "Fix API 500s during subtitle scan/Wikipedia lookup; safer folder access; clearer API errors",
+        "changelog": "Fix API 500s",
         "targetAbi": "10.9.0.0",
         "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.0.3.0/look-it-up_1.0.3.0.zip",
         "checksum": "e4732c8067b6848ef9a9561b87ee161a",
         "timestamp": "2026-08-04T17:05:00Z"
-      },
-      {
+      },      {
         "version": "1.0.2.0",
-        "changelog": "Fix Jellyfin 10.11 item detection so annotations load during playback; richer debug logs",
+        "changelog": "Fix item detection",
         "targetAbi": "10.9.0.0",
         "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.0.2.0/look-it-up_1.0.2.0.zip",
         "checksum": "69443b2041f10e6a88ef4d97ec2b6dcd",
         "timestamp": "2026-08-04T17:00:00Z"
-      },
-      {
+      },      {
         "version": "1.0.1.0",
-        "changelog": "More visible fullscreen-safe popups, stabler playback detection, richer console debug logs",
+        "changelog": "Popup visibility fixes",
         "targetAbi": "10.9.0.0",
         "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.0.1.0/look-it-up_1.0.1.0.zip",
         "checksum": "58bd9d07404ac8148bae1a51cb5ca105",
         "timestamp": "2026-08-04T00:00:00Z"
-      },
-      {
+      },      {
         "version": "1.0.0.0",
         "changelog": "Initial release",
         "targetAbi": "10.9.0.0",
