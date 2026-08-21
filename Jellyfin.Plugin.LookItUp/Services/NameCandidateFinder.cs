@@ -470,20 +470,67 @@ public partial class NameCandidateFinder : INameCandidateFinder
             return false;
         }
 
-        if (excludeNames.Contains(term))
+        foreach (var candidate in ExpandExcludeForms(term))
         {
-            return true;
+            if (excludeNames.Contains(candidate))
+            {
+                return true;
+            }
+
+            var parts = candidate.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 1)
+            {
+                if (excludeNames.Contains(parts[0]))
+                {
+                    return true;
+                }
+            }
+            else if (parts.All(excludeNames.Contains))
+            {
+                return true;
+            }
         }
 
-        // "Cosmo Kramer" exclude set may contain "Kramer" — drop exact token matches only for singles;
-        // for multi-word, drop if every content token is excluded or the full phrase is excluded.
-        var parts = term.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length == 1)
+        return false;
+    }
+
+    /// <summary>
+    /// Yields the term plus possessive-stripped forms ("D'Angelo's" → "D'Angelo").
+    /// </summary>
+    private static IEnumerable<string> ExpandExcludeForms(string term)
+    {
+        var t = term.Trim();
+        if (t.Length == 0)
         {
-            return excludeNames.Contains(parts[0]);
+            yield break;
         }
 
-        return parts.All(excludeNames.Contains);
+        yield return t;
+
+        // Possessive: D'Angelo's / D’Angelo’s / D'Angelos (subtitle OCR)
+        var stripped = StripTrailingPossessive(t);
+        if (!string.Equals(stripped, t, StringComparison.OrdinalIgnoreCase)
+            && stripped.Length > 0)
+        {
+            yield return stripped;
+        }
+    }
+
+    private static string StripTrailingPossessive(string term)
+    {
+        if (term.EndsWith("'s", StringComparison.OrdinalIgnoreCase)
+            || term.EndsWith("’s", StringComparison.OrdinalIgnoreCase)
+            || term.EndsWith("‘s", StringComparison.OrdinalIgnoreCase))
+        {
+            return term[..^2].TrimEnd();
+        }
+
+        if (term.EndsWith('\'') || term.EndsWith('’') || term.EndsWith('‘'))
+        {
+            return term[..^1].TrimEnd();
+        }
+
+        return term;
     }
 
     private static void AddCapPhrasesFromOccurrences(

@@ -1,7 +1,7 @@
 ---
 name: "Look it up"
 guid: "a8ab0fed-cac9-406d-b98b-58161bf970b8"
-version: "1.2.44.0"
+version: "1.2.45.0"
 targetAbi: "10.11.0.0"
 framework: "net9.0"
 overview: "AI-prepare subtitle references, then show short popups during playback"
@@ -13,4 +13,5 @@ owner: "lookitup"
 artifacts:
   - "Jellyfin.Plugin.LookItUp.dll"
 changelog: >
-  Fix OpenSubtitles TV search to use parent_imdb_id + season/episode (matches Jellyfin plugin / OS API).
+  Reject possessives of in-show cast (e.g. D'Angelo's mistaken for the pizza brand);
+  harden cast exclusion and AI prompt for character possessives.

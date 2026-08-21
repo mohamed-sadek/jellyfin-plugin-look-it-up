@@ -274,6 +274,13 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         const int maxAttempts = 3;
         string? lastError = null;
 
+        if (MatchesKnownCastName(candidate.Term, media.KnownCastNames))
+        {
+            const string reason = "Local filter: possessive/form of known in-show cast or character";
+            _logger.LogInformation("Look it up skip AI for {Term}: {Reason}", candidate.Term, reason);
+            return (null, BuildDecision(candidate, false, reason, "in-show"), null);
+        }
+
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -348,7 +355,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 }
 
                 var term = string.IsNullOrWhiteSpace(parsed.Term) ? candidate.Term : parsed.Term!.Trim();
-                if (TryGetLocalKeepReject(term, candidate.CueText, out var localReason, out var localCategory))
+                if (TryGetLocalKeepReject(term, candidate.CueText, media.KnownCastNames, out var localReason, out var localCategory))
                 {
                     _logger.LogInformation("Look it up AI kept {Term} but local filter dropped it: {Reason}", term, localReason);
                     return (null, BuildDecision(candidate, false, localReason, localCategory), null);
@@ -445,9 +452,17 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
     private static bool TryGetLocalKeepReject(
         string term,
         string? cueText,
+        IReadOnlyList<string> knownCastNames,
         out string reason,
         out string category)
     {
+        if (MatchesKnownCastName(term, knownCastNames))
+        {
+            reason = "Local filter: matches known in-show cast/character (incl. possessive)";
+            category = "in-show";
+            return true;
+        }
+
         if (IsTaxiHailNotShow(term, cueText))
         {
             reason = "Local filter: shouting to hail a cab, not the TV sitcom";
@@ -465,6 +480,65 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         reason = string.Empty;
         category = string.Empty;
         return false;
+    }
+
+    /// <summary>
+    /// True when <paramref name="term"/> is a known cast/character name, including possessives
+    /// like "D'Angelo's" → "D'Angelo".
+    /// </summary>
+    private static bool MatchesKnownCastName(string? term, IReadOnlyList<string> knownCastNames)
+    {
+        if (string.IsNullOrWhiteSpace(term) || knownCastNames.Count == 0)
+        {
+            return false;
+        }
+
+        foreach (var form in CastNameForms(term))
+        {
+            foreach (var known in knownCastNames)
+            {
+                if (string.IsNullOrWhiteSpace(known))
+                {
+                    continue;
+                }
+
+                if (form.Equals(known, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+
+                // "D'Angelo Barksdale" in metadata vs candidate "D'Angelo"
+                foreach (var knownPart in known.Split(
+                             [' ', '/', ',', '-'],
+                             StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                {
+                    if (knownPart.Length >= 3
+                        && form.Equals(knownPart, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static IEnumerable<string> CastNameForms(string term)
+    {
+        var t = term.Trim();
+        yield return t;
+
+        if (t.EndsWith("'s", StringComparison.OrdinalIgnoreCase)
+            || t.EndsWith("’s", StringComparison.OrdinalIgnoreCase)
+            || t.EndsWith("‘s", StringComparison.OrdinalIgnoreCase))
+        {
+            yield return t[..^2].TrimEnd();
+        }
+        else if (t.EndsWith('\'') || t.EndsWith('’') || t.EndsWith('‘'))
+        {
+            yield return t[..^1].TrimEnd();
+        }
     }
 
     private static bool IsTaxiHailNotShow(string term, string? cueText)
@@ -576,6 +650,9 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 "- Films, books, artworks as cultural objects (not song/album/track titles playing in the scene)\n\n" +
                 "REJECT (keep=false) when a popup adds little value:\n" +
                 "- Any cast member, character, nickname, or in-universe place/org from \"" + show + "\" (in-show)\n" +
+                "- Possessives of those names (\"D'Angelo's\", \"Omar's\") — still in-show, even if a real brand shares the name\n" +
+                "- Coincidental real brands/places that match an in-show character name in context " +
+                "(e.g. \"D'Angelo's dick\" is the character, NOT the pizza chain)\n" +
                 "- Song titles, album names, singles, tracks, or lyric-line titles\n" +
                 "- Universal common knowledge: major countries/demonyms used generically, days/months, religious exclamations, " +
                 "basic nature words (sun, moon, earth, god), generic family words (mom, dad)\n" +

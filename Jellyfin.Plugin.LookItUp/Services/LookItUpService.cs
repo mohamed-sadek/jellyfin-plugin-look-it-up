@@ -1043,6 +1043,9 @@ public class LookItUpService : ILookItUpService
         if (cleaned.Length >= minLength)
         {
             exclude.Add(cleaned);
+            // Dialogue often uses possessives: "D'Angelo's dick" — exclude those forms too.
+            exclude.Add(cleaned + "'s");
+            exclude.Add(cleaned + "’s");
         }
 
         foreach (var part in cleaned.Split(
@@ -1052,6 +1055,8 @@ public class LookItUpService : ILookItUpService
             if (part.Length >= minLength)
             {
                 exclude.Add(part);
+                exclude.Add(part + "'s");
+                exclude.Add(part + "’s");
             }
         }
     }

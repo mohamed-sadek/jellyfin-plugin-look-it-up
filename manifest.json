@@ -8,7 +8,15 @@
     "category": "General",
     "versions": [
       
+      
       {
+        "version": "1.2.45.0",
+        "changelog": "Reject possessives of in-show cast (e.g. D'Angelo's mistaken for pizza brand); harden cast exclusion and AI prompt",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.45.0/look-it-up_1.2.45.0.zip",
+        "checksum": "bdf4a0b7c6114f3eeddd9b11e49b9b7e",
+        "timestamp": "2026-08-21T16:35:00Z"
+      },{
         "version": "1.2.44.0",
         "changelog": "Fix OpenSubtitles TV search to use parent_imdb_id + season/episode (matches Jellyfin plugin / OS API)",
         "targetAbi": "10.11.0.0",
