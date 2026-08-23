@@ -13,5 +13,4 @@ owner: "lookitup"
 artifacts:
   - "Jellyfin.Plugin.LookItUp.dll"
 changelog: >
-  Reject possessives of in-show cast (e.g. D'Angelo's mistaken for the pizza brand);
-  harden cast exclusion and AI prompt for character possessives.
+  Add popup text color setting on the plugin config page (Popup appearance section).
