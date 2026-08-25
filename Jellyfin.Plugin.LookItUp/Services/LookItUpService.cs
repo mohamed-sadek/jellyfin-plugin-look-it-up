@@ -94,7 +94,7 @@ public interface ILookItUpService
 /// Builds timed Wikipedia annotations from a media item's subtitles
 /// (external SRT/VTT or embedded text tracks).
 /// </summary>
-public class LookItUpService : ILookItUpService
+public partial class LookItUpService : ILookItUpService
 {
     /// <summary>
     /// Bump when scan logic changes so stale caches are ignored.
@@ -512,6 +512,7 @@ public class LookItUpService : ILookItUpService
                 StringComparer.OrdinalIgnoreCase);
             var minLen = Math.Max(2, config.MinEntityLength);
             var excludedCast = BuildCastExcludeNames(item, minLen);
+            AddSubtitleSpeakerNames(excludedCast, cues, minLen);
             var mediaContext = BuildAiMediaContext(item, excludedCast);
 
             cache.Version = CurrentCacheVersion;
@@ -624,6 +625,7 @@ public class LookItUpService : ILookItUpService
         var max = Math.Max(1, config?.MaxAnnotationsPerItem ?? 40);
         var minLen = Math.Max(2, config?.MinEntityLength ?? 3);
         var excludedCast = BuildCastExcludeNames(item, minLen);
+        AddSubtitleSpeakerNames(excludedCast, cues, minLen);
         var candidates = _nameCandidateFinder.Find(cues, item.Name, excludedCast, minLen, max);
 
         _logger.LogInformation(
@@ -745,6 +747,7 @@ public class LookItUpService : ILookItUpService
         var cues = _subtitleParser.Parse(subtitle.Content, subtitle.Label);
         var minLen = Math.Max(2, config?.MinEntityLength ?? 3);
         var excludedCast = BuildCastExcludeNames(item, minLen);
+        AddSubtitleSpeakerNames(excludedCast, cues, minLen);
         // Load every local candidate; suggestedN only controls which boxes start checked.
         const int previewCandidateCap = 500;
         var ranked = _nameCandidateFinder
@@ -862,19 +865,89 @@ public class LookItUpService : ILookItUpService
                     AddPeopleToExclude(exclude, _libraryManager.GetPeople(series), minLength);
                     AddNameTokens(exclude, series.Name, minLength);
                 }
+
+                // Season-level guests/hosts often aren't copied onto every episode.
+                if (episode.SeasonId != Guid.Empty)
+                {
+                    var season = _libraryManager.GetItemById(episode.SeasonId);
+                    if (season is not null)
+                    {
+                        AddPeopleToExclude(exclude, _libraryManager.GetPeople(season), minLength);
+                    }
+                }
             }
             catch (Exception ex)
             {
-                _logger.LogDebug(ex, "Could not load series cast for {Item}", item.Name);
+                _logger.LogDebug(ex, "Could not load series/season cast for {Item}", item.Name);
             }
         }
         else if (item is Season season)
         {
             AddNameTokens(exclude, season.SeriesName, minLength);
+            try
+            {
+                var series = season.SeriesId != Guid.Empty
+                    ? _libraryManager.GetItemById(season.SeriesId)
+                    : null;
+                if (series is not null)
+                {
+                    AddPeopleToExclude(exclude, _libraryManager.GetPeople(series), minLength);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Could not load series cast for season {Item}", item.Name);
+            }
         }
 
         return exclude;
     }
+
+    /// <summary>
+    /// Harvests SDH/CC speaker labels like <c>[Brewmaster Yun]</c> / <c>-[Sam]</c> from cue text
+    /// so contestant nicknames missing from Jellyfin metadata are still excluded.
+    /// </summary>
+    internal static void AddSubtitleSpeakerNames(
+        HashSet<string> exclude,
+        IReadOnlyList<SubtitleCue> cues,
+        int minLength)
+    {
+        foreach (var cue in cues)
+        {
+            if (string.IsNullOrWhiteSpace(cue.Text))
+            {
+                continue;
+            }
+
+            foreach (Match m in SpeakerLabelRegex().Matches(cue.Text))
+            {
+                var speaker = m.Groups[1].Value.Trim();
+                if (speaker.Length == 0)
+                {
+                    continue;
+                }
+
+                // Drop stage-direction noise: [sighs], [applause], [music]
+                if (!speaker.Any(char.IsUpper))
+                {
+                    continue;
+                }
+
+                var letters = speaker.Count(char.IsLetter);
+                if (letters < minLength)
+                {
+                    continue;
+                }
+
+                AddNameTokens(exclude, speaker, minLength);
+            }
+        }
+    }
+
+    [GeneratedRegex(
+        @"\[([^\]]{2,60})\]",
+        RegexOptions.CultureInvariant)]
+    private static partial Regex SpeakerLabelRegex();
 
     private AiMediaContext BuildAiMediaContext(BaseItem item, IReadOnlyCollection<string> excludedCast)
     {
@@ -931,7 +1004,7 @@ public class LookItUpService : ILookItUpService
             .Where(n => !string.IsNullOrWhiteSpace(n) && n.Length >= 2)
             .OrderByDescending(n => n.Contains(' ', StringComparison.Ordinal))
             .ThenBy(n => n, StringComparer.OrdinalIgnoreCase)
-            .Take(40)
+            .Take(100)
             .ToList();
 
         return new AiMediaContext
@@ -1157,6 +1230,7 @@ public class LookItUpService : ILookItUpService
 
                 var minLen = Math.Max(2, config.MinEntityLength);
                 var excludedCast = BuildCastExcludeNames(item, minLen);
+                AddSubtitleSpeakerNames(excludedCast, cues, minLen);
                 // 0 = unlimited (safety-capped later in AI extractor).
                 var nameLimit = config.AiNamesPerPrepare <= 0
                     ? 250

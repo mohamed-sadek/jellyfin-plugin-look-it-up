@@ -104,7 +104,11 @@ public partial class NameCandidateFinder : INameCandidateFinder
 
         minLength = Math.Max(2, minLength);
         maxCandidates = Math.Max(1, maxCandidates);
-        excludeNames ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var exclude = excludeNames is null
+            ? new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            : new HashSet<string>(excludeNames, StringComparer.OrdinalIgnoreCase);
+        HarvestSpeakerLabels(exclude, cues, minLength);
+        excludeNames = exclude;
 
         var titleNorm = NormalizeTitle(itemTitle);
         var tokenStats = new Dictionary<string, TokenStats>(StringComparer.OrdinalIgnoreCase);
@@ -910,8 +914,58 @@ public partial class NameCandidateFinder : INameCandidateFinder
     {
         var t = EllipsisRegex().Replace(text ?? string.Empty, " ");
         t = HtmlTagRegex().Replace(t, " ");
+        // Strip SDH speaker labels so "[Brewmaster Yun] Her knife…" does not become "Brewmaster Yun Her".
+        t = SpeakerBracketRegex().Replace(t, " ");
         t = WhitespaceRegex().Replace(t, " ").Trim();
         return t;
+    }
+
+    /// <summary>
+    /// Collects <c>[Speaker Name]</c> labels from cues into the exclude set.
+    /// </summary>
+    private static void HarvestSpeakerLabels(
+        HashSet<string> exclude,
+        IReadOnlyList<SubtitleCue> cues,
+        int minLength)
+    {
+        foreach (var cue in cues)
+        {
+            if (string.IsNullOrWhiteSpace(cue.Text))
+            {
+                continue;
+            }
+
+            foreach (Match m in SpeakerBracketRegex().Matches(cue.Text))
+            {
+                var speaker = m.Groups[1].Value.Trim();
+                if (speaker.Length < minLength || !speaker.Any(char.IsUpper))
+                {
+                    continue;
+                }
+
+                // Skip pure stage directions: [sighs], [applause playing]
+                var letterCount = speaker.Count(char.IsLetter);
+                if (letterCount < minLength)
+                {
+                    continue;
+                }
+
+                exclude.Add(speaker);
+                exclude.Add(speaker + "'s");
+                exclude.Add(speaker + "’s");
+                foreach (var part in speaker.Split(
+                             [' ', '/', ',', '-', '—', '–'],
+                             StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                {
+                    if (part.Length >= minLength && part.Any(char.IsUpper))
+                    {
+                        exclude.Add(part);
+                        exclude.Add(part + "'s");
+                        exclude.Add(part + "’s");
+                    }
+                }
+            }
+        }
     }
 
     private static bool IsMostlyAllCaps(string line)
@@ -943,11 +997,14 @@ public partial class NameCandidateFinder : INameCandidateFinder
                                || surface.EndsWith('.')
                                || surface.EndsWith('!')
                                || surface.EndsWith('?');
-            // Commas / semicolons break Cap+Cap phrases ("Wonderful, Hank" must not become one name).
-            var breaksPhrase = surface is ":" or "-" or "—" or "–" or "," or ";"
+            // Commas / semicolons / closing brackets break Cap+Cap phrases
+            // ("Wonderful, Hank" / end of "[Brewmaster Yun]" must not glue to the next word).
+            var breaksPhrase = surface is ":" or "-" or "—" or "–" or "," or ";" or "]" or ")"
                                || surface.EndsWith(':')
                                || surface.EndsWith(',')
-                               || surface.EndsWith(';');
+                               || surface.EndsWith(';')
+                               || surface.EndsWith(']')
+                               || surface.EndsWith(')');
 
             // Strip trailing sentence punctuation from word surface for matching.
             var word = surface.TrimEnd('.', ',', ';', ':', '!', '?', '"', '\'', ')', ']');
@@ -989,7 +1046,10 @@ public partial class NameCandidateFinder : INameCandidateFinder
         return tokens;
     }
 
-    [GeneratedRegex(@"\b[\p{L}][\p{L}\p{Mn}']*\b|[,;:!?.…\-—–]", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"\[([^\]]{2,60})\]", RegexOptions.CultureInvariant)]
+    private static partial Regex SpeakerBracketRegex();
+
+    [GeneratedRegex(@"\b[\p{L}][\p{L}\p{Mn}']*\b|[,;:!?.…\-—–\[\]\(\)]", RegexOptions.CultureInvariant)]
     private static partial Regex TokenRegex();
 
     [GeneratedRegex(@"\.{2,}|…", RegexOptions.CultureInvariant)]

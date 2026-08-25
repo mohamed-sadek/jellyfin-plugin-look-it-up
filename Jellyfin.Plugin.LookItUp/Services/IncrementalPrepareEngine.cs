@@ -220,10 +220,14 @@ public sealed class IncrementalPrepareEngine
         var max = Math.Max(1, config.MaxAnnotationsPerItem);
         var excludeCast = new HashSet<string>(request.ExcludeCastNames, StringComparer.OrdinalIgnoreCase);
         var minLen = Math.Max(2, config.MinEntityLength);
+        // Find() also harvests speakers; seed exclude cast for AI hints the same way.
         const int prepareCandidateCap = 750;
         var ranked = _nameCandidateFinder
             .Find(cues, request.ItemTitle, excludeCast, minLen, prepareCandidateCap)
             .ToList();
+        // Re-sync exclude set with whatever Find harvested (speakers).
+        // Find clones exclude internally, so harvest again for AI KnownCastNames.
+        LookItUpService.AddSubtitleSpeakerNames(excludeCast, cues, minLen);
 
         var cache = BuildEmptyCache(request, config, durationMs);
         cache.SubtitleHash = ComputeSubtitleHash(request.SubtitleContent);
@@ -279,7 +283,7 @@ public sealed class IncrementalPrepareEngine
             {
                 ShowName = request.ShowName,
                 EpisodeName = request.EpisodeName,
-                KnownCastNames = excludeCast.OrderBy(n => n, StringComparer.OrdinalIgnoreCase).Take(40).ToList()
+                KnownCastNames = excludeCast.OrderBy(n => n, StringComparer.OrdinalIgnoreCase).Take(100).ToList()
             };
 
             for (var fromMs = 0L; fromMs < durationMs; fromMs += request.WindowMs)

@@ -361,6 +361,13 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                     return (null, BuildDecision(candidate, false, localReason, localCategory), null);
                 }
 
+                if (IsFictionalOrInShowKeep(parsed.Category, parsed.KeepReason, parsed.Kind, parsed.Summary))
+                {
+                    const string fictionReason = "Local filter: AI described an in-show/fictional character — popups are for real cultural refs only";
+                    _logger.LogInformation("Look it up AI kept {Term} but local filter dropped fictional/in-show keep", term);
+                    return (null, BuildDecision(candidate, false, fictionReason, "in-show"), null);
+                }
+
                 if (IsTooBasicToKeep(term))
                 {
                     const string filterReason = "Local filter: term is too common for a popup";
@@ -507,6 +514,19 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                     return true;
                 }
 
+                // "Brewmaster Yun Her" (speaker + next word) vs known "Brewmaster Yun"
+                if (known.Length >= 3
+                    && form.StartsWith(known + " ", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+
+                if (form.Length >= 3
+                    && known.StartsWith(form + " ", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+
                 // "D'Angelo Barksdale" in metadata vs candidate "D'Angelo"
                 foreach (var knownPart in known.Split(
                              [' ', '/', ',', '-'],
@@ -539,6 +559,36 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         {
             yield return t[..^1].TrimEnd();
         }
+    }
+
+    private static bool IsFictionalOrInShowKeep(
+        string? category,
+        string? keepReason,
+        string? kind,
+        string? summary)
+    {
+        var blob = string.Join(
+            ' ',
+            category ?? string.Empty,
+            keepReason ?? string.Empty,
+            kind ?? string.Empty,
+            summary ?? string.Empty).ToLowerInvariant();
+
+        if (blob.Length == 0)
+        {
+            return false;
+        }
+
+        return blob.Contains("fictional", StringComparison.Ordinal)
+               || blob.Contains("in-show", StringComparison.Ordinal)
+               || blob.Contains("in show", StringComparison.Ordinal)
+               || blob.Contains("contestant", StringComparison.Ordinal)
+               || blob.Contains("this show", StringComparison.Ordinal)
+               || blob.Contains("this series", StringComparison.Ordinal)
+               || blob.Contains("from the show", StringComparison.Ordinal)
+               || blob.Contains("from the series", StringComparison.Ordinal)
+               || blob.Contains("character from", StringComparison.Ordinal)
+               || blob.Contains("speaker label", StringComparison.Ordinal);
     }
 
     private static bool IsTaxiHailNotShow(string term, string? cueText)
@@ -628,8 +678,8 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         var episode = string.IsNullOrWhiteSpace(media.EpisodeName) ? null : media.EpisodeName.Trim();
         var castHint = media.KnownCastNames.Count == 0
             ? string.Empty
-            : "Known cast/characters from metadata (always reject): "
-              + string.Join(", ", media.KnownCastNames.Take(40))
+            : "Known cast/characters/speakers from metadata+subs (always reject): "
+              + string.Join(", ", media.KnownCastNames.Take(100))
               + "\n";
 
         // Short user-only prompts: llama-3.1-8b-instant often returned finish_reason=stop with empty content.
@@ -649,10 +699,12 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 "- Real organizations, movements, events, awards, ideologies, medical/scientific terms, niche brands\n" +
                 "- Films, books, artworks as cultural objects (not song/album/track titles playing in the scene)\n\n" +
                 "REJECT (keep=false) when a popup adds little value:\n" +
-                "- Any cast member, character, nickname, or in-universe place/org from \"" + show + "\" (in-show)\n" +
+                "- Any cast member, character, nickname, host, contestant, or in-universe place/org from \"" + show + "\" (in-show)\n" +
+                "- SDH/CC speaker labels and nicknames that appear as [Name] in subtitles (they are people ON this show)\n" +
                 "- Possessives of those names (\"D'Angelo's\", \"Omar's\") — still in-show, even if a real brand shares the name\n" +
                 "- Coincidental real brands/places that match an in-show character name in context " +
                 "(e.g. \"D'Angelo's dick\" is the character, NOT the pizza chain)\n" +
+                "- NEVER keep something because it is a \"fictional character from this show\" — that is always reject\n" +
                 "- Song titles, album names, singles, tracks, or lyric-line titles\n" +
                 "- Universal common knowledge: major countries/demonyms used generically, days/months, religious exclamations, " +
                 "basic nature words (sun, moon, earth, god), generic family words (mom, dad)\n" +
@@ -670,8 +722,8 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 "Schema KEEP: {\"keep\":true,\"term\":\"Jon Voight\",\"kind\":\"person\"," +
                 "\"summary\":\"American actor known for Midnight Cowboy and Deliverance.\"," +
                 "\"keepReason\":\"Referenced real actor, not in-show cast\",\"category\":\"person-reference\"}\n" +
-                "Schema REJECT: {\"keep\":false,\"reason\":\"Ordinary car model in casual comparison dialogue\"," +
-                "\"category\":\"ordinary-prop\"}\n" +
+                "Schema REJECT: {\"keep\":false,\"reason\":\"In-show contestant/character nickname from speaker label\"," +
+                "\"category\":\"in-show\"}\n" +
                 "category tags: person-reference | place-reference | cultural-work | niche-term | in-show | " +
                 "song-title | too-common | ordinary-prop | filler | no-value\n" +
                 "kind (when keep=true): person | place | film | brand | other\n" +
@@ -688,9 +740,9 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 "JSON only. Gatekeep popups — keep=false when uncertain.\n" +
                 "Candidate \"" + candidate.Term + "\" in \"" + candidate.CueText + "\" from \"" + show + "\".\n" +
                 "Keep ONLY non-obvious cultural references (people, places, events, niche terms). " +
-                "Keep referenced real actors/celebrities unless in-show cast. " +
-                "Reject: in-show cast/places, song/album titles, too-common geography/words, " +
-                "ordinary car models/brands in casual dialogue, filler.\n" +
+                "Keep referenced real actors/celebrities unless they are ON this show as cast/contestants. " +
+                "Reject: in-show cast/contestants/hosts/nicknames, fictional characters from this show, " +
+                "song/album titles, too-common geography/words, ordinary car models/brands in casual dialogue, filler.\n" +
                 "Always include reason (reject) or keepReason (keep) and category.\n" +
                 "{\"keep\":true,\"term\":\"…\",\"kind\":\"person\",\"summary\":\"…\",\"keepReason\":\"…\",\"category\":\"…\"} " +
                 "or {\"keep\":false,\"reason\":\"…\",\"category\":\"…\"}";
