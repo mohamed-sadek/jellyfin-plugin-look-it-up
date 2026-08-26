@@ -226,6 +226,7 @@ public class LookItUpController : ControllerBase
             backgroundColor = string.IsNullOrWhiteSpace(config?.PopupBackgroundColor)
                 ? "rgba(8, 12, 20, 0.96)"
                 : config!.PopupBackgroundColor.Trim(),
+            maxWidthPx = Math.Clamp(config?.PopupMaxWidthPx ?? 320, 180, 560),
             scaleWithScreen = config?.PopupScaleWithScreen ?? true,
             placement = string.IsNullOrWhiteSpace(config?.PopupPlacement) ? "BottomCenter" : config!.PopupPlacement.Trim(),
             edgeOffsetPct = Math.Clamp(config?.PopupEdgeOffsetPct ?? 10, 2, 40)

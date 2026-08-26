@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  const CLIENT_VERSION = '1.2.48.0';
+  const CLIENT_VERSION = '1.2.49.0';
   const STYLE_ID = 'lookitup-styles';
   const STACK_ID = 'lookitup-stack';
   const POPUP_ID = 'lookitup-popup'; // legacy single-popup id (removed on upgrade)
@@ -42,6 +42,7 @@
     textColor: '#f7fafc',
     borderColor: '#f1ff33',
     backgroundColor: 'rgba(8, 12, 20, 0.96)',
+    maxWidthPx: 320,
     scaleWithScreen: true,
     placement: 'BottomCenter',
     edgeOffsetPct: 10
@@ -106,6 +107,11 @@
   function scaledPopupMetrics() {
     const scale = popupScreenScale();
     const fontPx = Math.round(popupStyle.fontSizePx * scale);
+    // Width scales only lightly so large screens don't get billboard-wide cards.
+    const widthScale = popupStyle.scaleWithScreen
+      ? Math.min(1.15, Math.max(0.9, 0.9 + (scale - 0.8) * (0.25 / 0.65)))
+      : 1;
+    const maxWidthPx = Math.round(Math.min(560, Math.max(180, popupStyle.maxWidthPx * widthScale)));
     return {
       scale,
       fontPx,
@@ -115,7 +121,7 @@
       gap: Math.round(10 * scale),
       rowGap: Math.round(12 * scale),
       photo: Math.round(64 * scale),
-      maxWidthPx: Math.round(560 * scale),
+      maxWidthPx,
       borderWidth: Math.max(2, Math.round(2 * scale))
     };
   }
@@ -156,6 +162,7 @@
       textColor: sanitizeCssColor(pick(src, 'textColor', 'TextColor'), popupStyle.textColor || '#f7fafc'),
       borderColor: sanitizeCssColor(pick(src, 'borderColor', 'BorderColor'), popupStyle.borderColor || '#f1ff33'),
       backgroundColor: sanitizeCssColor(pick(src, 'backgroundColor', 'BackgroundColor'), popupStyle.backgroundColor || 'rgba(8, 12, 20, 0.96)'),
+      maxWidthPx: Math.min(560, Math.max(180, Number(pick(src, 'maxWidthPx', 'MaxWidthPx')) || popupStyle.maxWidthPx || 320)),
       scaleWithScreen: (() => {
         const raw = pick(src, 'scaleWithScreen', 'ScaleWithScreen');
         if (raw === undefined || raw === null || raw === '') {
@@ -174,6 +181,7 @@
       delayMs: popupDelayMs,
       delaySec: Math.round(popupDelayMs / 100) / 10,
       fontSizePx: popupStyle.fontSizePx,
+      maxWidthPx: popupStyle.maxWidthPx,
       scaleWithScreen: popupStyle.scaleWithScreen,
       screenScale: popupScreenScale(),
       placement: popupStyle.placement,
@@ -233,7 +241,9 @@
     card.style.setProperty('border', m.borderWidth + 'px solid ' + popupStyle.borderColor, 'important');
     card.style.setProperty('font-size', m.fontPx + 'px', 'important');
     card.style.setProperty('padding', m.padY + 'px ' + m.padX + 'px', 'important');
+    card.style.setProperty('width', 'min(' + m.maxWidthPx + 'px, 92vw)', 'important');
     card.style.setProperty('max-width', 'min(' + m.maxWidthPx + 'px, 92vw)', 'important');
+    card.style.setProperty('box-sizing', 'border-box', 'important');
     card.style.setProperty('opacity', '1', 'important');
     card.style.setProperty('visibility', 'visible', 'important');
     const termEl = card.querySelector('.lookitup-term');
@@ -296,8 +306,9 @@
       }
       #${STACK_ID} .lookitup-card {
         position: relative !important;
+        box-sizing: border-box !important;
+        width: min(${m.maxWidthPx}px, 92vw) !important;
         max-width: min(${m.maxWidthPx}px, 92vw) !important;
-        width: max-content !important;
         padding: ${m.padY}px ${m.padX}px !important;
         border-radius: 14px !important;
         border: ${m.borderWidth}px solid ${border} !important;
@@ -1376,6 +1387,7 @@
         textColor: '#f7fafc',
         borderColor: '#f1ff33',
         backgroundColor: 'rgba(8, 12, 20, 0.96)',
+        maxWidthPx: 320,
         scaleWithScreen: true,
         placement: 'BottomCenter',
         edgeOffsetPct: 10

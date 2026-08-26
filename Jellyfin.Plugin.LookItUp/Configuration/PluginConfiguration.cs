@@ -22,6 +22,7 @@ public class PluginConfiguration : BasePluginConfiguration
         PopupTextColor = "#f7fafc";
         PopupBorderColor = "#f1ff33";
         PopupBackgroundColor = "rgba(8, 12, 20, 0.96)";
+        PopupMaxWidthPx = 320;
         PopupScaleWithScreen = true;
         PopupPlacement = "BottomCenter";
         PopupEdgeOffsetPct = 10;
@@ -81,6 +82,9 @@ public class PluginConfiguration : BasePluginConfiguration
 
     /// <summary>Gets or sets popup background color (CSS color, including rgba).</summary>
     public string PopupBackgroundColor { get; set; }
+
+    /// <summary>Gets or sets popup card max width in pixels (before light screen scaling).</summary>
+    public int PopupMaxWidthPx { get; set; }
 
     /// <summary>
     /// Gets or sets whether popup size scales with viewport width
