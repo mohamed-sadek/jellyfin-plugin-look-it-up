@@ -222,9 +222,11 @@ public class LookItUpController : ControllerBase
             delayMs = Math.Clamp(config?.PopupDelayMs ?? 1000, 0, 10000),
             fontSizePx = Math.Clamp(config?.PopupFontSizePx ?? 16, 10, 48),
             textColor = string.IsNullOrWhiteSpace(config?.PopupTextColor) ? "#f7fafc" : config!.PopupTextColor.Trim(),
+            borderColor = string.IsNullOrWhiteSpace(config?.PopupBorderColor) ? "#f1ff33" : config!.PopupBorderColor.Trim(),
             backgroundColor = string.IsNullOrWhiteSpace(config?.PopupBackgroundColor)
                 ? "rgba(8, 12, 20, 0.96)"
                 : config!.PopupBackgroundColor.Trim(),
+            scaleWithScreen = config?.PopupScaleWithScreen ?? true,
             placement = string.IsNullOrWhiteSpace(config?.PopupPlacement) ? "BottomCenter" : config!.PopupPlacement.Trim(),
             edgeOffsetPct = Math.Clamp(config?.PopupEdgeOffsetPct ?? 10, 2, 40)
         };

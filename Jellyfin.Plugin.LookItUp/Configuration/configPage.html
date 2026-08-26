@@ -145,11 +145,24 @@
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="txtPopupFontSize">Font size (px)</label>
                         <input id="txtPopupFontSize" type="number" is="emby-input" min="10" max="48" />
+                        <div class="fieldDescription">Base size at ~1280px-wide screens. When scale-with-screen is on, larger/smaller viewports adjust from this.</div>
+                    </div>
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label>
+                            <input type="checkbox" is="emby-checkbox" id="chkPopupScaleWithScreen" />
+                            <span>Scale size with screen</span>
+                        </label>
+                        <div class="fieldDescription">Larger on TVs / wide monitors, smaller on phones and tablets.</div>
                     </div>
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="txtPopupTextColor">Text color</label>
                         <input id="txtPopupTextColor" type="text" is="emby-input" placeholder="#f7fafc" />
                         <div class="fieldDescription">CSS color for popup title and body (hex, rgb/rgba, or named color).</div>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="txtPopupBorderColor">Border color</label>
+                        <input id="txtPopupBorderColor" type="text" is="emby-input" placeholder="#f1ff33" />
+                        <div class="fieldDescription">CSS color for the popup outline (hex, rgb/rgba, or named color).</div>
                     </div>
                     <div class="selectContainer">
                         <label class="inputLabel inputLabelUnfocused" for="selPopupPlacement">Placement</label>
@@ -170,7 +183,7 @@
                     <p>Paste into JavaScript Injector (not an HTML <code>&lt;script&gt;</code> tag):</p>
                     <pre style="white-space:pre-wrap;word-break:break-all;background:rgba(0,0,0,.08);padding:12px;border-radius:8px;">(function () {
   var s = document.createElement('script');
-  s.src = '/LookItUp/script.js?v=1.2.47';
+  s.src = '/LookItUp/script.js?v=1.2.48';
   s.async = true;
   document.head.appendChild(s);
 })();</pre>
@@ -281,7 +294,9 @@
                     document.querySelector('#txtPopupDurationSec').value = Math.max(1, Math.round((cfgGet(config, 'PopupDurationMs', 'popupDurationMs', 3000) || 3000) / 1000));
                     document.querySelector('#txtPopupDelaySec').value = Math.max(0, Math.round((Number(cfgGet(config, 'PopupDelayMs', 'popupDelayMs', 1000)) || 1000) / 100) / 10);
                     document.querySelector('#txtPopupFontSize').value = cfgGet(config, 'PopupFontSizePx', 'popupFontSizePx', 16);
+                    document.querySelector('#chkPopupScaleWithScreen').checked = cfgGet(config, 'PopupScaleWithScreen', 'popupScaleWithScreen', true) !== false;
                     document.querySelector('#txtPopupTextColor').value = cfgGet(config, 'PopupTextColor', 'popupTextColor', '#f7fafc');
+                    document.querySelector('#txtPopupBorderColor').value = cfgGet(config, 'PopupBorderColor', 'popupBorderColor', '#f1ff33');
                     document.querySelector('#selPopupPlacement').value = cfgGet(config, 'PopupPlacement', 'popupPlacement', 'BottomCenter');
                     Dashboard.hideLoadingMsg();
                 });
@@ -323,7 +338,9 @@
                     config.PopupDurationMs = Math.min(30000, Math.max(1000, (parseInt(document.querySelector('#txtPopupDurationSec').value, 10) || 3) * 1000));
                     config.PopupDelayMs = Math.min(10000, Math.max(0, Math.round((parseFloat(document.querySelector('#txtPopupDelaySec').value) || 1) * 1000)));
                     config.PopupFontSizePx = parseInt(document.querySelector('#txtPopupFontSize').value, 10) || 16;
+                    config.PopupScaleWithScreen = document.querySelector('#chkPopupScaleWithScreen').checked;
                     config.PopupTextColor = (document.querySelector('#txtPopupTextColor').value || '#f7fafc').trim();
+                    config.PopupBorderColor = (document.querySelector('#txtPopupBorderColor').value || '#f1ff33').trim();
                     config.PopupPlacement = document.querySelector('#selPopupPlacement').value || 'BottomCenter';
                     var newKey = (document.querySelector('#txtAiApiKey').value || '').trim();
                     if (newKey.length >= 8) {

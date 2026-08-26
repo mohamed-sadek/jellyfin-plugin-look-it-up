@@ -20,7 +20,9 @@ public class PluginConfiguration : BasePluginConfiguration
         PopupDelayMs = 1000;
         PopupFontSizePx = 16;
         PopupTextColor = "#f7fafc";
+        PopupBorderColor = "#f1ff33";
         PopupBackgroundColor = "rgba(8, 12, 20, 0.96)";
+        PopupScaleWithScreen = true;
         PopupPlacement = "BottomCenter";
         PopupEdgeOffsetPct = 10;
         PreferredSubtitleLanguages = "en";
@@ -74,8 +76,17 @@ public class PluginConfiguration : BasePluginConfiguration
     /// <summary>Gets or sets popup text color (CSS color).</summary>
     public string PopupTextColor { get; set; }
 
+    /// <summary>Gets or sets popup border color (CSS color).</summary>
+    public string PopupBorderColor { get; set; }
+
     /// <summary>Gets or sets popup background color (CSS color, including rgba).</summary>
     public string PopupBackgroundColor { get; set; }
+
+    /// <summary>
+    /// Gets or sets whether popup size scales with viewport width
+    /// (larger on TVs / wide monitors, smaller on phones).
+    /// </summary>
+    public bool PopupScaleWithScreen { get; set; }
 
     /// <summary>Gets or sets popup placement.</summary>
     public string PopupPlacement { get; set; }

@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  const CLIENT_VERSION = '1.2.47.0';
+  const CLIENT_VERSION = '1.2.48.0';
   const STYLE_ID = 'lookitup-styles';
   const STACK_ID = 'lookitup-stack';
   const POPUP_ID = 'lookitup-popup'; // legacy single-popup id (removed on upgrade)
@@ -40,7 +40,9 @@
   let popupStyle = {
     fontSizePx: 16,
     textColor: '#f7fafc',
+    borderColor: '#f1ff33',
     backgroundColor: 'rgba(8, 12, 20, 0.96)',
+    scaleWithScreen: true,
     placement: 'BottomCenter',
     edgeOffsetPct: 10
   };
@@ -92,6 +94,32 @@
     return raw;
   }
 
+  /** Scale relative to a ~1280px-wide reference viewport when scaleWithScreen is on. */
+  function popupScreenScale() {
+    if (!popupStyle.scaleWithScreen) {
+      return 1;
+    }
+    const w = Math.max(320, Number(window.innerWidth) || 1280);
+    return Math.min(1.45, Math.max(0.8, w / 1280));
+  }
+
+  function scaledPopupMetrics() {
+    const scale = popupScreenScale();
+    const fontPx = Math.round(popupStyle.fontSizePx * scale);
+    return {
+      scale,
+      fontPx,
+      titlePx: Math.round(fontPx * 1.1),
+      padY: Math.round(16 * scale),
+      padX: Math.round(20 * scale),
+      gap: Math.round(10 * scale),
+      rowGap: Math.round(12 * scale),
+      photo: Math.round(64 * scale),
+      maxWidthPx: Math.round(560 * scale),
+      borderWidth: Math.max(2, Math.round(2 * scale))
+    };
+  }
+
   function placementCss(placement, edgePct) {
     const edge = Math.min(40, Math.max(2, Number(edgePct) || 10));
     const edgeCss = edge + 'vh';
@@ -126,19 +154,31 @@
     popupStyle = {
       fontSizePx: Math.min(48, Math.max(10, Number(pick(src, 'fontSizePx', 'FontSizePx')) || popupStyle.fontSizePx || 16)),
       textColor: sanitizeCssColor(pick(src, 'textColor', 'TextColor'), popupStyle.textColor || '#f7fafc'),
+      borderColor: sanitizeCssColor(pick(src, 'borderColor', 'BorderColor'), popupStyle.borderColor || '#f1ff33'),
       backgroundColor: sanitizeCssColor(pick(src, 'backgroundColor', 'BackgroundColor'), popupStyle.backgroundColor || 'rgba(8, 12, 20, 0.96)'),
+      scaleWithScreen: (() => {
+        const raw = pick(src, 'scaleWithScreen', 'ScaleWithScreen');
+        if (raw === undefined || raw === null || raw === '') {
+          return popupStyle.scaleWithScreen !== false;
+        }
+        return raw !== false && raw !== 'false' && raw !== 0 && raw !== '0';
+      })(),
       placement: String(pick(src, 'placement', 'Placement') || popupStyle.placement || 'BottomCenter'),
       edgeOffsetPct: Math.min(40, Math.max(2, Number(pick(src, 'edgeOffsetPct', 'EdgeOffsetPct')) || popupStyle.edgeOffsetPct || 10))
     };
     ensureStyles();
+    refreshVisibleCardChrome();
     console.info('[Look it up] popup settings applied', {
       durationMs: popupDurationMs,
       durationSec: Math.round(popupDurationMs / 1000),
       delayMs: popupDelayMs,
       delaySec: Math.round(popupDelayMs / 100) / 10,
       fontSizePx: popupStyle.fontSizePx,
+      scaleWithScreen: popupStyle.scaleWithScreen,
+      screenScale: popupScreenScale(),
       placement: popupStyle.placement,
       textColor: popupStyle.textColor,
+      borderColor: popupStyle.borderColor,
       backgroundColor: popupStyle.backgroundColor,
       edgeOffsetPct: popupStyle.edgeOffsetPct
     });
@@ -187,20 +227,39 @@
   }
 
   function applyInlineCardChrome(card) {
-    const fontPx = popupStyle.fontSizePx;
+    const m = scaledPopupMetrics();
     card.style.setProperty('background', popupStyle.backgroundColor, 'important');
     card.style.setProperty('color', popupStyle.textColor, 'important');
-    card.style.setProperty('font-size', fontPx + 'px', 'important');
+    card.style.setProperty('border', m.borderWidth + 'px solid ' + popupStyle.borderColor, 'important');
+    card.style.setProperty('font-size', m.fontPx + 'px', 'important');
+    card.style.setProperty('padding', m.padY + 'px ' + m.padX + 'px', 'important');
+    card.style.setProperty('max-width', 'min(' + m.maxWidthPx + 'px, 92vw)', 'important');
     card.style.setProperty('opacity', '1', 'important');
     card.style.setProperty('visibility', 'visible', 'important');
     const termEl = card.querySelector('.lookitup-term');
     if (termEl) {
-      termEl.style.setProperty('font-size', Math.round(fontPx * 1.1) + 'px', 'important');
+      termEl.style.setProperty('font-size', m.titlePx + 'px', 'important');
       termEl.style.setProperty('color', popupStyle.textColor, 'important');
     }
     const bodyEl = card.querySelector('.lookitup-body');
     if (bodyEl) {
       bodyEl.style.setProperty('color', popupStyle.textColor, 'important');
+    }
+    const photoEl = card.querySelector('.lookitup-photo');
+    if (photoEl) {
+      photoEl.style.setProperty('width', m.photo + 'px', 'important');
+      photoEl.style.setProperty('height', m.photo + 'px', 'important');
+    }
+  }
+
+  function refreshVisibleCardChrome() {
+    const cards = document.querySelectorAll('#' + STACK_ID + ' .lookitup-card');
+    for (const card of cards) {
+      applyInlineCardChrome(card);
+    }
+    const stack = document.getElementById(STACK_ID);
+    if (stack) {
+      applyInlineStackChrome(stack);
     }
   }
 
@@ -213,9 +272,9 @@
     }
 
     const pos = placementCss(popupStyle.placement, popupStyle.edgeOffsetPct);
-    const fontPx = popupStyle.fontSizePx;
-    const titlePx = Math.round(fontPx * 1.1);
+    const m = scaledPopupMetrics();
     const text = popupStyle.textColor;
+    const border = popupStyle.borderColor;
     const bg = popupStyle.backgroundColor;
 
     style.textContent = `
@@ -229,22 +288,22 @@
         z-index: 2147483647 !important;
         display: flex !important;
         flex-direction: column-reverse !important;
-        gap: 10px !important;
+        gap: ${m.gap}px !important;
         align-items: ${pos.align || 'center'} !important;
-        max-width: min(560px, 92vw) !important;
+        max-width: min(${m.maxWidthPx}px, 92vw) !important;
         pointer-events: none !important;
         width: max-content !important;
       }
       #${STACK_ID} .lookitup-card {
         position: relative !important;
-        max-width: min(560px, 92vw) !important;
+        max-width: min(${m.maxWidthPx}px, 92vw) !important;
         width: max-content !important;
-        padding: 16px 20px !important;
+        padding: ${m.padY}px ${m.padX}px !important;
         border-radius: 14px !important;
-        border: 1px solid rgba(255, 255, 255, 0.22) !important;
+        border: ${m.borderWidth}px solid ${border} !important;
         background: ${bg} !important;
         color: ${text} !important;
-        font: 600 ${fontPx}px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif !important;
+        font: 600 ${m.fontPx}px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif !important;
         box-shadow: 0 16px 48px rgba(0, 0, 0, 0.65) !important;
         opacity: 0;
         visibility: hidden;
@@ -260,13 +319,13 @@
       }
       #${STACK_ID} .lookitup-row {
         display: flex !important;
-        gap: 12px !important;
+        gap: ${m.rowGap}px !important;
         align-items: flex-start !important;
       }
       #${STACK_ID} .lookitup-photo {
         flex: 0 0 auto !important;
-        width: 64px !important;
-        height: 64px !important;
+        width: ${m.photo}px !important;
+        height: ${m.photo}px !important;
         border-radius: 10px !important;
         object-fit: cover !important;
         background: rgba(255, 255, 255, 0.08) !important;
@@ -278,7 +337,7 @@
       #${STACK_ID} .lookitup-term {
         display: block !important;
         font-weight: 800 !important;
-        font-size: ${titlePx}px !important;
+        font-size: ${m.titlePx}px !important;
         margin-bottom: 6px !important;
         color: ${text} !important;
       }
@@ -1315,7 +1374,9 @@
         durationMs: rawDuration,
         fontSizePx: 16,
         textColor: '#f7fafc',
+        borderColor: '#f1ff33',
         backgroundColor: 'rgba(8, 12, 20, 0.96)',
+        scaleWithScreen: true,
         placement: 'BottomCenter',
         edgeOffsetPct: 10
       };
@@ -1617,6 +1678,18 @@
     ensureStyles();
     setInterval(tick, POLL_MS);
     setInterval(installApiClientPlaybackHooks, 2000);
+    let resizeTimer = null;
+    const onViewportChange = () => {
+      if (resizeTimer) {
+        clearTimeout(resizeTimer);
+      }
+      resizeTimer = setTimeout(() => {
+        ensureStyles();
+        refreshVisibleCardChrome();
+      }, 120);
+    };
+    window.addEventListener('resize', onViewportChange);
+    window.addEventListener('orientationchange', onViewportChange);
     console.info('[Look it up] overlay ready', CLIENT_VERSION);
     logServerVersion(0);
     refreshPopupSettings(true);
