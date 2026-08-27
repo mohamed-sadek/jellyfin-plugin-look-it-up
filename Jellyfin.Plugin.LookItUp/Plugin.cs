@@ -68,23 +68,14 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     /// <inheritdoc />
     public override void UpdateConfiguration(BasePluginConfiguration configuration)
     {
-        if (configuration is PluginConfiguration incoming)
+        if (configuration is PluginConfiguration incoming
+            && string.IsNullOrWhiteSpace(incoming.AiApiKey)
+            && !string.IsNullOrWhiteSpace(Configuration.AiApiKey))
         {
-            var current = Configuration;
-            // Config UI leaves secret fields blank on purpose; never wipe saved credentials.
-            PreserveIfBlank(incoming.AiApiKey, current.AiApiKey, v => incoming.AiApiKey = v);
-            PreserveIfBlank(incoming.OpenSubtitlesPassword, current.OpenSubtitlesPassword, v => incoming.OpenSubtitlesPassword = v);
-            PreserveIfBlank(incoming.OpenSubtitlesApiKey, current.OpenSubtitlesApiKey, v => incoming.OpenSubtitlesApiKey = v);
+            // Config UI leaves the key field blank on purpose; never wipe a saved key.
+            incoming.AiApiKey = Configuration.AiApiKey;
         }
 
         base.UpdateConfiguration(configuration);
-    }
-
-    private static void PreserveIfBlank(string? incoming, string? existing, Action<string> set)
-    {
-        if (string.IsNullOrWhiteSpace(incoming) && !string.IsNullOrWhiteSpace(existing))
-        {
-            set(existing);
-        }
     }
 }

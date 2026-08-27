@@ -41,7 +41,7 @@ public sealed class AiMediaContext
 }
 
 /// <summary>
-/// Verifies local name candidates with an LLM (one name per HTTP call).
+/// Verifies local name candidates with an LLM (one request per name).
 /// </summary>
 public interface IAiEntityExtractor
 {
@@ -51,7 +51,7 @@ public interface IAiEntityExtractor
     bool IsConfigured(PluginConfiguration config);
 
     /// <summary>
-    /// Verifies candidates one HTTP call at a time and returns kept mentions with short summaries.
+    /// Verifies candidates one-by-one and returns kept mentions with short summaries.
     /// </summary>
     Task<AiExtractionResult> ResolveNamesAsync(
         AiMediaContext media,
@@ -61,7 +61,7 @@ public interface IAiEntityExtractor
 }
 
 /// <summary>
-/// OpenAI-compatible name verifier (Groq, Gemini, OpenAI, OpenRouter, Ollama).
+/// OpenAI-compatible per-name verifier (Groq, OpenAI, OpenRouter, Ollama).
 /// </summary>
 public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
 {
@@ -135,7 +135,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         }
 
         var baseUrl = ResolveBaseUrl(config, model);
-        // Caller controls candidate list size (auto top-N or full UI selection). Safety cap only.
+        // Caller controls batch size (auto top-N or full UI selection). Safety cap only.
         const int absoluteMax = 250;
         var batch = candidates.Take(absoluteMax).ToList();
         var mentions = new List<AiEntityMention>();
@@ -259,123 +259,6 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         };
     }
 
-
-    private NameVerifyOutcome ApplyParsedDecision(
-        NameCandidate candidate,
-        VerifyParseResult parsed,
-        AiMediaContext media)
-    {
-        if (!parsed.Keep)
-        {
-            var reason = parsed.Reason ?? "keep=false";
-            var category = parsed.Category ?? InferRejectCategory(reason);
-            _logger.LogInformation(
-                "Look it up AI rejected {Term}: [{Category}] {Reason}",
-                candidate.Term,
-                category,
-                reason);
-            return new NameVerifyOutcome(
-                candidate,
-                null,
-                BuildDecision(candidate, false, reason, category),
-                null);
-        }
-
-        var term = string.IsNullOrWhiteSpace(parsed.Term) ? candidate.Term : parsed.Term!.Trim();
-        if (TryGetLocalKeepReject(term, candidate.CueText, media.KnownCastNames, out var localReason, out var localCategory))
-        {
-            _logger.LogInformation("Look it up AI kept {Term} but local filter dropped it: {Reason}", term, localReason);
-            return new NameVerifyOutcome(
-                candidate,
-                null,
-                BuildDecision(candidate, false, localReason, localCategory),
-                null);
-        }
-
-        if (IsFictionalOrInShowKeep(
-                parsed.Category,
-                parsed.KeepReason,
-                parsed.Kind,
-                parsed.Summary,
-                media.ShowName))
-        {
-            const string fictionReason = "Local filter: AI described an in-show/fictional character — popups are for real cultural refs only";
-            _logger.LogInformation("Look it up AI kept {Term} but local filter dropped fictional/in-show keep", term);
-            return new NameVerifyOutcome(
-                candidate,
-                null,
-                BuildDecision(candidate, false, fictionReason, "in-show"),
-                null);
-        }
-
-        if (IsTooBasicToKeep(term))
-        {
-            const string filterReason = "Local filter: term is too common for a popup";
-            _logger.LogInformation("Look it up AI kept {Term} but local filter dropped it as too basic", term);
-            return new NameVerifyOutcome(
-                candidate,
-                null,
-                BuildDecision(candidate, false, filterReason, "too-common"),
-                null);
-        }
-
-        var summary = (parsed.Summary ?? string.Empty).Trim();
-        if (summary.Length == 0)
-        {
-            var emptySummaryError = $"kept {term} but empty summary";
-            return new NameVerifyOutcome(
-                candidate,
-                null,
-                BuildDecision(candidate, false, emptySummaryError, "error"),
-                emptySummaryError);
-        }
-
-        if (!summary.StartsWith(term, StringComparison.OrdinalIgnoreCase))
-        {
-            summary = term + ": " + summary;
-        }
-
-        summary = ClampSummary(SanitizeSummary(summary, term), 280);
-
-        if (IsSongOrMusicWork(term, parsed.Kind, summary))
-        {
-            const string songReason = "Local filter: song/album/track title";
-            _logger.LogInformation(
-                "Look it up AI kept {Term} but local filter dropped it as a song/album/track",
-                term);
-            return new NameVerifyOutcome(
-                candidate,
-                null,
-                BuildDecision(candidate, false, songReason, "song-title"),
-                null);
-        }
-
-        var keepReason = string.IsNullOrWhiteSpace(parsed.KeepReason)
-            ? "Non-obvious cultural reference worth a short popup"
-            : parsed.KeepReason!.Trim();
-        var keepCategory = parsed.Category ?? NormalizeKind(parsed.Kind);
-
-        _logger.LogInformation(
-            "Look it up AI kept {Term} → {Canonical}: [{Category}] {Reason}",
-            candidate.Term,
-            term,
-            keepCategory,
-            keepReason);
-
-        return new NameVerifyOutcome(
-            candidate,
-            new AiEntityMention
-            {
-                Term = term,
-                Kind = FixMentionKind(term, NormalizeKind(parsed.Kind), summary),
-                Summary = summary,
-                StartMs = candidate.StartMs,
-                EndMs = Math.Max(candidate.EndMs, candidate.StartMs + 3000)
-            },
-            BuildDecision(candidate, true, keepReason, keepCategory),
-            null);
-    }
-
     private async Task<(AiEntityMention? Mention, AiVerifyDecision Decision, string? Error)> VerifyOneAsync(
         AiMediaContext media,
         NameCandidate candidate,
@@ -403,7 +286,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 .WaitTurnAsync(config.PrepareMaxAiCallsPerMinute, cancellationToken)
                 .ConfigureAwait(false);
 
-            var payload = BuildChatPayload(media, candidate, model, attempt, config);
+            var payload = BuildChatPayload(media, candidate, model, attempt);
             using var request = new HttpRequestMessage(HttpMethod.Post, url);
             request.Headers.Authorization = new AuthenticationHeaderValue(
                 "Bearer",
@@ -460,8 +343,87 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                     continue;
                 }
 
-                var applied = ApplyParsedDecision(candidate, parsed, media);
-                return (applied.Mention, applied.Decision, applied.Error);
+                if (!parsed.Keep)
+                {
+                    var reason = parsed.Reason ?? "keep=false";
+                    var category = parsed.Category ?? InferRejectCategory(reason);
+                    _logger.LogInformation(
+                        "Look it up AI rejected {Term}: [{Category}] {Reason}",
+                        candidate.Term,
+                        category,
+                        reason);
+                    return (null, BuildDecision(candidate, false, reason, category), null);
+                }
+
+                var term = string.IsNullOrWhiteSpace(parsed.Term) ? candidate.Term : parsed.Term!.Trim();
+                if (TryGetLocalKeepReject(term, candidate.CueText, media.KnownCastNames, out var localReason, out var localCategory))
+                {
+                    _logger.LogInformation("Look it up AI kept {Term} but local filter dropped it: {Reason}", term, localReason);
+                    return (null, BuildDecision(candidate, false, localReason, localCategory), null);
+                }
+
+                if (IsFictionalOrInShowKeep(
+                        parsed.Category,
+                        parsed.KeepReason,
+                        parsed.Kind,
+                        parsed.Summary,
+                        media.ShowName))
+                {
+                    const string fictionReason = "Local filter: AI described an in-show/fictional character — popups are for real cultural refs only";
+                    _logger.LogInformation("Look it up AI kept {Term} but local filter dropped fictional/in-show keep", term);
+                    return (null, BuildDecision(candidate, false, fictionReason, "in-show"), null);
+                }
+
+                if (IsTooBasicToKeep(term))
+                {
+                    const string filterReason = "Local filter: term is too common for a popup";
+                    _logger.LogInformation("Look it up AI kept {Term} but local filter dropped it as too basic", term);
+                    return (null, BuildDecision(candidate, false, filterReason, "too-common"), null);
+                }
+
+                var summary = (parsed.Summary ?? string.Empty).Trim();
+                if (summary.Length == 0)
+                {
+                    var emptySummaryError = $"kept {term} but empty summary";
+                    return (null, BuildDecision(candidate, false, emptySummaryError, "error"), emptySummaryError);
+                }
+
+                if (!summary.StartsWith(term, StringComparison.OrdinalIgnoreCase))
+                {
+                    summary = term + ": " + summary;
+                }
+
+                summary = ClampSummary(SanitizeSummary(summary, term), 280);
+
+                if (IsSongOrMusicWork(term, parsed.Kind, summary))
+                {
+                    const string songReason = "Local filter: song/album/track title";
+                    _logger.LogInformation(
+                        "Look it up AI kept {Term} but local filter dropped it as a song/album/track",
+                        term);
+                    return (null, BuildDecision(candidate, false, songReason, "song-title"), null);
+                }
+
+                var keepReason = string.IsNullOrWhiteSpace(parsed.KeepReason)
+                    ? "Non-obvious cultural reference worth a short popup"
+                    : parsed.KeepReason!.Trim();
+                var keepCategory = parsed.Category ?? NormalizeKind(parsed.Kind);
+
+                _logger.LogInformation(
+                    "Look it up AI kept {Term} → {Canonical}: [{Category}] {Reason}",
+                    candidate.Term,
+                    term,
+                    keepCategory,
+                    keepReason);
+
+                return (new AiEntityMention
+                {
+                    Term = term,
+                    Kind = FixMentionKind(term, NormalizeKind(parsed.Kind), summary),
+                    Summary = summary,
+                    StartMs = candidate.StartMs,
+                    EndMs = Math.Max(candidate.EndMs, candidate.StartMs + 3000)
+                }, BuildDecision(candidate, true, keepReason, keepCategory), null);
             }
             catch (OperationCanceledException)
             {
@@ -715,27 +677,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             return false;
         }
 
-        var t = term.Trim();
-        // Real observances / parade names — do not treat as in-joke "X Day" holidays.
-        if (t.Contains("Thanksgiving", StringComparison.OrdinalIgnoreCase)
-            || t.Contains("Christmas", StringComparison.OrdinalIgnoreCase)
-            || t.Contains("New Year", StringComparison.OrdinalIgnoreCase)
-            || t.Contains("Valentine", StringComparison.OrdinalIgnoreCase)
-            || t.Contains("Independence", StringComparison.OrdinalIgnoreCase)
-            || t.Contains("Memorial", StringComparison.OrdinalIgnoreCase)
-            || t.Contains("Labor", StringComparison.OrdinalIgnoreCase)
-            || t.Contains("Labour", StringComparison.OrdinalIgnoreCase)
-            || t.Contains("Mother", StringComparison.OrdinalIgnoreCase)
-            || t.Contains("Father", StringComparison.OrdinalIgnoreCase)
-            || t.Contains("Groundhog", StringComparison.OrdinalIgnoreCase)
-            || t.Contains("Election", StringComparison.OrdinalIgnoreCase)
-            || t.Contains("Boxing", StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        var words = t.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        // Comedy in-jokes like "Jon Voight Day" / "Joe Pepitone Day".
+        var words = term.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         return words.Length >= 2 && words.Length <= 4;
     }
 
@@ -796,8 +738,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         AiMediaContext media,
         NameCandidate candidate,
         string model,
-        int attempt,
-        PluginConfiguration config)
+        int attempt)
     {
         var show = string.IsNullOrWhiteSpace(media.ShowName) ? "unknown show" : media.ShowName.Trim();
         var episode = string.IsNullOrWhiteSpace(media.EpisodeName) ? null : media.EpisodeName.Trim();
@@ -879,40 +820,27 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
 
         var payload = new Dictionary<string, object?>
         {
-            ["model"] = NormalizeChatModel(config, model),
+            ["model"] = model,
             ["temperature"] = 0.1,
             ["messages"] = new object[]
             {
                 new { role = "user", content = user }
-            }
+            },
+            ["response_format"] = new { type = "json_object" }
         };
-        ApplyChatCompletionOptions(payload, config, model, maxOutputTokens: IsGptOssModel(model) ? 1024 : 400);
-        return payload;
-    }
-
-
-    private static void ApplyChatCompletionOptions(
-        Dictionary<string, object?> payload,
-        PluginConfiguration config,
-        string model,
-        int maxOutputTokens)
-    {
-        // Gemini's OpenAI-compat layer rejects response_format (maps to a bogus model-name 400).
-        if (!IsGemini(config, model))
-        {
-            payload["response_format"] = new { type = "json_object" };
-        }
 
         if (IsGptOssModel(model))
         {
-            payload["max_completion_tokens"] = maxOutputTokens;
+            payload["max_completion_tokens"] = 1024;
             payload["reasoning_effort"] = "low";
             payload["include_reasoning"] = false;
         }
         else
         {
-            payload["max_tokens"] = maxOutputTokens;
+            payload["max_tokens"] = 400;
         }
+
+        return payload;
     }
 
     private static VerifyParseResult TryParseVerifyResponse(string completionBody)
@@ -1056,12 +984,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
 
         if (string.IsNullOrWhiteSpace(configured))
         {
-            if (isGroq)
-            {
-                return DefaultGroqModel;
-            }
-
-            return IsGemini(config, configured) ? "gemini-2.0-flash" : "gpt-4o-mini";
+            return isGroq ? DefaultGroqModel : "gpt-4o-mini";
         }
 
         if (isGroq && IsDeprecatedGroqModel(configured))
@@ -1069,7 +992,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             return DefaultGroqModel;
         }
 
-        return NormalizeChatModel(config, configured);
+        return configured;
     }
 
     private static bool IsGroq(PluginConfiguration config)
@@ -1078,36 +1001,6 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         var provider = (config.AiProvider ?? string.Empty).Trim();
         return provider.Equals("Groq", StringComparison.OrdinalIgnoreCase)
                || baseUrl.Contains("groq.com", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool IsGemini(PluginConfiguration config, string? model = null)
-    {
-        var provider = (config.AiProvider ?? string.Empty).Trim();
-        var baseUrl = (config.AiBaseUrl ?? string.Empty).Trim();
-        if (provider.Equals("Gemini", StringComparison.OrdinalIgnoreCase)
-            || baseUrl.Contains("generativelanguage.googleapis.com", StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        return !string.IsNullOrWhiteSpace(model)
-               && model.Contains("gemini", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string NormalizeChatModel(PluginConfiguration config, string model)
-    {
-        var m = (model ?? string.Empty).Trim();
-        if (m.StartsWith("models/", StringComparison.OrdinalIgnoreCase))
-        {
-            m = m["models/".Length..];
-        }
-
-        if (IsGemini(config, m) && string.IsNullOrWhiteSpace(m))
-        {
-            return "gemini-2.0-flash";
-        }
-
-        return m;
     }
 
     private static bool IsDeprecatedGroqModel(string model) =>
@@ -1149,20 +1042,6 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         if (provider.Equals("Groq", StringComparison.OrdinalIgnoreCase))
         {
             return "https://api.groq.com/openai/v1";
-        }
-
-        if (provider.Equals("Gemini", StringComparison.OrdinalIgnoreCase)
-            || configured.Contains("generativelanguage.googleapis.com", StringComparison.OrdinalIgnoreCase)
-            || model.Contains("gemini", StringComparison.OrdinalIgnoreCase))
-        {
-            // Native Gemini generateContent rejects OpenAI-style model ids ("unexpected model name format").
-            // Always use the OpenAI-compat root unless the user already pointed at /openai.
-            if (configured.Contains("/openai", StringComparison.OrdinalIgnoreCase))
-            {
-                return configured;
-            }
-
-            return "https://generativelanguage.googleapis.com/v1beta/openai";
         }
 
         if (provider.Equals("OpenRouter", StringComparison.OrdinalIgnoreCase))
@@ -1325,15 +1204,9 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             Timeout = TimeSpan.FromSeconds(90)
         };
         client.DefaultRequestHeaders.UserAgent.Add(
-            new ProductInfoHeaderValue("Jellyfin.Plugin.LookItUp", "1.2.54"));
+            new ProductInfoHeaderValue("Jellyfin.Plugin.LookItUp", "1.2.39"));
         return client;
     }
-
-    private sealed record NameVerifyOutcome(
-        NameCandidate Candidate,
-        AiEntityMention? Mention,
-        AiVerifyDecision Decision,
-        string? Error);
 
     private sealed class VerifyResponse
     {

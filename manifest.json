@@ -7,38 +7,9 @@
     "owner": "mohamed-sadek",
     "category": "General",
     "versions": [
-      {
-        "version": "1.2.54.0",
-        "changelog": "Revert AI name verification to one HTTP call per name (disable multi-name batching)",
-        "targetAbi": "10.11.0.0",
-        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.54.0/look-it-up_1.2.54.0.zip",
-        "checksum": "e05a2d9a910834a27813a1dd13066380",
-        "timestamp": "2026-08-27T19:33:00Z"
-      },
-      {
-        "version": "1.2.53.0",
-        "changelog": "Keep plugin settings across updates; fix Gemini batch HTTP 400; extract Jon Voight from possessives; re-verify names the batch skipped",
-        "targetAbi": "10.11.0.0",
-        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.53.0/look-it-up_1.2.53.0.zip",
-        "checksum": "eb43ba0c826f26576b3286d113f86644",
-        "timestamp": "2026-08-27T19:15:00Z"
-      },
-      {
-        "version": "1.2.52.0",
-        "changelog": "Do not fall back to one-by-one AI calls after batch HTTP 429; fix Write sidecar checkbox load; stop rejecting real holidays like Thanksgiving Day as fake in-jokes",
-        "targetAbi": "10.11.0.0",
-        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.52.0/look-it-up_1.2.52.0.zip",
-        "checksum": "7b8768b02015dbf50215fb3a2a9d6c3c",
-        "timestamp": "2026-08-27T19:00:00Z"
-      },
-      {
-        "version": "1.2.51.0",
-        "changelog": "Batch multiple name candidates per AI HTTP call (fewer rate limits); Gemini provider preset; Names per AI request setting",
-        "targetAbi": "10.11.0.0",
-        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.51.0/look-it-up_1.2.51.0.zip",
-        "checksum": "1a628c6b5f72ca871eca20f442734095",
-        "timestamp": "2026-08-27T18:36:00Z"
-      },
+      
+      
+      
       {
         "version": "1.2.50.0",
         "changelog": "Retry HTTP 429 AI verifies on later windows; stop false in-show rejects for real places/brands (Tiki Ti); reject in-universe show programs (Transitional Focus)",

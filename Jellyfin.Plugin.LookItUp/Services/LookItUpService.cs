@@ -1685,11 +1685,11 @@ public partial class LookItUpService : ILookItUpService
                 cache,
                 new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
             File.WriteAllText(sidecar, json);
-            _logger.LogInformation("Wrote Look it up sidecar {Path}", sidecar);
+            _logger.LogDebug("Wrote Look it up sidecar {Path}", sidecar);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Could not write Look it up sidecar for {Item} (path={Path})", item.Name, item.Path);
+            _logger.LogDebug(ex, "Could not write Look it up sidecar for {Item}", item.Name);
         }
     }
 

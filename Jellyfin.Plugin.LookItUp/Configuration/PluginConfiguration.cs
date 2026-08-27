@@ -46,8 +46,6 @@ public class PluginConfiguration : BasePluginConfiguration
         AiNamesPerPrepare = 0;
         PrepareDelayMsBetweenItems = 1500;
         PrepareMaxAiCallsPerMinute = 30;
-        // 1 = one name per HTTP call (pre-batch behavior).
-        AiNamesPerRequest = 1;
         PrepareMaxRetries = 3;
         OpenSubtitlesEnabled = true;
         OpenSubtitlesApiKey = string.Empty;
@@ -164,12 +162,6 @@ public class PluginConfiguration : BasePluginConfiguration
 
     /// <summary>Gets or sets max AI HTTP calls per minute (global).</summary>
     public int PrepareMaxAiCallsPerMinute { get; set; }
-
-    /// <summary>
-    /// Gets or sets how many name candidates are verified in one AI HTTP request.
-    /// Currently ignored: verification is always one name per call.
-    /// </summary>
-    public int AiNamesPerRequest { get; set; }
 
     /// <summary>Gets or sets max prepare retries for a failed item.</summary>
     public int PrepareMaxRetries { get; set; }
