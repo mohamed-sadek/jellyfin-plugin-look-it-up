@@ -9,28 +9,92 @@ public static class NameCandidateBatchSelector
 {
     /// <summary>
     /// Selects candidates in a playback window, preferring high-score and shorter earlier forms.
+    /// Retries prior HTTP 429 / transport failures, and skips settled rejects.
     /// </summary>
+    /// <param name="ranked">Score-ranked name candidates for the item.</param>
+    /// <param name="fromMs">Window start (ms).</param>
+    /// <param name="toMs">Window end (ms), exclusive.</param>
+    /// <param name="existing">Annotations already kept.</param>
+    /// <param name="limit">Max candidates to return.</param>
+    /// <param name="priorDecisions">Prior AI decisions (for retries / settled rejects).</param>
+    /// <param name="retriesOnly">When true, only return prior retryable failures (FullyPrepared catch-up).</param>
     public static List<NameCandidate> SelectForWindow(
         IReadOnlyList<NameCandidate> ranked,
         long fromMs,
         long toMs,
         IReadOnlyList<ContextAnnotation> existing,
-        int limit)
+        int limit,
+        IReadOnlyList<AiVerifyDecision>? priorDecisions = null,
+        bool retriesOnly = false)
     {
         var known = new HashSet<string>(
             existing.Select(a => a.Term),
             StringComparer.OrdinalIgnoreCase);
+        var settledRejects = AiDecisionStore.GetSettledRejectTerms(priorDecisions);
+
+        var retries = BuildRetryCandidates(ranked, priorDecisions, existing, limit);
+        if (retriesOnly)
+        {
+            return retries.Take(limit).OrderBy(c => c.StartMs).ToList();
+        }
+
+        var retrySlots = Math.Min(retries.Count, Math.Max(1, limit / 2));
+        if (retries.Count > 0 && limit <= 5)
+        {
+            retrySlots = Math.Min(retries.Count, limit);
+        }
+
+        var batch = new List<NameCandidate>(limit);
+        var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var retry in retries.Take(retrySlots))
+        {
+            if (used.Add(retry.Term))
+            {
+                batch.Add(retry);
+            }
+        }
 
         var inWindow = ranked
             .Where(c => c.StartMs >= fromMs && c.StartMs < toMs)
             .Where(c => !known.Contains(c.Term))
+            .Where(c => !settledRejects.Contains(c.Term))
+            .Where(c => !used.Contains(c.Term))
             .GroupBy(c => c.Term, StringComparer.OrdinalIgnoreCase)
             .Select(g => g.OrderByDescending(c => c.Score).ThenBy(c => c.StartMs).First())
             .OrderByDescending(c => c.Score)
             .ThenBy(c => c.StartMs)
             .ToList();
 
-        return SelectAiBatch(inWindow, limit);
+        var remaining = Math.Max(0, limit - batch.Count);
+        if (remaining > 0)
+        {
+            foreach (var candidate in SelectAiBatch(inWindow, remaining))
+            {
+                if (used.Add(candidate.Term))
+                {
+                    batch.Add(candidate);
+                }
+            }
+        }
+
+        // If the window was empty but retries remain, fill with retries.
+        if (batch.Count < limit)
+        {
+            foreach (var retry in retries)
+            {
+                if (batch.Count >= limit)
+                {
+                    break;
+                }
+
+                if (used.Add(retry.Term))
+                {
+                    batch.Add(retry);
+                }
+            }
+        }
+
+        return batch.OrderBy(c => c.StartMs).ToList();
     }
 
     /// <summary>
@@ -92,6 +156,45 @@ public static class NameCandidateBatchSelector
         }
 
         return batch.OrderBy(c => c.StartMs).ToList();
+    }
+
+    private static List<NameCandidate> BuildRetryCandidates(
+        IReadOnlyList<NameCandidate> ranked,
+        IReadOnlyList<AiVerifyDecision>? priorDecisions,
+        IReadOnlyList<ContextAnnotation> existing,
+        int limit)
+    {
+        var failures = AiDecisionStore.GetRetryableFailures(priorDecisions, existing);
+        if (failures.Count == 0)
+        {
+            return [];
+        }
+
+        var byTerm = ranked
+            .GroupBy(c => c.Term, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.OrderByDescending(c => c.Score).ThenBy(c => c.StartMs).First(), StringComparer.OrdinalIgnoreCase);
+
+        var result = new List<NameCandidate>(Math.Min(failures.Count, limit));
+        foreach (var failure in failures)
+        {
+            if (byTerm.TryGetValue(failure.Term, out var rankedMatch))
+            {
+                result.Add(rankedMatch);
+                continue;
+            }
+
+            result.Add(new NameCandidate
+            {
+                Term = failure.Term,
+                StartMs = failure.StartMs,
+                EndMs = failure.StartMs + 3000,
+                CueText = failure.CueText ?? string.Empty,
+                Score = 40,
+                Reason = "retry-error"
+            });
+        }
+
+        return result;
     }
 
     private static NameCandidate PreferEarlierShorterForm(

@@ -474,29 +474,51 @@ public partial class LookItUpService : ILookItUpService
 
             if (cache.FullyPrepared || cache.PreparedThroughMs >= durationMs)
             {
-                cache.FullyPrepared = true;
-                cache.PreparedThroughMs = durationMs;
-                return new PrepareAheadResult
+                cache.PreparedThroughMs = Math.Max(cache.PreparedThroughMs, durationMs);
+                if (!AiDecisionStore.HasRetryableFailures(cache))
                 {
-                    Changed = false,
-                    Cache = cache,
-                    SubtitleDurationMs = durationMs,
-                    Mode = "cache"
-                };
+                    cache.FullyPrepared = true;
+                    return new PrepareAheadResult
+                    {
+                        Changed = false,
+                        Cache = cache,
+                        SubtitleDurationMs = durationMs,
+                        Mode = "cache"
+                    };
+                }
+
+                // Timeline finished but HTTP 429 / transport failures remain — catch up.
+                _logger.LogInformation(
+                    "Look it up catch-up retries for {Item}: {Count} prior AI error(s)",
+                    item.Name,
+                    AiDecisionStore.GetRetryableFailures(cache.AiDecisions, cache.Annotations).Count);
             }
 
             var windowMs = Math.Clamp(config.IncrementalPrepareWindowMs, 60_000, 900_000);
             var bootstrapMs = Math.Clamp(config.IncrementalPrepareBootstrapWindowMs, 30_000, windowMs);
             playbackMs = Math.Max(0, playbackMs);
-            var fromMs = cache.PreparedThroughMs;
-            var (fromMsResolved, toMs) = ComputePrepareWindow(
-                fromMs,
-                playbackMs,
-                durationMs,
-                windowMs,
-                bootstrapMs);
-            fromMs = fromMsResolved;
-            if (fromMs >= toMs)
+            var retriesOnly = cache.PreparedThroughMs >= durationMs
+                              && AiDecisionStore.HasRetryableFailures(cache);
+            long fromMs;
+            long toMs;
+            if (retriesOnly)
+            {
+                // Catch-up: batch selector returns only prior HTTP 429 / transport failures.
+                fromMs = 0;
+                toMs = durationMs;
+            }
+            else
+            {
+                fromMs = cache.PreparedThroughMs;
+                (fromMs, toMs) = ComputePrepareWindow(
+                    fromMs,
+                    playbackMs,
+                    durationMs,
+                    windowMs,
+                    bootstrapMs);
+            }
+
+            if (!retriesOnly && fromMs >= toMs)
             {
                 return new PrepareAheadResult
                 {
@@ -532,10 +554,12 @@ public partial class LookItUpService : ILookItUpService
                     fromMs,
                     toMs,
                     config,
-                    cancellationToken)
+                    cancellationToken,
+                    retriesOnly)
                 .ConfigureAwait(false);
 
-            cache.FullyPrepared = cache.PreparedThroughMs >= durationMs;
+            cache.FullyPrepared = cache.PreparedThroughMs >= durationMs
+                                  && !AiDecisionStore.HasRetryableFailures(cache);
             cache.PrepareOutcome = cache.Annotations.Count > 0
                 ? "success"
                 : string.Equals(cache.PrepareOutcome, "no-subtitles", StringComparison.OrdinalIgnoreCase)
