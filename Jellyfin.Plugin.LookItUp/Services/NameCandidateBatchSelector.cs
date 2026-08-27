@@ -68,7 +68,7 @@ public static class NameCandidateBatchSelector
         var remaining = Math.Max(0, limit - batch.Count);
         if (remaining > 0)
         {
-            foreach (var candidate in SelectAiBatch(inWindow, remaining))
+            foreach (var candidate in SelectAiBatch(inWindow, remaining, ranked))
             {
                 if (used.Add(candidate.Term))
                 {
@@ -101,10 +101,17 @@ public static class NameCandidateBatchSelector
     /// Picks AI verify targets, preferring earlier shorter Cap+Cap forms over later long phrases
     /// (e.g. "Jon Voight" @ 0:59 over "Jon Voight's LeBaron" @ 2:31).
     /// </summary>
-    public static List<NameCandidate> SelectAiBatch(IReadOnlyList<NameCandidate> ranked, int limit)
+    /// <param name="ranked">Candidates to consider (usually the current window).</param>
+    /// <param name="limit">Max to return.</param>
+    /// <param name="shorterFormPool">Optional larger pool used to resolve possessive heads (full item list).</param>
+    public static List<NameCandidate> SelectAiBatch(
+        IReadOnlyList<NameCandidate> ranked,
+        int limit,
+        IReadOnlyList<NameCandidate>? shorterFormPool = null)
     {
         var batch = new List<NameCandidate>(limit);
         var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var pool = shorterFormPool ?? ranked;
 
         foreach (var candidate in ranked)
         {
@@ -113,10 +120,43 @@ public static class NameCandidateBatchSelector
                 break;
             }
 
-            var preferred = PreferEarlierShorterForm(candidate, ranked);
+            var preferred = PreferEarlierShorterForm(candidate, pool);
             if (used.Add(preferred.Term))
             {
                 batch.Add(preferred);
+            }
+
+            if (batch.Count >= limit)
+            {
+                break;
+            }
+
+            var head = GetPossessiveHead(candidate.Term);
+            if (head is not null && used.Add(head))
+            {
+                NameCandidate? headCandidate = null;
+                foreach (var other in pool)
+                {
+                    if (!other.Term.Equals(head, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    if (headCandidate is null || other.StartMs < headCandidate.StartMs)
+                    {
+                        headCandidate = other;
+                    }
+                }
+
+                batch.Add(headCandidate ?? new NameCandidate
+                {
+                    Term = head,
+                    StartMs = candidate.StartMs,
+                    EndMs = candidate.EndMs,
+                    CueText = candidate.CueText,
+                    Score = candidate.Score,
+                    Reason = "possessive-head"
+                });
             }
 
             if (batch.Count >= limit)
@@ -131,7 +171,7 @@ public static class NameCandidateBatchSelector
             }
 
             NameCandidate? tailCandidate = null;
-            foreach (var other in ranked)
+            foreach (var other in pool)
             {
                 if (!other.Term.Equals(tail, StringComparison.OrdinalIgnoreCase))
                 {
@@ -237,6 +277,25 @@ public static class NameCandidateBatchSelector
 
             var tail = string.Join(' ', parts.Skip(i + 1));
             return string.IsNullOrWhiteSpace(tail) ? null : tail;
+        }
+
+        return null;
+    }
+
+    private static string? GetPossessiveHead(string term)
+    {
+        var parts = term.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        for (var i = 0; i < parts.Length - 1; i++)
+        {
+            if (!IsPossessiveToken(parts[i]))
+            {
+                continue;
+            }
+
+            var head = string.Join(
+                ' ',
+                parts.Take(i + 1).Select(StripPossessive));
+            return string.IsNullOrWhiteSpace(head) ? null : head;
         }
 
         return null;

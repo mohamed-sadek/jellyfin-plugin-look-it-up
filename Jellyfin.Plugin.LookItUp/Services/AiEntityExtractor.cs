@@ -399,16 +399,33 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             var (index, candidate) = pending[p];
             if (!batchResults.TryGetValue(p, out var parsed) || parsed is null || !parsed.Ok)
             {
-                var missingErr = parsed?.Error ?? "missing result in batch response";
-                outcomes[index] = new NameVerifyOutcome(
-                    candidate,
-                    null,
-                    BuildDecision(candidate, false, missingErr, "error"),
-                    missingErr);
                 continue;
             }
 
             outcomes[index] = ApplyParsedDecision(candidate, parsed, media);
+        }
+
+        // Model often omits ids / skips names in the middle. Re-verify those individually
+        // so a partial batch cannot strand terms until catch-up.
+        for (var p = 0; p < pending.Count; p++)
+        {
+            var (index, candidate) = pending[p];
+            if (outcomes[index] is not null)
+            {
+                continue;
+            }
+
+            _logger.LogInformation(
+                "Look it up AI batch missed {Term}; verifying individually",
+                candidate.Term);
+            outcomes[index] = await VerifyOneAsOutcomeAsync(
+                    media,
+                    candidate,
+                    config,
+                    model,
+                    baseUrl,
+                    cancellationToken)
+                .ConfigureAwait(false);
         }
 
         return outcomes.Select(o => o!).ToList();
@@ -438,7 +455,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 .WaitTurnAsync(config.PrepareMaxAiCallsPerMinute, cancellationToken)
                 .ConfigureAwait(false);
 
-            var payload = BuildBatchChatPayload(media, pendingCandidates, model, attempt);
+            var payload = BuildBatchChatPayload(media, pendingCandidates, model, attempt, config);
             using var request = new HttpRequestMessage(HttpMethod.Post, url);
             request.Headers.Authorization = new AuthenticationHeaderValue(
                 "Bearer",
@@ -478,10 +495,12 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 {
                     lastError = $"HTTP {(int)response.StatusCode}: {Truncate(body, 200)}";
                     _logger.LogWarning("Look it up AI batch failed: {Error}", lastError);
-                    return BatchHttpResult.Fail(lastError, fallBackToOneByOne: false);
+                    // 429 already handled above. Other 4xx (e.g. Gemini model/payload) can succeed one-by-one.
+                    var fallback = (int)response.StatusCode is >= 400 and < 500;
+                    return BatchHttpResult.Fail(lastError, fallBackToOneByOne: fallback);
                 }
 
-                var mapped = TryParseBatchVerifyResponse(body, pendingCandidates.Count);
+                var mapped = TryParseBatchVerifyResponse(body, pendingCandidates);
                 if (mapped is null)
                 {
                     lastError = "batch parse failed";
@@ -661,7 +680,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 .WaitTurnAsync(config.PrepareMaxAiCallsPerMinute, cancellationToken)
                 .ConfigureAwait(false);
 
-            var payload = BuildChatPayload(media, candidate, model, attempt);
+            var payload = BuildChatPayload(media, candidate, model, attempt, config);
             using var request = new HttpRequestMessage(HttpMethod.Post, url);
             request.Headers.Authorization = new AuthenticationHeaderValue(
                 "Bearer",
@@ -1054,7 +1073,8 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         AiMediaContext media,
         NameCandidate candidate,
         string model,
-        int attempt)
+        int attempt,
+        PluginConfiguration config)
     {
         var show = string.IsNullOrWhiteSpace(media.ShowName) ? "unknown show" : media.ShowName.Trim();
         var episode = string.IsNullOrWhiteSpace(media.EpisodeName) ? null : media.EpisodeName.Trim();
@@ -1136,26 +1156,14 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
 
         var payload = new Dictionary<string, object?>
         {
-            ["model"] = model,
+            ["model"] = NormalizeChatModel(config, model),
             ["temperature"] = 0.1,
             ["messages"] = new object[]
             {
                 new { role = "user", content = user }
-            },
-            ["response_format"] = new { type = "json_object" }
+            }
         };
-
-        if (IsGptOssModel(model))
-        {
-            payload["max_completion_tokens"] = 1024;
-            payload["reasoning_effort"] = "low";
-            payload["include_reasoning"] = false;
-        }
-        else
-        {
-            payload["max_tokens"] = 400;
-        }
-
+        ApplyChatCompletionOptions(payload, config, model, maxOutputTokens: IsGptOssModel(model) ? 1024 : 400);
         return payload;
     }
 
@@ -1163,7 +1171,8 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         AiMediaContext media,
         IReadOnlyList<NameCandidate> candidates,
         string model,
-        int attempt)
+        int attempt,
+        PluginConfiguration config)
     {
         var show = string.IsNullOrWhiteSpace(media.ShowName) ? "unknown show" : media.ShowName.Trim();
         var episode = string.IsNullOrWhiteSpace(media.EpisodeName) ? null : media.EpisodeName.Trim();
@@ -1249,28 +1258,44 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
 
         var payload = new Dictionary<string, object?>
         {
-            ["model"] = model,
+            ["model"] = NormalizeChatModel(config, model),
             ["temperature"] = 0.1,
             ["messages"] = new object[]
             {
                 new { role = "user", content = user }
-            },
-            ["response_format"] = new { type = "json_object" }
+            }
         };
 
         var count = candidates.Count;
+        var maxTokens = IsGptOssModel(model)
+            ? Math.Clamp(512 + (350 * count), 1024, 8192)
+            : Math.Clamp(200 + (180 * count), 400, 4096);
+        ApplyChatCompletionOptions(payload, config, model, maxTokens);
+        return payload;
+    }
+
+    private static void ApplyChatCompletionOptions(
+        Dictionary<string, object?> payload,
+        PluginConfiguration config,
+        string model,
+        int maxOutputTokens)
+    {
+        // Gemini's OpenAI-compat layer rejects response_format (maps to a bogus model-name 400).
+        if (!IsGemini(config, model))
+        {
+            payload["response_format"] = new { type = "json_object" };
+        }
+
         if (IsGptOssModel(model))
         {
-            payload["max_completion_tokens"] = Math.Clamp(512 + (350 * count), 1024, 8192);
+            payload["max_completion_tokens"] = maxOutputTokens;
             payload["reasoning_effort"] = "low";
             payload["include_reasoning"] = false;
         }
         else
         {
-            payload["max_tokens"] = Math.Clamp(200 + (180 * count), 400, 8192);
+            payload["max_tokens"] = maxOutputTokens;
         }
-
-        return payload;
     }
 
     private static VerifyParseResult TryParseVerifyResponse(string completionBody)
@@ -1362,8 +1387,9 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
     /// </summary>
     private static Dictionary<int, VerifyParseResult>? TryParseBatchVerifyResponse(
         string completionBody,
-        int expectedCount)
+        IReadOnlyList<NameCandidate> candidates)
     {
+        var expectedCount = candidates.Count;
         try
         {
             if (string.IsNullOrWhiteSpace(completionBody))
@@ -1415,7 +1441,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                     return null;
                 }
 
-                return MapBatchResults(results, expectedCount);
+                return MapBatchResults(results, candidates);
             }
 
             if (arrStart >= 0)
@@ -1433,7 +1459,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                     return null;
                 }
 
-                return MapBatchResults(inner.RootElement, expectedCount);
+                return MapBatchResults(inner.RootElement, candidates);
             }
 
             return null;
@@ -1444,10 +1470,12 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         }
     }
 
-    private static Dictionary<int, VerifyParseResult>? MapBatchResults(JsonElement results, int expectedCount)
+    private static Dictionary<int, VerifyParseResult>? MapBatchResults(
+        JsonElement results,
+        IReadOnlyList<NameCandidate> candidates)
     {
-        // Materialize while the owning JsonDocument is still alive (caller holds using).
-        var items = new List<(int? Id, VerifyResponse Item)>();
+        var expectedCount = candidates.Count;
+        var items = new List<VerifyResponse>();
         foreach (var el in results.EnumerateArray())
         {
             try
@@ -1455,7 +1483,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 var item = JsonSerializer.Deserialize<VerifyResponse>(el.GetRawText(), JsonOptions);
                 if (item is not null)
                 {
-                    items.Add((item.Id, item));
+                    items.Add(item);
                 }
             }
             catch
@@ -1465,17 +1493,48 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         }
 
         var mapped = new Dictionary<int, VerifyParseResult>();
-        var nextFallbackId = 0;
-        foreach (var (itemId, item) in items)
+        var allHaveIds = items.Count > 0 && items.All(i => i.Id.HasValue);
+        var noneHaveIds = items.All(i => !i.Id.HasValue);
+
+        for (var i = 0; i < items.Count; i++)
         {
-            var id = itemId ?? nextFallbackId;
-            nextFallbackId++;
-            if (id < 0 || id >= expectedCount || mapped.ContainsKey(id))
+            var item = items[i];
+            int? id = null;
+            if (item.Id is >= 0 && item.Id < expectedCount && !mapped.ContainsKey(item.Id.Value))
+            {
+                id = item.Id.Value;
+            }
+            else if (!string.IsNullOrWhiteSpace(item.Term))
+            {
+                for (var c = 0; c < candidates.Count; c++)
+                {
+                    if (mapped.ContainsKey(c))
+                    {
+                        continue;
+                    }
+
+                    if (candidates[c].Term.Equals(item.Term.Trim(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        id = c;
+                        break;
+                    }
+                }
+            }
+            else if (noneHaveIds && items.Count == expectedCount)
+            {
+                // Only align by position when the model returned exactly one unlabeled row per name.
+                if (!mapped.ContainsKey(i))
+                {
+                    id = i;
+                }
+            }
+
+            if (id is null)
             {
                 continue;
             }
 
-            mapped[id] = new VerifyParseResult
+            mapped[id.Value] = new VerifyParseResult
             {
                 Ok = true,
                 Keep = item.Keep,
@@ -1488,8 +1547,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             };
         }
 
-        // Require at least half the expected results to accept the batch.
-        if (mapped.Count < Math.Max(1, (expectedCount + 1) / 2))
+        if (mapped.Count == 0)
         {
             return null;
         }
@@ -1554,7 +1612,12 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
 
         if (string.IsNullOrWhiteSpace(configured))
         {
-            return isGroq ? DefaultGroqModel : "gpt-4o-mini";
+            if (isGroq)
+            {
+                return DefaultGroqModel;
+            }
+
+            return IsGemini(config, configured) ? "gemini-2.0-flash" : "gpt-4o-mini";
         }
 
         if (isGroq && IsDeprecatedGroqModel(configured))
@@ -1562,7 +1625,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             return DefaultGroqModel;
         }
 
-        return configured;
+        return NormalizeChatModel(config, configured);
     }
 
     private static bool IsGroq(PluginConfiguration config)
@@ -1571,6 +1634,36 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         var provider = (config.AiProvider ?? string.Empty).Trim();
         return provider.Equals("Groq", StringComparison.OrdinalIgnoreCase)
                || baseUrl.Contains("groq.com", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsGemini(PluginConfiguration config, string? model = null)
+    {
+        var provider = (config.AiProvider ?? string.Empty).Trim();
+        var baseUrl = (config.AiBaseUrl ?? string.Empty).Trim();
+        if (provider.Equals("Gemini", StringComparison.OrdinalIgnoreCase)
+            || baseUrl.Contains("generativelanguage.googleapis.com", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return !string.IsNullOrWhiteSpace(model)
+               && model.Contains("gemini", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeChatModel(PluginConfiguration config, string model)
+    {
+        var m = (model ?? string.Empty).Trim();
+        if (m.StartsWith("models/", StringComparison.OrdinalIgnoreCase))
+        {
+            m = m["models/".Length..];
+        }
+
+        if (IsGemini(config, m) && string.IsNullOrWhiteSpace(m))
+        {
+            return "gemini-2.0-flash";
+        }
+
+        return m;
     }
 
     private static bool IsDeprecatedGroqModel(string model) =>
@@ -1614,11 +1707,18 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             return "https://api.groq.com/openai/v1";
         }
 
-        if (provider.Equals("Gemini", StringComparison.OrdinalIgnoreCase))
+        if (provider.Equals("Gemini", StringComparison.OrdinalIgnoreCase)
+            || configured.Contains("generativelanguage.googleapis.com", StringComparison.OrdinalIgnoreCase)
+            || model.Contains("gemini", StringComparison.OrdinalIgnoreCase))
         {
-            return string.IsNullOrWhiteSpace(configured)
-                ? "https://generativelanguage.googleapis.com/v1beta/openai"
-                : configured;
+            // Native Gemini generateContent rejects OpenAI-style model ids ("unexpected model name format").
+            // Always use the OpenAI-compat root unless the user already pointed at /openai.
+            if (configured.Contains("/openai", StringComparison.OrdinalIgnoreCase))
+            {
+                return configured;
+            }
+
+            return "https://generativelanguage.googleapis.com/v1beta/openai";
         }
 
         if (provider.Equals("OpenRouter", StringComparison.OrdinalIgnoreCase))

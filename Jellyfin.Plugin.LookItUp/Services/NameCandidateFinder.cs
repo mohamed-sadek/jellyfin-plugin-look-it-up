@@ -48,8 +48,9 @@ public partial class NameCandidateFinder : INameCandidateFinder
         "have", "has", "had", "do", "does", "did", "done",
         "will", "would", "could", "should", "may", "might", "must", "can", "shall",
         "not", "don", "didn", "isn", "aren", "wasn", "weren", "hasn", "haven", "hadn", "won", "wouldn",
+        "doesn", "doesnt", "doesn't", "except", "otherwise",
         "mr", "mrs", "ms", "dr",
-        // Contractionsictions / dialogue false positives (I'm often looks title-case).
+        // Contractions / dialogue false positives (I'm often looks title-case).
         "i'm", "im", "i've", "ive", "i'd", "i'll",
         "you're", "youre", "you've", "youve", "you'd", "youd", "you'll", "youll",
         "he's", "hes", "she's", "shes", "we're", "they're", "theyre",
@@ -351,6 +352,22 @@ public partial class NameCandidateFinder : INameCandidateFinder
                || token.EndsWith("’", StringComparison.Ordinal);
     }
 
+    private static string StripPossessiveToken(string token)
+    {
+        if (token.EndsWith("'s", StringComparison.OrdinalIgnoreCase)
+            || token.EndsWith("’s", StringComparison.OrdinalIgnoreCase))
+        {
+            return token[..^2];
+        }
+
+        if (token.EndsWith("'", StringComparison.Ordinal) || token.EndsWith("’", StringComparison.Ordinal))
+        {
+            return token[..^1];
+        }
+
+        return token;
+    }
+
     private static void TryAddCandidate(
         Dictionary<string, NameCandidate> candidates,
         string term,
@@ -583,12 +600,30 @@ public partial class NameCandidateFinder : INameCandidateFinder
                     scoreBonus: 40,
                     reason: "cap-phrase");
 
-                // "Jon Voight's LeBaron" → also keep "LeBaron" (brand/object after 's).
+                // "Jon Voight's LeBaron" → also keep "Jon Voight" and "LeBaron".
                 for (var p = 0; p < parts.Count - 1; p++)
                 {
                     if (!IsPossessiveToken(parts[p]))
                     {
                         continue;
+                    }
+
+                    var headParts = parts.Take(p + 1)
+                        .Select(StripPossessiveToken)
+                        .Where(t => t.Length > 0 && !NameParticles.Contains(t))
+                        .ToList();
+                    if (headParts.Count >= 1)
+                    {
+                        TryAddCandidate(
+                            candidates,
+                            string.Join(' ', headParts),
+                            start,
+                            tokenStats,
+                            titleNorm,
+                            excludeNames,
+                            minLength,
+                            scoreBonus: 45,
+                            reason: "possessive-head");
                     }
 
                     var tailParts = parts.Skip(p + 1).Where(t => !NameParticles.Contains(t)).ToList();

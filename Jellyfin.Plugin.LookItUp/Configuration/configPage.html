@@ -195,7 +195,7 @@
                     <p>Paste into JavaScript Injector (not an HTML <code>&lt;script&gt;</code> tag):</p>
                     <pre style="white-space:pre-wrap;word-break:break-all;background:rgba(0,0,0,.08);padding:12px;border-radius:8px;">(function () {
   var s = document.createElement('script');
-  s.src = '/LookItUp/script.js?v=1.2.52';
+  s.src = '/LookItUp/script.js?v=1.2.53';
   s.async = true;
   document.head.appendChild(s);
 })();</pre>
@@ -229,11 +229,16 @@
                 }
             };
 
-            function cfgGet(config, pascal, camel, fallback) {
-                if (config[pascal] !== undefined && config[pascal] !== null && config[pascal] !== '') {
+            function cfgHas(config, key) {
+                return !!config && Object.prototype.hasOwnProperty.call(config, key)
+                    && config[key] !== undefined && config[key] !== null;
+            }
+
+            function cfgVal(config, pascal, camel, fallback) {
+                if (cfgHas(config, pascal)) {
                     return config[pascal];
                 }
-                if (config[camel] !== undefined && config[camel] !== null && config[camel] !== '') {
+                if (cfgHas(config, camel)) {
                     return config[camel];
                 }
                 return fallback;
@@ -282,37 +287,45 @@
             document.querySelector('#lookItUpConfigPage').addEventListener('pageshow', function () {
                 Dashboard.showLoadingMsg();
                 ApiClient.getPluginConfiguration(LookItUpConfig.pluginUniqueId).then(function (config) {
-                    document.querySelector('#chkEnabled').checked = cfgGet(config, 'Enabled', 'enabled', true) !== false;
-                    document.querySelector('#chkShowPopups').checked = cfgGet(config, 'ShowPopupsDuringPlayback', 'showPopupsDuringPlayback', true) !== false;
-                    document.querySelector('#chkIncrementalPrepare').checked = cfgGet(config, 'IncrementalPrepareOnPlayback', 'incrementalPrepareOnPlayback', true) !== false;
-                    document.querySelector('#chkWriteSidecar').checked = cfgGet(config, 'WriteSidecarFiles', 'writeSidecarFiles', true) !== false;
-                    document.querySelector('#chkStoreAiDecisions').checked = cfgGet(config, 'StoreAiDecisions', 'storeAiDecisions', true) !== false;
-                    document.querySelector('#txtIncrementalBootstrapMs').value = cfgGet(config, 'IncrementalPrepareBootstrapWindowMs', 'incrementalPrepareBootstrapWindowMs', 60000);
-                    document.querySelector('#txtIncrementalWindowMs').value = cfgGet(config, 'IncrementalPrepareWindowMs', 'incrementalPrepareWindowMs', 300000);
-                    document.querySelector('#txtIncrementalAiPerWindow').value = cfgGet(config, 'IncrementalAiNamesPerWindow', 'incrementalAiNamesPerWindow', 40);
-                    document.querySelector('#txtMaxAnnotations').value = config.MaxAnnotationsPerItem || 60;
-                    document.querySelector('#txtPreferredSubtitleLanguages').value = config.PreferredSubtitleLanguages || 'en';
-                    document.querySelector('#txtOpenSubtitlesUsername').value = config.OpenSubtitlesUsername || config.openSubtitlesUsername || '';
-                    document.querySelector('#txtOpenSubtitlesPassword').placeholder = (config.OpenSubtitlesPassword || config.openSubtitlesPassword) ? '(saved)' : '(not set — will try Jellyfin OpenSubtitles plugin)';
+                    document.querySelector('#chkEnabled').checked = cfgVal(config, 'Enabled', 'enabled', true) !== false;
+                    document.querySelector('#chkShowPopups').checked = cfgVal(config, 'ShowPopupsDuringPlayback', 'showPopupsDuringPlayback', true) !== false;
+                    document.querySelector('#chkIncrementalPrepare').checked = cfgVal(config, 'IncrementalPrepareOnPlayback', 'incrementalPrepareOnPlayback', true) !== false;
+                    document.querySelector('#chkWriteSidecar').checked = cfgVal(config, 'WriteSidecarFiles', 'writeSidecarFiles', true) !== false;
+                    document.querySelector('#chkStoreAiDecisions').checked = cfgVal(config, 'StoreAiDecisions', 'storeAiDecisions', true) !== false;
+                    document.querySelector('#txtIncrementalBootstrapMs').value = cfgVal(config, 'IncrementalPrepareBootstrapWindowMs', 'incrementalPrepareBootstrapWindowMs', 60000);
+                    document.querySelector('#txtIncrementalWindowMs').value = cfgVal(config, 'IncrementalPrepareWindowMs', 'incrementalPrepareWindowMs', 300000);
+                    document.querySelector('#txtIncrementalAiPerWindow').value = cfgVal(config, 'IncrementalAiNamesPerWindow', 'incrementalAiNamesPerWindow', 40);
+                    document.querySelector('#txtMaxAnnotations').value = cfgVal(config, 'MaxAnnotationsPerItem', 'maxAnnotationsPerItem', 60);
+                    document.querySelector('#txtPreferredSubtitleLanguages').value = cfgVal(config, 'PreferredSubtitleLanguages', 'preferredSubtitleLanguages', 'en');
+                    document.querySelector('#txtOpenSubtitlesUsername').value = cfgVal(config, 'OpenSubtitlesUsername', 'openSubtitlesUsername', '');
+                    var osPassSaved = !!(cfgVal(config, 'OpenSubtitlesPassword', 'openSubtitlesPassword', '') || '').toString().trim();
+                    document.querySelector('#txtOpenSubtitlesPassword').placeholder = osPassSaved ? '(saved)' : '(not set — will try Jellyfin OpenSubtitles plugin)';
                     document.querySelector('#txtOpenSubtitlesPassword').value = '';
-                    document.querySelector('#txtOpenSubtitlesApiKey').placeholder = (config.OpenSubtitlesApiKey || config.openSubtitlesApiKey) ? '(saved)' : '(not set)';
+                    var osKeySaved = !!(cfgVal(config, 'OpenSubtitlesApiKey', 'openSubtitlesApiKey', '') || '').toString().trim();
+                    document.querySelector('#txtOpenSubtitlesApiKey').placeholder = osKeySaved ? '(saved)' : '(not set)';
                     document.querySelector('#txtOpenSubtitlesApiKey').value = '';
-                    var provider = config.AiProvider || 'Groq';
+                    var provider = cfgVal(config, 'AiProvider', 'aiProvider', 'Groq') || 'Groq';
                     document.querySelector('#selAiProvider').value = provider;
+                    var keySaved = !!(cfgVal(config, 'AiApiKey', 'aiApiKey', '') || '').toString().trim();
                     document.querySelector('#txtAiApiKey').value = '';
-                    document.querySelector('#txtAiApiKey').placeholder = (config.AiApiKey || config.aiApiKey) ? '(saved)' : '(not set)';
-                    document.querySelector('#txtAiModel').value = config.AiModel || 'openai/gpt-oss-20b';
-                    document.querySelector('#txtAiBaseUrl').value = config.AiBaseUrl || 'https://api.groq.com/openai/v1';
-                    document.querySelector('#txtAiNamesPerRequest').value = cfgGet(config, 'AiNamesPerRequest', 'aiNamesPerRequest', 8);
-                    document.querySelector('#txtPrepareMaxRpm').value = cfgGet(config, 'PrepareMaxAiCallsPerMinute', 'prepareMaxAiCallsPerMinute', 30);
-                    document.querySelector('#txtPopupDurationSec').value = Math.max(1, Math.round((cfgGet(config, 'PopupDurationMs', 'popupDurationMs', 3000) || 3000) / 1000));
-                    document.querySelector('#txtPopupDelaySec').value = Math.max(0, Math.round((Number(cfgGet(config, 'PopupDelayMs', 'popupDelayMs', 1000)) || 1000) / 100) / 10);
-                    document.querySelector('#txtPopupFontSize').value = cfgGet(config, 'PopupFontSizePx', 'popupFontSizePx', 16);
-                    document.querySelector('#txtPopupMaxWidth').value = cfgGet(config, 'PopupMaxWidthPx', 'popupMaxWidthPx', 320);
-                    document.querySelector('#chkPopupScaleWithScreen').checked = cfgGet(config, 'PopupScaleWithScreen', 'popupScaleWithScreen', true) !== false;
-                    document.querySelector('#txtPopupTextColor').value = cfgGet(config, 'PopupTextColor', 'popupTextColor', '#f7fafc');
-                    document.querySelector('#txtPopupBorderColor').value = cfgGet(config, 'PopupBorderColor', 'popupBorderColor', '#f1ff33');
-                    document.querySelector('#selPopupPlacement').value = cfgGet(config, 'PopupPlacement', 'popupPlacement', 'BottomCenter');
+                    document.querySelector('#txtAiApiKey').placeholder = keySaved ? '(saved)' : '(not set)';
+                    var model = cfgVal(config, 'AiModel', 'aiModel', '');
+                    var baseUrl = cfgVal(config, 'AiBaseUrl', 'aiBaseUrl', '');
+                    document.querySelector('#txtAiModel').value = model;
+                    document.querySelector('#txtAiBaseUrl').value = baseUrl;
+                    if (!model || !baseUrl) {
+                        applyProviderPreset(provider, false);
+                    }
+                    document.querySelector('#txtAiNamesPerRequest').value = cfgVal(config, 'AiNamesPerRequest', 'aiNamesPerRequest', 8);
+                    document.querySelector('#txtPrepareMaxRpm').value = cfgVal(config, 'PrepareMaxAiCallsPerMinute', 'prepareMaxAiCallsPerMinute', 30);
+                    document.querySelector('#txtPopupDurationSec').value = Math.max(1, Math.round((cfgVal(config, 'PopupDurationMs', 'popupDurationMs', 3000) || 3000) / 1000));
+                    document.querySelector('#txtPopupDelaySec').value = Math.max(0, Math.round((Number(cfgVal(config, 'PopupDelayMs', 'popupDelayMs', 1000)) || 1000) / 100) / 10);
+                    document.querySelector('#txtPopupFontSize').value = cfgVal(config, 'PopupFontSizePx', 'popupFontSizePx', 16);
+                    document.querySelector('#txtPopupMaxWidth').value = cfgVal(config, 'PopupMaxWidthPx', 'popupMaxWidthPx', 320);
+                    document.querySelector('#chkPopupScaleWithScreen').checked = cfgVal(config, 'PopupScaleWithScreen', 'popupScaleWithScreen', true) !== false;
+                    document.querySelector('#txtPopupTextColor').value = cfgVal(config, 'PopupTextColor', 'popupTextColor', '#f7fafc');
+                    document.querySelector('#txtPopupBorderColor').value = cfgVal(config, 'PopupBorderColor', 'popupBorderColor', '#f1ff33');
+                    document.querySelector('#selPopupPlacement').value = cfgVal(config, 'PopupPlacement', 'popupPlacement', 'BottomCenter');
                     Dashboard.hideLoadingMsg();
                 });
             });
@@ -339,13 +352,6 @@
                     config.PreferredSubtitleLanguages = document.querySelector('#txtPreferredSubtitleLanguages').value || 'en';
                     config.OpenSubtitlesEnabled = true;
                     config.OpenSubtitlesUsername = (document.querySelector('#txtOpenSubtitlesUsername').value || '').trim();
-                    var osPass = (document.querySelector('#txtOpenSubtitlesPassword').value || '').trim();
-                    if (osPass.length > 0) {
-                        config.OpenSubtitlesPassword = osPass;
-                    } else {
-                        delete config.OpenSubtitlesPassword;
-                        delete config.openSubtitlesPassword;
-                    }
                     config.AiProvider = document.querySelector('#selAiProvider').value || 'Groq';
                     config.AiModel = document.querySelector('#txtAiModel').value || 'openai/gpt-oss-20b';
                     config.AiBaseUrl = document.querySelector('#txtAiBaseUrl').value || 'https://api.groq.com/openai/v1';
@@ -362,16 +368,20 @@
                     var newKey = (document.querySelector('#txtAiApiKey').value || '').trim();
                     if (newKey.length >= 8) {
                         config.AiApiKey = newKey;
-                    } else {
-                        delete config.AiApiKey;
-                        delete config.aiApiKey;
+                    } else if (!cfgHas(config, 'AiApiKey') && cfgHas(config, 'aiApiKey')) {
+                        config.AiApiKey = config.aiApiKey;
                     }
                     var osKey = (document.querySelector('#txtOpenSubtitlesApiKey').value || '').trim();
                     if (osKey.length >= 8) {
                         config.OpenSubtitlesApiKey = osKey;
-                    } else {
-                        delete config.OpenSubtitlesApiKey;
-                        delete config.openSubtitlesApiKey;
+                    } else if (!cfgHas(config, 'OpenSubtitlesApiKey') && cfgHas(config, 'openSubtitlesApiKey')) {
+                        config.OpenSubtitlesApiKey = config.openSubtitlesApiKey;
+                    }
+                    var osPass = (document.querySelector('#txtOpenSubtitlesPassword').value || '').trim();
+                    if (osPass.length > 0) {
+                        config.OpenSubtitlesPassword = osPass;
+                    } else if (!cfgHas(config, 'OpenSubtitlesPassword') && cfgHas(config, 'openSubtitlesPassword')) {
+                        config.OpenSubtitlesPassword = config.openSubtitlesPassword;
                     }
                     ApiClient.updatePluginConfiguration(LookItUpConfig.pluginUniqueId, config).then(function (result) {
                         Dashboard.processPluginConfigurationUpdateResult(result);
