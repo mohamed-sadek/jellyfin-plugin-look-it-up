@@ -166,9 +166,6 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         for (var i = 0; i < batch.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            await _rateLimiter
-                .WaitTurnAsync(config.PrepareMaxAiCallsPerMinute, cancellationToken)
-                .ConfigureAwait(false);
             if (i > 0)
             {
                 await Task.Delay(350, cancellationToken).ConfigureAwait(false);
@@ -285,6 +282,10 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         {
             cancellationToken.ThrowIfCancellationRequested();
 
+            await _rateLimiter
+                .WaitTurnAsync(config.PrepareMaxAiCallsPerMinute, cancellationToken)
+                .ConfigureAwait(false);
+
             var payload = BuildChatPayload(media, candidate, model, attempt);
             using var request = new HttpRequestMessage(HttpMethod.Post, url);
             request.Headers.Authorization = new AuthenticationHeaderValue(
@@ -361,7 +362,12 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                     return (null, BuildDecision(candidate, false, localReason, localCategory), null);
                 }
 
-                if (IsFictionalOrInShowKeep(parsed.Category, parsed.KeepReason, parsed.Kind, parsed.Summary))
+                if (IsFictionalOrInShowKeep(
+                        parsed.Category,
+                        parsed.KeepReason,
+                        parsed.Kind,
+                        parsed.Summary,
+                        media.ShowName))
                 {
                     const string fictionReason = "Local filter: AI described an in-show/fictional character — popups are for real cultural refs only";
                     _logger.LogInformation("Look it up AI kept {Term} but local filter dropped fictional/in-show keep", term);
@@ -561,34 +567,94 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         }
     }
 
+    /// <summary>
+    /// Rejects AI "keeps" that affirmatively describe an in-show / fictional entity.
+    /// Negated phrases like "not in-show" / "not a fictional character" are ignored so real
+    /// places/brands (e.g. Tiki Ti) are not dropped when the model contrasts against fiction.
+    /// </summary>
     private static bool IsFictionalOrInShowKeep(
         string? category,
         string? keepReason,
         string? kind,
-        string? summary)
+        string? summary,
+        string? showName)
     {
+        if (string.Equals(category, "in-show", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
         var blob = string.Join(
             ' ',
-            category ?? string.Empty,
             keepReason ?? string.Empty,
             kind ?? string.Empty,
-            summary ?? string.Empty).ToLowerInvariant();
-
+            summary ?? string.Empty);
         if (blob.Length == 0)
         {
             return false;
         }
 
-        return blob.Contains("fictional", StringComparison.Ordinal)
-               || blob.Contains("in-show", StringComparison.Ordinal)
-               || blob.Contains("in show", StringComparison.Ordinal)
-               || blob.Contains("contestant", StringComparison.Ordinal)
-               || blob.Contains("this show", StringComparison.Ordinal)
-               || blob.Contains("this series", StringComparison.Ordinal)
-               || blob.Contains("from the show", StringComparison.Ordinal)
-               || blob.Contains("from the series", StringComparison.Ordinal)
-               || blob.Contains("character from", StringComparison.Ordinal)
-               || blob.Contains("speaker label", StringComparison.Ordinal);
+        // Strip negated phrases so "not in-show cast" / "not a fictional character" do not trip the filter.
+        var scrubbed = Regex.Replace(
+            blob,
+            @"\bnot\s+(an?\s+)?(in[-\s]?show(\s+cast)?|fictional(\s+character)?|from\s+the\s+(show|series))\b[^.!,;]*",
+            " ",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        scrubbed = Regex.Replace(
+            scrubbed,
+            @"\b(isn'?t|is\s+not|are\s+not)\s+(an?\s+)?(in[-\s]?show|fictional(\s+character)?)\b[^.!,;]*",
+            " ",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        scrubbed = Regex.Replace(
+            scrubbed,
+            @"\breferenced\s+real\b[^.!,;]*\bnot\s+in[-\s]?show\b[^.!,;]*",
+            " ",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+        var lower = scrubbed.ToLowerInvariant();
+        if (lower.Contains("fictional character", StringComparison.Ordinal)
+            || lower.Contains("in-show character", StringComparison.Ordinal)
+            || lower.Contains("in show character", StringComparison.Ordinal)
+            || lower.Contains("in-universe", StringComparison.Ordinal)
+            || lower.Contains("in universe", StringComparison.Ordinal)
+            || lower.Contains("contestant", StringComparison.Ordinal)
+            || lower.Contains("this show", StringComparison.Ordinal)
+            || lower.Contains("this series", StringComparison.Ordinal)
+            || lower.Contains("from the show", StringComparison.Ordinal)
+            || lower.Contains("from the series", StringComparison.Ordinal)
+            || lower.Contains("character from", StringComparison.Ordinal)
+            || lower.Contains("speaker label", StringComparison.Ordinal)
+            || lower.Contains("specific to the show", StringComparison.Ordinal)
+            || lower.Contains("specific to the series", StringComparison.Ordinal)
+            || lower.Contains("invented for the show", StringComparison.Ordinal)
+            || lower.Contains("made-up for the show", StringComparison.Ordinal)
+            || lower.Contains("made up for the show", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        // Affirmative attribution to the current show (e.g. Transitional Focus "used in Six Feet Under").
+        if (!string.IsNullOrWhiteSpace(showName))
+        {
+            var show = showName.Trim();
+            if (show.Length >= 3 && blob.Contains(show, StringComparison.OrdinalIgnoreCase))
+            {
+                var escaped = Regex.Escape(show);
+                if (Regex.IsMatch(
+                        blob,
+                        $@"\b(in|from|on|used\s+in|used\s+on|invented\s+(for|by)|specific\s+to|phrase\s+used\s+in|program\s+in|course\s+in|therapy\s+in)\b[\s\S]{{0,80}}{escaped}",
+                        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)
+                    || Regex.IsMatch(
+                        blob,
+                        $@"{escaped}[\s\S]{{0,80}}\b(character|episode|series|show|program|course|seminar|therapy)\b",
+                        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     private static bool IsTaxiHailNotShow(string term, string? cueText)
@@ -705,6 +771,8 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 "- Coincidental real brands/places that match an in-show character name in context " +
                 "(e.g. \"D'Angelo's dick\" is the character, NOT the pizza chain)\n" +
                 "- NEVER keep something because it is a \"fictional character from this show\" — that is always reject\n" +
+                "- In-universe course/program/therapy/product names invented for the show " +
+                "(e.g. \"Transitional Focus\", \"The Plan\" as a show-specific seminar) — always reject\n" +
                 "- Song titles, album names, singles, tracks, or lyric-line titles\n" +
                 "- Universal common knowledge: major countries/demonyms used generically, days/months, religious exclamations, " +
                 "basic nature words (sun, moon, earth, god), generic family words (mom, dad)\n" +
@@ -717,11 +785,12 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 "- Borderline terms where context gives enough clue — when uncertain, reject\n" +
                 "When several Jon Voight films are listed in one breath (Deliverance, Midnight Cowboy, Runaway Train), " +
                 "KEEP each film title — they are cultural references, not song titles.\n" +
+                "KEEP real places/bars/brands (e.g. Tiki Ti) when clearly referenced as real-world entities.\n" +
                 castHint +
                 "Always explain your decision in one sentence.\n" +
                 "Schema KEEP: {\"keep\":true,\"term\":\"Jon Voight\",\"kind\":\"person\"," +
                 "\"summary\":\"American actor known for Midnight Cowboy and Deliverance.\"," +
-                "\"keepReason\":\"Referenced real actor, not in-show cast\",\"category\":\"person-reference\"}\n" +
+                "\"keepReason\":\"Referenced real actor, not cast from this title\",\"category\":\"person-reference\"}\n" +
                 "Schema REJECT: {\"keep\":false,\"reason\":\"In-show contestant/character nickname from speaker label\"," +
                 "\"category\":\"in-show\"}\n" +
                 "category tags: person-reference | place-reference | cultural-work | niche-term | in-show | " +
@@ -742,6 +811,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 "Keep ONLY non-obvious cultural references (people, places, events, niche terms). " +
                 "Keep referenced real actors/celebrities unless they are ON this show as cast/contestants. " +
                 "Reject: in-show cast/contestants/hosts/nicknames, fictional characters from this show, " +
+                "in-universe courses/programs invented for the show, " +
                 "song/album titles, too-common geography/words, ordinary car models/brands in casual dialogue, filler.\n" +
                 "Always include reason (reject) or keepReason (keep) and category.\n" +
                 "{\"keep\":true,\"term\":\"…\",\"kind\":\"person\",\"summary\":\"…\",\"keepReason\":\"…\",\"category\":\"…\"} " +

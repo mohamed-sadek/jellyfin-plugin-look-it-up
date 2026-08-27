@@ -50,9 +50,19 @@ public sealed class IncrementalPrepareEngine
         long fromMs,
         long toMs,
         PluginConfiguration config,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool retriesOnly = false)
     {
-        if (fromMs >= toMs || cues.Count == 0)
+        if ((!retriesOnly && fromMs >= toMs) || cues.Count == 0)
+        {
+            return (new IncrementalPrepareWindowResult
+            {
+                FromMs = fromMs,
+                ToMs = toMs
+            }, "skipped", null);
+        }
+
+        if (retriesOnly && !AiDecisionStore.HasRetryableFailures(cache))
         {
             return (new IncrementalPrepareWindowResult
             {
@@ -77,7 +87,14 @@ public sealed class IncrementalPrepareEngine
         if (_aiExtractor.IsConfigured(config))
         {
             var windowCandidates = NameCandidateBatchSelector
-                .SelectForWindow(ranked, fromMs, toMs, cache.Annotations, windowLimit);
+                .SelectForWindow(
+                    ranked,
+                    fromMs,
+                    toMs,
+                    cache.Annotations,
+                    windowLimit,
+                    cache.AiDecisions,
+                    retriesOnly);
 
             if (windowCandidates.Count > 0)
             {
@@ -96,7 +113,12 @@ public sealed class IncrementalPrepareEngine
                 MergeAnnotations(cache, added, max);
             }
 
-            cache.PreparedThroughMs = toMs;
+            // Only advance the timeline cursor when this was a forward window (not a catch-up retry).
+            if (toMs > cache.PreparedThroughMs)
+            {
+                cache.PreparedThroughMs = toMs;
+            }
+
             cache.ScannedAtUtc = DateTime.UtcNow;
 
             var window = new IncrementalPrepareWindowResult
@@ -245,7 +267,7 @@ public sealed class IncrementalPrepareEngine
                 cancellationToken.ThrowIfCancellationRequested();
                 var toMs = Math.Min(fromMs + request.WindowMs, durationMs);
                 var windowCandidates = NameCandidateBatchSelector
-                    .SelectForWindow(ranked, fromMs, toMs, cache.Annotations, windowLimit);
+                    .SelectForWindow(ranked, fromMs, toMs, cache.Annotations, windowLimit, cache.AiDecisions);
                 var skipped = GetSkippedTerms(ranked, fromMs, toMs, cache.Annotations);
 
                 windows.Add(new IncrementalPrepareWindowResult
@@ -262,7 +284,8 @@ public sealed class IncrementalPrepareEngine
                 cache.PreparedThroughMs = toMs;
             }
 
-            cache.FullyPrepared = cache.PreparedThroughMs >= durationMs;
+            cache.FullyPrepared = cache.PreparedThroughMs >= durationMs
+                                  && !AiDecisionStore.HasRetryableFailures(cache);
             cache.PrepareOutcome = ranked.Count == 0 ? "no-candidates" : "success";
             return new IncrementalPrepareSimulationResult
             {
@@ -291,7 +314,7 @@ public sealed class IncrementalPrepareEngine
                 cancellationToken.ThrowIfCancellationRequested();
                 var toMs = Math.Min(fromMs + request.WindowMs, durationMs);
                 var windowCandidates = NameCandidateBatchSelector
-                    .SelectForWindow(ranked, fromMs, toMs, cache.Annotations, nameLimit);
+                    .SelectForWindow(ranked, fromMs, toMs, cache.Annotations, nameLimit, cache.AiDecisions);
                 var skipped = GetSkippedTerms(ranked, fromMs, toMs, cache.Annotations);
                 var beforeCount = cache.Annotations.Count;
 
@@ -425,7 +448,8 @@ public sealed class IncrementalPrepareEngine
             }
         }
 
-        cache.FullyPrepared = cache.PreparedThroughMs >= durationMs;
+        cache.FullyPrepared = cache.PreparedThroughMs >= durationMs
+                              && !AiDecisionStore.HasRetryableFailures(cache);
         cache.PrepareOutcome = cache.Annotations.Count > 0
             ? "success"
             : ranked.Count == 0 ? "no-candidates" : "success";
