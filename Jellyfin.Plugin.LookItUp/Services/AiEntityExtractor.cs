@@ -343,7 +343,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         }
 
         var pendingCandidates = pending.Select(p => p.Candidate).ToList();
-        var batchResults = await VerifyBatchHttpAsync(
+        var batchHttp = await VerifyBatchHttpAsync(
                 media,
                 pendingCandidates,
                 config,
@@ -352,37 +352,59 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 cancellationToken)
             .ConfigureAwait(false);
 
-        if (batchResults is null)
+        if (batchHttp.Mapped is null)
         {
+            if (batchHttp.FallBackToOneByOne)
+            {
+                _logger.LogWarning(
+                    "Look it up AI multi-name verify failed ({Error}); falling back to one-by-one for {Count} names",
+                    batchHttp.Error ?? "unknown",
+                    pending.Count);
+                foreach (var (index, candidate) in pending)
+                {
+                    outcomes[index] = await VerifyOneAsOutcomeAsync(
+                            media,
+                            candidate,
+                            config,
+                            model,
+                            baseUrl,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                }
+
+                return outcomes.Select(o => o!).ToList();
+            }
+
+            // Rate-limit / hard failure: mark chunk retryable. Do NOT one-by-one — that worsens 429s.
+            var err = batchHttp.Error ?? "batch verify failed";
             _logger.LogWarning(
-                "Look it up AI multi-name verify failed; falling back to one-by-one for {Count} names",
+                "Look it up AI multi-name verify failed ({Error}); marking {Count} names as retryable errors",
+                err,
                 pending.Count);
             foreach (var (index, candidate) in pending)
             {
-                outcomes[index] = await VerifyOneAsOutcomeAsync(
-                        media,
-                        candidate,
-                        config,
-                        model,
-                        baseUrl,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-            }
-
-            return outcomes.Select(o => o!).ToList();
-        }
-
-        for (var p = 0; p < pending.Count; p++)
-        {
-            var (index, candidate) = pending[p];
-            if (!batchResults.TryGetValue(p, out var parsed) || parsed is null || !parsed.Ok)
-            {
-                var err = parsed?.Error ?? "missing result in batch response";
                 outcomes[index] = new NameVerifyOutcome(
                     candidate,
                     null,
                     BuildDecision(candidate, false, err, "error"),
                     err);
+            }
+
+            return outcomes.Select(o => o!).ToList();
+        }
+
+        var batchResults = batchHttp.Mapped;
+        for (var p = 0; p < pending.Count; p++)
+        {
+            var (index, candidate) = pending[p];
+            if (!batchResults.TryGetValue(p, out var parsed) || parsed is null || !parsed.Ok)
+            {
+                var missingErr = parsed?.Error ?? "missing result in batch response";
+                outcomes[index] = new NameVerifyOutcome(
+                    candidate,
+                    null,
+                    BuildDecision(candidate, false, missingErr, "error"),
+                    missingErr);
                 continue;
             }
 
@@ -393,9 +415,9 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
     }
 
     /// <summary>
-    /// One HTTP call for several candidates. Returns map of pending-index → parse result, or null to fall back.
+    /// One HTTP call for several candidates.
     /// </summary>
-    private async Task<Dictionary<int, VerifyParseResult>?> VerifyBatchHttpAsync(
+    private async Task<BatchHttpResult> VerifyBatchHttpAsync(
         AiMediaContext media,
         IReadOnlyList<NameCandidate> pendingCandidates,
         PluginConfiguration config,
@@ -406,6 +428,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         var url = baseUrl + "/chat/completions";
         const int maxAttempts = 3;
         string? lastError = null;
+        var sawRateLimit = false;
 
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
@@ -443,6 +466,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
 
                 if ((int)response.StatusCode == 429)
                 {
+                    sawRateLimit = true;
                     var delay = ParseRetryDelay(body) ?? TimeSpan.FromSeconds(2 * attempt);
                     lastError = $"HTTP 429 (retry in {delay.TotalSeconds:0.0}s)";
                     _logger.LogWarning("Look it up AI batch rate-limited: {Error}", lastError);
@@ -454,7 +478,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 {
                     lastError = $"HTTP {(int)response.StatusCode}: {Truncate(body, 200)}";
                     _logger.LogWarning("Look it up AI batch failed: {Error}", lastError);
-                    return null;
+                    return BatchHttpResult.Fail(lastError, fallBackToOneByOne: false);
                 }
 
                 var mapped = TryParseBatchVerifyResponse(body, pendingCandidates.Count);
@@ -468,7 +492,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                     continue;
                 }
 
-                return mapped;
+                return BatchHttpResult.Ok(mapped);
             }
             catch (OperationCanceledException)
             {
@@ -480,15 +504,18 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 _logger.LogWarning(ex, "Look it up AI batch exception attempt {Attempt}", attempt);
                 if (attempt == maxAttempts)
                 {
-                    return null;
+                    return BatchHttpResult.Fail(lastError, fallBackToOneByOne: !sawRateLimit);
                 }
 
                 await Task.Delay(600 * attempt, cancellationToken).ConfigureAwait(false);
             }
         }
 
-        _logger.LogWarning("Look it up AI batch exhausted retries: {Error}", lastError ?? "unknown");
-        return null;
+        lastError ??= "batch verify failed";
+        _logger.LogWarning("Look it up AI batch exhausted retries: {Error}", lastError);
+        // Parse failures may work one-by-one; rate limits must not.
+        var allowFallback = !sawRateLimit && lastError.Contains("parse", StringComparison.OrdinalIgnoreCase);
+        return BatchHttpResult.Fail(lastError, fallBackToOneByOne: allowFallback);
     }
 
     private NameVerifyOutcome ApplyParsedDecision(
@@ -946,7 +973,27 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             return false;
         }
 
-        var words = term.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var t = term.Trim();
+        // Real observances / parade names — do not treat as in-joke "X Day" holidays.
+        if (t.Contains("Thanksgiving", StringComparison.OrdinalIgnoreCase)
+            || t.Contains("Christmas", StringComparison.OrdinalIgnoreCase)
+            || t.Contains("New Year", StringComparison.OrdinalIgnoreCase)
+            || t.Contains("Valentine", StringComparison.OrdinalIgnoreCase)
+            || t.Contains("Independence", StringComparison.OrdinalIgnoreCase)
+            || t.Contains("Memorial", StringComparison.OrdinalIgnoreCase)
+            || t.Contains("Labor", StringComparison.OrdinalIgnoreCase)
+            || t.Contains("Labour", StringComparison.OrdinalIgnoreCase)
+            || t.Contains("Mother", StringComparison.OrdinalIgnoreCase)
+            || t.Contains("Father", StringComparison.OrdinalIgnoreCase)
+            || t.Contains("Groundhog", StringComparison.OrdinalIgnoreCase)
+            || t.Contains("Election", StringComparison.OrdinalIgnoreCase)
+            || t.Contains("Boxing", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var words = t.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        // Comedy in-jokes like "Jon Voight Day" / "Joe Pepitone Day".
         return words.Length >= 2 && words.Length <= 4;
     }
 
@@ -1743,6 +1790,21 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         AiEntityMention? Mention,
         AiVerifyDecision Decision,
         string? Error);
+
+    private sealed class BatchHttpResult
+    {
+        public Dictionary<int, VerifyParseResult>? Mapped { get; private init; }
+
+        public string? Error { get; private init; }
+
+        public bool FallBackToOneByOne { get; private init; }
+
+        public static BatchHttpResult Ok(Dictionary<int, VerifyParseResult> mapped) =>
+            new() { Mapped = mapped };
+
+        public static BatchHttpResult Fail(string error, bool fallBackToOneByOne) =>
+            new() { Error = error, FallBackToOneByOne = fallBackToOneByOne };
+    }
 
     private sealed class VerifyResponse
     {
