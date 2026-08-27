@@ -85,6 +85,21 @@ public interface ILookItUpService
         CancellationToken cancellationToken);
 
     /// <summary>
+    /// True when incremental prepare should stop (timeline done and summaries are AI-backed).
+    /// </summary>
+    bool IsFullyPreparedForPlayback(ItemAnnotationCache? cache);
+
+    /// <summary>
+    /// Prepare cursor to expose to the overlay (0 when Wikipedia leftovers must be re-verified).
+    /// </summary>
+    long GetPlaybackPreparedThroughMs(ItemAnnotationCache? cache);
+
+    /// <summary>
+    /// Annotations safe to show during playback (drops songs and Wikipedia-only leftovers when AI is on).
+    /// </summary>
+    IReadOnlyList<ContextAnnotation> GetPlaybackAnnotations(ItemAnnotationCache? cache);
+
+    /// <summary>
     /// Deletes all generated Look it up files (plugin caches, downloaded subs, media sidecars, prepare queue).
     /// </summary>
     ClearGeneratedDataResult ClearGeneratedData();
@@ -352,7 +367,7 @@ public partial class LookItUpService : ILookItUpService
                 return Array.Empty<ContextAnnotation>();
             }
 
-            return FilterPlaybackAnnotations(cached.Annotations);
+            return GetPlaybackAnnotations(cached);
         }
 
         // Playback should usually hit precomputed data. On-demand prepare is opt-in.
@@ -369,7 +384,7 @@ public partial class LookItUpService : ILookItUpService
             return Array.Empty<ContextAnnotation>();
         }
 
-        return FilterPlaybackAnnotations(prepared.Cache?.Annotations ?? []);
+        return GetPlaybackAnnotations(prepared.Cache);
     }
 
     /// <inheritdoc />
@@ -424,6 +439,18 @@ public partial class LookItUpService : ILookItUpService
             if (cache.Disabled)
             {
                 return new PrepareAheadResult { Changed = false, Cache = cache, Mode = "disabled" };
+            }
+
+            if (_aiExtractor.IsConfigured(config) && config.StoreAiDecisions)
+            {
+                var dropped = AiDecisionStore.DiscardSummariesWithoutAiKeep(cache);
+                if (dropped > 0)
+                {
+                    _logger.LogInformation(
+                        "Look it up dropped {Count} Wikipedia-only summaries for {Item}; re-verifying with AI",
+                        dropped,
+                        item.Name);
+                }
             }
 
             SubtitleContent? subtitle;
@@ -612,6 +639,62 @@ public partial class LookItUpService : ILookItUpService
         return annotations
             .Where(a => !OpenAiCompatibleEntityExtractor.IsSongOrMusicWork(a.Term, a.Kind, a.Summary))
             .ToList();
+    }
+
+    /// <inheritdoc />
+    public IReadOnlyList<ContextAnnotation> GetPlaybackAnnotations(ItemAnnotationCache? cache)
+    {
+        if (cache is null)
+        {
+            return [];
+        }
+
+        var config = Plugin.Instance?.Configuration;
+        var list = FilterPlaybackAnnotations(cache.Annotations);
+        if (config is null || !_aiExtractor.IsConfigured(config) || !config.StoreAiDecisions)
+        {
+            return list;
+        }
+
+        var kept = AiDecisionStore.GetKeptTerms(cache.AiDecisions);
+        return list.Where(a => kept.Contains(a.Term)).ToList();
+    }
+
+    /// <inheritdoc />
+    public bool IsFullyPreparedForPlayback(ItemAnnotationCache? cache)
+    {
+        if (cache is null || !cache.FullyPrepared)
+        {
+            return false;
+        }
+
+        var config = Plugin.Instance?.Configuration;
+        if (config is null || !_aiExtractor.IsConfigured(config) || !config.StoreAiDecisions)
+        {
+            return true;
+        }
+
+        return !AiDecisionStore.HasSummariesWithoutAiKeep(cache);
+    }
+
+    /// <inheritdoc />
+    public long GetPlaybackPreparedThroughMs(ItemAnnotationCache? cache)
+    {
+        if (cache is null)
+        {
+            return 0;
+        }
+
+        var config = Plugin.Instance?.Configuration;
+        if (config is not null
+            && _aiExtractor.IsConfigured(config)
+            && config.StoreAiDecisions
+            && AiDecisionStore.HasSummariesWithoutAiKeep(cache))
+        {
+            return 0;
+        }
+
+        return cache.PreparedThroughMs;
     }
 
     /// <inheritdoc />

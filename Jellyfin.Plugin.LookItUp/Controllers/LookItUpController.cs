@@ -82,8 +82,8 @@ public class LookItUpController : ControllerBase
                 prepared = prepared || annotations.Count > 0 || (cache?.Annotations.Count > 0),
                 disabled,
                 preparedAtUtc = cache?.ScannedAtUtc,
-                preparedThroughMs = cache?.PreparedThroughMs ?? 0,
-                fullyPrepared = cache?.FullyPrepared ?? false,
+                preparedThroughMs = _lookItUpService.GetPlaybackPreparedThroughMs(cache),
+                fullyPrepared = _lookItUpService.IsFullyPreparedForPlayback(cache),
                 incrementalPrepareOnPlayback = config?.IncrementalPrepareOnPlayback ?? false,
                 incrementalPrepareWindowMs = config?.IncrementalPrepareWindowMs ?? 300_000,
                 incrementalAiNamesPerWindow = config?.IncrementalAiNamesPerWindow ?? 40,
@@ -173,15 +173,13 @@ public class LookItUpController : ControllerBase
                 mode = result.Mode,
                 warning = result.Warning,
                 playbackMs,
-                preparedThroughMs = cache?.PreparedThroughMs ?? 0,
-                fullyPrepared = cache?.FullyPrepared ?? false,
+                preparedThroughMs = _lookItUpService.GetPlaybackPreparedThroughMs(cache),
+                fullyPrepared = _lookItUpService.IsFullyPreparedForPlayback(cache),
                 subtitleDurationMs = result.SubtitleDurationMs,
                 addedCount = result.Added.Count,
                 added = result.Added,
                 annotationCount = annotations.Count,
-                annotations = _lookItUpService.TryGetPrepared(item.Id, out var prepared)
-                    ? FilterPlaybackAnnotations(prepared!.Annotations)
-                    : annotations,
+                annotations = _lookItUpService.GetPlaybackAnnotations(cache),
                 aiDecisions = config?.StoreAiDecisions == true ? cache?.AiDecisions : null,
                 windowAiDecisions,
                 showPopupsDuringPlayback = config?.ShowPopupsDuringPlayback ?? true,
@@ -199,19 +197,6 @@ public class LookItUpController : ControllerBase
                 itemId
             });
         }
-    }
-
-    private static IReadOnlyList<ContextAnnotation> FilterPlaybackAnnotations(
-        IReadOnlyList<ContextAnnotation> annotations)
-    {
-        if (annotations.Count == 0)
-        {
-            return annotations;
-        }
-
-        return annotations
-            .Where(a => !OpenAiCompatibleEntityExtractor.IsSongOrMusicWork(a.Term, a.Kind, a.Summary))
-            .ToList();
     }
 
     private static object BuildPopupSettings(Configuration.PluginConfiguration? config)

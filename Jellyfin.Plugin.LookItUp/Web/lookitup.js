@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  const CLIENT_VERSION = '1.2.50.0';
+  const CLIENT_VERSION = '1.2.55.0';
   const STYLE_ID = 'lookitup-styles';
   const STACK_ID = 'lookitup-stack';
   const POPUP_ID = 'lookitup-popup'; // legacy single-popup id (removed on upgrade)
@@ -1311,20 +1311,26 @@
         dataType: 'json'
       });
       applyIncrementalSettings(data);
-      const addedRaw = data.added || data.Added || [];
-      const addedCount = mergeAnnotations(addedRaw);
-      if (addedCount > 0) {
-        console.info('[Look it up] incremental prepare added', addedCount, 'annotation(s)', {
-          preparedThroughMs,
-          fullyPrepared,
-          mode: data.mode || data.Mode
-        });
+      const rawList = data.annotations || data.Annotations;
+      if (Array.isArray(rawList)) {
+        annotations = normalizeAnnotations(rawList);
         tryShowForCurrentTime();
-      } else if (data.changed || data.Changed) {
-        console.info('[Look it up] incremental prepare advanced window', {
+      } else {
+        const addedRaw = data.added || data.Added || [];
+        const addedCount = mergeAnnotations(addedRaw);
+        if (addedCount > 0) {
+          tryShowForCurrentTime();
+        }
+      }
+      const addedCount = Array.isArray(rawList)
+        ? annotations.length
+        : (data.addedCount || data.AddedCount || 0);
+      if ((data.changed || data.Changed) || addedCount > 0) {
+        console.info('[Look it up] incremental prepare', {
           preparedThroughMs,
           fullyPrepared,
-          mode: data.mode || data.Mode
+          mode: data.mode || data.Mode,
+          annotations: annotations.length
         });
       }
       if (data.warning || data.Warning) {

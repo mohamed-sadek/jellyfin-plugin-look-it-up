@@ -86,6 +86,68 @@ public static class AiDecisionStore
     }
 
     /// <summary>
+    /// Terms the AI kept (these are the only summaries that should be shown when AI is configured).
+    /// </summary>
+    public static HashSet<string> GetKeptTerms(IEnumerable<AiVerifyDecision>? decisions)
+    {
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (decisions is null)
+        {
+            return set;
+        }
+
+        foreach (var decision in decisions)
+        {
+            if (decision.Kept && !string.IsNullOrWhiteSpace(decision.Term))
+            {
+                set.Add(decision.Term);
+            }
+        }
+
+        return set;
+    }
+
+    /// <summary>
+    /// True when cache popups were filled without an AI keep (legacy Wikipedia summaries).
+    /// </summary>
+    public static bool HasSummariesWithoutAiKeep(ItemAnnotationCache? cache)
+    {
+        if (cache?.Annotations is null || cache.Annotations.Count == 0)
+        {
+            return false;
+        }
+
+        var kept = GetKeptTerms(cache.AiDecisions);
+        return cache.Annotations.Any(a => !kept.Contains(a.Term));
+    }
+
+    /// <summary>
+    /// Drops Wikipedia/heuristic popups so AI can rewrite them. Resets the prepare cursor.
+    /// </summary>
+    /// <returns>How many annotations were removed.</returns>
+    public static int DiscardSummariesWithoutAiKeep(ItemAnnotationCache cache)
+    {
+        cache.AiDecisions ??= [];
+        cache.Annotations ??= [];
+        if (cache.Annotations.Count == 0)
+        {
+            return 0;
+        }
+
+        var kept = GetKeptTerms(cache.AiDecisions);
+        var before = cache.Annotations.Count;
+        cache.Annotations = cache.Annotations.Where(a => kept.Contains(a.Term)).ToList();
+        var removed = before - cache.Annotations.Count;
+        if (removed > 0)
+        {
+            cache.FullyPrepared = false;
+            cache.PreparedThroughMs = 0;
+        }
+
+        return removed;
+    }
+
+    /// <summary>
     /// Terms that were deliberately rejected (not transient errors) and should not be re-verified.
     /// </summary>
     public static HashSet<string> GetSettledRejectTerms(IEnumerable<AiVerifyDecision>? decisions)
