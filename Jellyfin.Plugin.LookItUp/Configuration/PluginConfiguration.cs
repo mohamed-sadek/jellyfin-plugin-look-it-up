@@ -46,8 +46,8 @@ public class PluginConfiguration : BasePluginConfiguration
         AiNamesPerPrepare = 0;
         PrepareDelayMsBetweenItems = 1500;
         PrepareMaxAiCallsPerMinute = 30;
-        // Names verified in a single chat-completions HTTP call (rate-limit friendly).
-        AiNamesPerRequest = 8;
+        // 1 = one name per HTTP call (pre-batch behavior).
+        AiNamesPerRequest = 1;
         PrepareMaxRetries = 3;
         OpenSubtitlesEnabled = true;
         OpenSubtitlesApiKey = string.Empty;
@@ -167,7 +167,7 @@ public class PluginConfiguration : BasePluginConfiguration
 
     /// <summary>
     /// Gets or sets how many name candidates are verified in one AI HTTP request.
-    /// Higher values use fewer RPM but need more output tokens; 1 = legacy one-name-per-call.
+    /// Currently ignored: verification is always one name per call.
     /// </summary>
     public int AiNamesPerRequest { get; set; }
 

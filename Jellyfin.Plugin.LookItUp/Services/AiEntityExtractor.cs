@@ -41,7 +41,7 @@ public sealed class AiMediaContext
 }
 
 /// <summary>
-/// Verifies local name candidates with an LLM (batched chat-completions calls).
+/// Verifies local name candidates with an LLM (one name per HTTP call).
 /// </summary>
 public interface IAiEntityExtractor
 {
@@ -51,7 +51,7 @@ public interface IAiEntityExtractor
     bool IsConfigured(PluginConfiguration config);
 
     /// <summary>
-    /// Verifies candidates (batched when configured) and returns kept mentions with short summaries.
+    /// Verifies candidates one HTTP call at a time and returns kept mentions with short summaries.
     /// </summary>
     Task<AiExtractionResult> ResolveNamesAsync(
         AiMediaContext media,
@@ -66,8 +66,6 @@ public interface IAiEntityExtractor
 public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
 {
     private const string DefaultGroqModel = "openai/gpt-oss-20b";
-    private const int DefaultNamesPerRequest = 8;
-    private const int MaxNamesPerRequest = 25;
     private static readonly HttpClient Http = CreateClient();
     private readonly ILogger<OpenAiCompatibleEntityExtractor> _logger;
     private readonly IAiCallRateLimiter _rateLimiter;
@@ -154,47 +152,50 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
                 absoluteMax);
         }
 
-        var namesPerRequest = ResolveNamesPerRequest(config);
         var itemLabel = string.IsNullOrWhiteSpace(media.ShowName)
             ? (media.EpisodeName ?? "item")
             : media.ShowName;
 
         _logger.LogInformation(
-            "Look it up AI verify for {Item}: {Count} candidates via {BaseUrl} model={Model} namesPerRequest={NamesPerRequest}",
+            "Look it up AI per-name verify for {Item}: {Count} candidates via {BaseUrl} model={Model}",
             itemLabel,
             batch.Count,
             baseUrl,
-            model,
-            namesPerRequest);
+            model);
 
-        var httpCallIndex = 0;
-        for (var offset = 0; offset < batch.Count; offset += namesPerRequest)
+        for (var i = 0; i < batch.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (httpCallIndex > 0)
+            if (i > 0)
             {
                 await Task.Delay(350, cancellationToken).ConfigureAwait(false);
             }
 
-            var chunk = batch.Skip(offset).Take(namesPerRequest).ToList();
-            httpCallIndex++;
-
+            var candidate = batch[i];
             _logger.LogInformation(
-                "Look it up AI verify chunk {Chunk}/{ApproxTotal}: {Count} names ({First}…{Last})",
-                httpCallIndex,
-                (batch.Count + namesPerRequest - 1) / namesPerRequest,
-                chunk.Count,
-                chunk[0].Term,
-                chunk[^1].Term);
+                "Look it up AI verify {Index}/{Total}: {Term} @ {StartMs}ms cue={Cue}",
+                i + 1,
+                batch.Count,
+                candidate.Term,
+                candidate.StartMs,
+                Truncate(candidate.CueText, 120));
 
-            IReadOnlyList<NameVerifyOutcome> chunkOutcomes;
+            AiEntityMention? mention = null;
+            AiVerifyDecision? decision = null;
+            string? error = null;
             try
             {
-                chunkOutcomes = chunk.Count == 1
-                    ? [await VerifyOneAsOutcomeAsync(media, chunk[0], config, model, baseUrl, cancellationToken)
-                        .ConfigureAwait(false)]
-                    : await VerifyManyAsync(media, chunk, config, model, baseUrl, cancellationToken)
-                        .ConfigureAwait(false);
+                var result = await VerifyOneAsync(
+                        media,
+                        candidate,
+                        config,
+                        model,
+                        baseUrl,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                mention = result.Mention;
+                decision = result.Decision;
+                error = result.Error;
             }
             catch (OperationCanceledException)
             {
@@ -202,56 +203,44 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             }
             catch (Exception ex)
             {
+                error = $"exception: {ex.Message}";
+                decision = BuildDecision(candidate, kept: false, reason: error, category: "error");
                 _logger.LogWarning(
                     ex,
-                    "Look it up AI verify chunk threw; marking {Count} names as error",
-                    chunk.Count);
-                chunkOutcomes = chunk
-                    .Select(c => new NameVerifyOutcome(
-                        c,
-                        null,
-                        BuildDecision(c, false, $"exception: {ex.Message}", "error"),
-                        $"exception: {ex.Message}"))
-                    .ToList();
+                    "Look it up AI verify threw for {Term}; continuing with remaining names",
+                    candidate.Term);
             }
 
-            foreach (var outcome in chunkOutcomes)
+            if (decision is not null)
             {
-                var candidate = outcome.Candidate;
-                var decision = outcome.Decision;
-                var mention = outcome.Mention;
-                var error = outcome.Error;
-
-                if (decision is not null)
-                {
-                    decisions.Add(decision);
-                }
-
-                if (!string.IsNullOrWhiteSpace(error))
-                {
-                    failed++;
-                    outcomes.Add($"{candidate.Term}: FAIL ({error})");
-                    _logger.LogWarning(
-                        "Look it up AI verify failed for {Term}; continuing",
-                        candidate.Term);
-                    continue;
-                }
-
-                if (mention is null)
-                {
-                    rejected++;
-                    outcomes.Add($"{candidate.Term}: reject ({decision?.Reason ?? "keep=false"})");
-                    continue;
-                }
-
-                mentions.Add(mention);
-                outcomes.Add($"{candidate.Term}: keep ({decision?.Reason ?? "ok"})");
+                decisions.Add(decision);
             }
+
+            if (!string.IsNullOrWhiteSpace(error))
+            {
+                failed++;
+                outcomes.Add($"{candidate.Term}: FAIL ({error})");
+                _logger.LogWarning(
+                    "Look it up AI verify failed for {Term}; continuing ({Done}/{Total})",
+                    candidate.Term,
+                    i + 1,
+                    batch.Count);
+                continue;
+            }
+
+            if (mention is null)
+            {
+                rejected++;
+                outcomes.Add($"{candidate.Term}: reject ({decision?.Reason ?? "keep=false"})");
+                continue;
+            }
+
+            mentions.Add(mention);
+            outcomes.Add($"{candidate.Term}: keep ({decision?.Reason ?? "ok"})");
         }
 
         var summary =
-            $"AI verify {mentions.Count} kept / {rejected} rejected / {failed} failed of {batch.Count} " +
-            $"({httpCallIndex} HTTP calls, {namesPerRequest}/req). " +
+            $"AI verify {mentions.Count} kept / {rejected} rejected / {failed} failed of {batch.Count}. " +
             string.Join("; ", outcomes);
 
         _logger.LogInformation("Look it up AI batch result for {Item}: {Summary}", itemLabel, summary);
@@ -270,272 +259,6 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         };
     }
 
-    private static int ResolveNamesPerRequest(PluginConfiguration config)
-    {
-        var n = config.AiNamesPerRequest;
-        if (n <= 0)
-        {
-            return DefaultNamesPerRequest;
-        }
-
-        return Math.Clamp(n, 1, MaxNamesPerRequest);
-    }
-
-    private async Task<NameVerifyOutcome> VerifyOneAsOutcomeAsync(
-        AiMediaContext media,
-        NameCandidate candidate,
-        PluginConfiguration config,
-        string model,
-        string baseUrl,
-        CancellationToken cancellationToken)
-    {
-        var result = await VerifyOneAsync(media, candidate, config, model, baseUrl, cancellationToken)
-            .ConfigureAwait(false);
-        return new NameVerifyOutcome(candidate, result.Mention, result.Decision, result.Error);
-    }
-
-    private async Task<IReadOnlyList<NameVerifyOutcome>> VerifyManyAsync(
-        AiMediaContext media,
-        IReadOnlyList<NameCandidate> chunk,
-        PluginConfiguration config,
-        string model,
-        string baseUrl,
-        CancellationToken cancellationToken)
-    {
-        var outcomes = new NameVerifyOutcome?[chunk.Count];
-        var pending = new List<(int Index, NameCandidate Candidate)>(chunk.Count);
-
-        for (var i = 0; i < chunk.Count; i++)
-        {
-            var candidate = chunk[i];
-            if (MatchesKnownCastName(candidate.Term, media.KnownCastNames))
-            {
-                const string reason = "Local filter: possessive/form of known in-show cast or character";
-                _logger.LogInformation("Look it up skip AI for {Term}: {Reason}", candidate.Term, reason);
-                outcomes[i] = new NameVerifyOutcome(
-                    candidate,
-                    null,
-                    BuildDecision(candidate, false, reason, "in-show"),
-                    null);
-                continue;
-            }
-
-            pending.Add((i, candidate));
-        }
-
-        if (pending.Count == 0)
-        {
-            return outcomes.Select(o => o!).ToList();
-        }
-
-        if (pending.Count == 1)
-        {
-            var (index, candidate) = pending[0];
-            outcomes[index] = await VerifyOneAsOutcomeAsync(
-                    media,
-                    candidate,
-                    config,
-                    model,
-                    baseUrl,
-                    cancellationToken)
-                .ConfigureAwait(false);
-            return outcomes.Select(o => o!).ToList();
-        }
-
-        var pendingCandidates = pending.Select(p => p.Candidate).ToList();
-        var batchHttp = await VerifyBatchHttpAsync(
-                media,
-                pendingCandidates,
-                config,
-                model,
-                baseUrl,
-                cancellationToken)
-            .ConfigureAwait(false);
-
-        if (batchHttp.Mapped is null)
-        {
-            if (batchHttp.FallBackToOneByOne)
-            {
-                _logger.LogWarning(
-                    "Look it up AI multi-name verify failed ({Error}); falling back to one-by-one for {Count} names",
-                    batchHttp.Error ?? "unknown",
-                    pending.Count);
-                foreach (var (index, candidate) in pending)
-                {
-                    outcomes[index] = await VerifyOneAsOutcomeAsync(
-                            media,
-                            candidate,
-                            config,
-                            model,
-                            baseUrl,
-                            cancellationToken)
-                        .ConfigureAwait(false);
-                }
-
-                return outcomes.Select(o => o!).ToList();
-            }
-
-            // Rate-limit / hard failure: mark chunk retryable. Do NOT one-by-one — that worsens 429s.
-            var err = batchHttp.Error ?? "batch verify failed";
-            _logger.LogWarning(
-                "Look it up AI multi-name verify failed ({Error}); marking {Count} names as retryable errors",
-                err,
-                pending.Count);
-            foreach (var (index, candidate) in pending)
-            {
-                outcomes[index] = new NameVerifyOutcome(
-                    candidate,
-                    null,
-                    BuildDecision(candidate, false, err, "error"),
-                    err);
-            }
-
-            return outcomes.Select(o => o!).ToList();
-        }
-
-        var batchResults = batchHttp.Mapped;
-        for (var p = 0; p < pending.Count; p++)
-        {
-            var (index, candidate) = pending[p];
-            if (!batchResults.TryGetValue(p, out var parsed) || parsed is null || !parsed.Ok)
-            {
-                continue;
-            }
-
-            outcomes[index] = ApplyParsedDecision(candidate, parsed, media);
-        }
-
-        // Model often omits ids / skips names in the middle. Re-verify those individually
-        // so a partial batch cannot strand terms until catch-up.
-        for (var p = 0; p < pending.Count; p++)
-        {
-            var (index, candidate) = pending[p];
-            if (outcomes[index] is not null)
-            {
-                continue;
-            }
-
-            _logger.LogInformation(
-                "Look it up AI batch missed {Term}; verifying individually",
-                candidate.Term);
-            outcomes[index] = await VerifyOneAsOutcomeAsync(
-                    media,
-                    candidate,
-                    config,
-                    model,
-                    baseUrl,
-                    cancellationToken)
-                .ConfigureAwait(false);
-        }
-
-        return outcomes.Select(o => o!).ToList();
-    }
-
-    /// <summary>
-    /// One HTTP call for several candidates.
-    /// </summary>
-    private async Task<BatchHttpResult> VerifyBatchHttpAsync(
-        AiMediaContext media,
-        IReadOnlyList<NameCandidate> pendingCandidates,
-        PluginConfiguration config,
-        string model,
-        string baseUrl,
-        CancellationToken cancellationToken)
-    {
-        var url = baseUrl + "/chat/completions";
-        const int maxAttempts = 3;
-        string? lastError = null;
-        var sawRateLimit = false;
-
-        for (var attempt = 1; attempt <= maxAttempts; attempt++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            await _rateLimiter
-                .WaitTurnAsync(config.PrepareMaxAiCallsPerMinute, cancellationToken)
-                .ConfigureAwait(false);
-
-            var payload = BuildBatchChatPayload(media, pendingCandidates, model, attempt, config);
-            using var request = new HttpRequestMessage(HttpMethod.Post, url);
-            request.Headers.Authorization = new AuthenticationHeaderValue(
-                "Bearer",
-                string.IsNullOrWhiteSpace(config.AiApiKey) ? "ollama" : config.AiApiKey.Trim());
-            request.Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
-
-            try
-            {
-                _logger.LogInformation(
-                    "Look it up AI batch request {Count} names attempt {Attempt}/{Max} → POST {Url} model={Model}",
-                    pendingCandidates.Count,
-                    attempt,
-                    maxAttempts,
-                    url,
-                    model);
-
-                using var response = await Http.SendAsync(request, cancellationToken).ConfigureAwait(false);
-                var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-
-                _logger.LogInformation(
-                    "Look it up AI batch response attempt {Attempt}: HTTP {Status} body={Body}",
-                    attempt,
-                    (int)response.StatusCode,
-                    Truncate(body, 2500));
-
-                if ((int)response.StatusCode == 429)
-                {
-                    sawRateLimit = true;
-                    var delay = ParseRetryDelay(body) ?? TimeSpan.FromSeconds(2 * attempt);
-                    lastError = $"HTTP 429 (retry in {delay.TotalSeconds:0.0}s)";
-                    _logger.LogWarning("Look it up AI batch rate-limited: {Error}", lastError);
-                    await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
-                    continue;
-                }
-
-                if (!response.IsSuccessStatusCode)
-                {
-                    lastError = $"HTTP {(int)response.StatusCode}: {Truncate(body, 200)}";
-                    _logger.LogWarning("Look it up AI batch failed: {Error}", lastError);
-                    // 429 already handled above. Other 4xx (e.g. Gemini model/payload) can succeed one-by-one.
-                    var fallback = (int)response.StatusCode is >= 400 and < 500;
-                    return BatchHttpResult.Fail(lastError, fallBackToOneByOne: fallback);
-                }
-
-                var mapped = TryParseBatchVerifyResponse(body, pendingCandidates);
-                if (mapped is null)
-                {
-                    lastError = "batch parse failed";
-                    _logger.LogWarning(
-                        "Look it up AI batch parse failed attempt {Attempt}",
-                        attempt);
-                    await Task.Delay(400, cancellationToken).ConfigureAwait(false);
-                    continue;
-                }
-
-                return BatchHttpResult.Ok(mapped);
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                lastError = ex.Message;
-                _logger.LogWarning(ex, "Look it up AI batch exception attempt {Attempt}", attempt);
-                if (attempt == maxAttempts)
-                {
-                    return BatchHttpResult.Fail(lastError, fallBackToOneByOne: !sawRateLimit);
-                }
-
-                await Task.Delay(600 * attempt, cancellationToken).ConfigureAwait(false);
-            }
-        }
-
-        lastError ??= "batch verify failed";
-        _logger.LogWarning("Look it up AI batch exhausted retries: {Error}", lastError);
-        // Parse failures may work one-by-one; rate limits must not.
-        var allowFallback = !sawRateLimit && lastError.Contains("parse", StringComparison.OrdinalIgnoreCase);
-        return BatchHttpResult.Fail(lastError, fallBackToOneByOne: allowFallback);
-    }
 
     private NameVerifyOutcome ApplyParsedDecision(
         NameCandidate candidate,
@@ -1167,112 +890,6 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         return payload;
     }
 
-    private static Dictionary<string, object?> BuildBatchChatPayload(
-        AiMediaContext media,
-        IReadOnlyList<NameCandidate> candidates,
-        string model,
-        int attempt,
-        PluginConfiguration config)
-    {
-        var show = string.IsNullOrWhiteSpace(media.ShowName) ? "unknown show" : media.ShowName.Trim();
-        var episode = string.IsNullOrWhiteSpace(media.EpisodeName) ? null : media.EpisodeName.Trim();
-        var castHint = media.KnownCastNames.Count == 0
-            ? string.Empty
-            : "Known cast/characters/speakers from metadata+subs (always reject): "
-              + string.Join(", ", media.KnownCastNames.Take(100))
-              + "\n";
-
-        var list = new StringBuilder();
-        for (var i = 0; i < candidates.Count; i++)
-        {
-            var c = candidates[i];
-            list.Append('[').Append(i).Append("] Candidate: ").Append(c.Term)
-                .Append("\n    Line: ").Append(c.CueText).Append('\n');
-        }
-
-        string user;
-        if (attempt == 1)
-        {
-            user =
-                "You gatekeep short on-screen popups during TV/film playback. " +
-                "Return ONE JSON object with a results array — one entry per candidate id below.\n" +
-                "Dialogue is from \"" + show + "\".\n\n" +
-                "KEEP (keep=true) ONLY when a typical viewer would benefit from 1–2 factual sentences — " +
-                "a non-obvious CULTURAL REFERENCE worth looking up:\n" +
-                "- Real people: historical figures, artists, authors, scientists, politicians, public figures, " +
-                "directors, actors, musicians referenced in dialogue (when NOT a character in this show). " +
-                "KEEP celebrities/actors even if famous when they are clearly referenced as real people.\n" +
-                "- Specific real places: cities, landmarks, regions, institutions when used as meaningful references\n" +
-                "- Real organizations, movements, events, awards, ideologies, medical/scientific terms, niche brands\n" +
-                "- Films, books, artworks as cultural objects (not song/album/track titles playing in the scene)\n\n" +
-                "REJECT (keep=false) when a popup adds little value:\n" +
-                "- Any cast member, character, nickname, host, contestant, or in-universe place/org from \"" + show + "\" (in-show)\n" +
-                "- SDH/CC speaker labels and nicknames that appear as [Name] in subtitles (they are people ON this show)\n" +
-                "- Possessives of those names (\"D'Angelo's\", \"Omar's\") — still in-show, even if a real brand shares the name\n" +
-                "- Coincidental real brands/places that match an in-show character name in context\n" +
-                "- NEVER keep something because it is a \"fictional character from this show\" — that is always reject\n" +
-                "- In-universe course/program/therapy/product names invented for the show " +
-                "(e.g. \"Transitional Focus\") — always reject\n" +
-                "- Song titles, album names, singles, tracks, or lyric-line titles\n" +
-                "- Universal common knowledge: major countries/demonyms used generically, days/months, religious exclamations, " +
-                "basic nature words, generic family words\n" +
-                "- Ordinary consumer products used casually when dialogue is comparison/shopping/small-talk\n" +
-                "- Shouting \"Taxi!\" to hail a cab (not the TV sitcom Taxi)\n" +
-                "- Fake in-joke holiday names; generic city mentions with no notable context; subtitle credits/filler\n" +
-                "- Borderline terms where context gives enough clue — when uncertain, reject\n" +
-                "When several film titles are listed in one breath, KEEP each film title.\n" +
-                "KEEP real places/bars/brands (e.g. Tiki Ti) when clearly referenced as real-world entities.\n" +
-                castHint +
-                "Always explain each decision in one sentence.\n" +
-                "Schema: {\"results\":[" +
-                "{\"id\":0,\"keep\":true,\"term\":\"Jon Voight\",\"kind\":\"person\"," +
-                "\"summary\":\"American actor known for Midnight Cowboy and Deliverance.\"," +
-                "\"keepReason\":\"Referenced real actor, not cast from this title\",\"category\":\"person-reference\"}," +
-                "{\"id\":1,\"keep\":false,\"reason\":\"In-show character\",\"category\":\"in-show\"}" +
-                "]}\n" +
-                "category tags: person-reference | place-reference | cultural-work | niche-term | in-show | " +
-                "song-title | too-common | ordinary-prop | filler | no-value\n" +
-                "kind (when keep=true): person | place | film | brand | other\n" +
-                "Summary: factual, 1–2 short sentences. Never mention the show. " +
-                "Never say \"real-world\", \"fictional\", or whether it is from the show.\n" +
-                "Include every id from 0 to " + (candidates.Count - 1) + " exactly once.\n" +
-                "Show: " + show + "\n" +
-                (episode is null ? string.Empty : "Episode: " + episode + "\n") +
-                "Candidates:\n" + list;
-        }
-        else
-        {
-            user =
-                "JSON only. Gatekeep popups — keep=false when uncertain.\n" +
-                "Return {\"results\":[...]} with one object per id below from \"" + show + "\".\n" +
-                "Keep ONLY non-obvious cultural references (people, places, events, niche terms). " +
-                "Keep referenced real actors/celebrities unless they are ON this show as cast/contestants. " +
-                "Reject: in-show cast/contestants/hosts/nicknames, fictional characters from this show, " +
-                "in-universe courses/programs invented for the show, " +
-                "song/album titles, too-common geography/words, ordinary car models/brands in casual dialogue, filler.\n" +
-                "Always include reason (reject) or keepReason (keep) and category. Include every id once.\n" +
-                "Candidates:\n" + list +
-                "{\"results\":[{\"id\":0,\"keep\":true,\"term\":\"…\",\"kind\":\"person\",\"summary\":\"…\",\"keepReason\":\"…\",\"category\":\"…\"}," +
-                "{\"id\":1,\"keep\":false,\"reason\":\"…\",\"category\":\"…\"}]}";
-        }
-
-        var payload = new Dictionary<string, object?>
-        {
-            ["model"] = NormalizeChatModel(config, model),
-            ["temperature"] = 0.1,
-            ["messages"] = new object[]
-            {
-                new { role = "user", content = user }
-            }
-        };
-
-        var count = candidates.Count;
-        var maxTokens = IsGptOssModel(model)
-            ? Math.Clamp(512 + (350 * count), 1024, 8192)
-            : Math.Clamp(200 + (180 * count), 400, 4096);
-        ApplyChatCompletionOptions(payload, config, model, maxTokens);
-        return payload;
-    }
 
     private static void ApplyChatCompletionOptions(
         Dictionary<string, object?> payload,
@@ -1380,179 +997,6 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         {
             return VerifyParseResult.Fail(ex.Message);
         }
-    }
-
-    /// <summary>
-    /// Parses a multi-name verify response into pending-index → decision. Null if unusable.
-    /// </summary>
-    private static Dictionary<int, VerifyParseResult>? TryParseBatchVerifyResponse(
-        string completionBody,
-        IReadOnlyList<NameCandidate> candidates)
-    {
-        var expectedCount = candidates.Count;
-        try
-        {
-            if (string.IsNullOrWhiteSpace(completionBody))
-            {
-                return null;
-            }
-
-            using var doc = JsonDocument.Parse(completionBody);
-            if (!doc.RootElement.TryGetProperty("choices", out var choices) || choices.GetArrayLength() == 0)
-            {
-                return null;
-            }
-
-            var choice = choices[0];
-            if (!choice.TryGetProperty("message", out var message)
-                || message.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
-            {
-                return null;
-            }
-
-            var content = ReadMessageContent(message);
-            if (string.IsNullOrWhiteSpace(content))
-            {
-                content = ReadAlternateText(message, "reasoning")
-                          ?? ReadAlternateText(message, "reasoning_content");
-            }
-
-            if (string.IsNullOrWhiteSpace(content))
-            {
-                return null;
-            }
-
-            content = StripCodeFence(content.Trim());
-            var objStart = content.IndexOf('{');
-            var arrStart = content.IndexOf('[');
-            if (objStart >= 0 && (arrStart < 0 || objStart < arrStart))
-            {
-                var end = content.LastIndexOf('}');
-                if (end <= objStart)
-                {
-                    return null;
-                }
-
-                using var inner = JsonDocument.Parse(content[objStart..(end + 1)]);
-                if (!inner.RootElement.TryGetProperty("results", out var results)
-                    || results.ValueKind != JsonValueKind.Array
-                    || results.GetArrayLength() == 0)
-                {
-                    return null;
-                }
-
-                return MapBatchResults(results, candidates);
-            }
-
-            if (arrStart >= 0)
-            {
-                var end = content.LastIndexOf(']');
-                if (end <= arrStart)
-                {
-                    return null;
-                }
-
-                using var inner = JsonDocument.Parse(content[arrStart..(end + 1)]);
-                if (inner.RootElement.ValueKind != JsonValueKind.Array
-                    || inner.RootElement.GetArrayLength() == 0)
-                {
-                    return null;
-                }
-
-                return MapBatchResults(inner.RootElement, candidates);
-            }
-
-            return null;
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    private static Dictionary<int, VerifyParseResult>? MapBatchResults(
-        JsonElement results,
-        IReadOnlyList<NameCandidate> candidates)
-    {
-        var expectedCount = candidates.Count;
-        var items = new List<VerifyResponse>();
-        foreach (var el in results.EnumerateArray())
-        {
-            try
-            {
-                var item = JsonSerializer.Deserialize<VerifyResponse>(el.GetRawText(), JsonOptions);
-                if (item is not null)
-                {
-                    items.Add(item);
-                }
-            }
-            catch
-            {
-                // skip bad element
-            }
-        }
-
-        var mapped = new Dictionary<int, VerifyParseResult>();
-        var allHaveIds = items.Count > 0 && items.All(i => i.Id.HasValue);
-        var noneHaveIds = items.All(i => !i.Id.HasValue);
-
-        for (var i = 0; i < items.Count; i++)
-        {
-            var item = items[i];
-            int? id = null;
-            if (item.Id is >= 0 && item.Id < expectedCount && !mapped.ContainsKey(item.Id.Value))
-            {
-                id = item.Id.Value;
-            }
-            else if (!string.IsNullOrWhiteSpace(item.Term))
-            {
-                for (var c = 0; c < candidates.Count; c++)
-                {
-                    if (mapped.ContainsKey(c))
-                    {
-                        continue;
-                    }
-
-                    if (candidates[c].Term.Equals(item.Term.Trim(), StringComparison.OrdinalIgnoreCase))
-                    {
-                        id = c;
-                        break;
-                    }
-                }
-            }
-            else if (noneHaveIds && items.Count == expectedCount)
-            {
-                // Only align by position when the model returned exactly one unlabeled row per name.
-                if (!mapped.ContainsKey(i))
-                {
-                    id = i;
-                }
-            }
-
-            if (id is null)
-            {
-                continue;
-            }
-
-            mapped[id.Value] = new VerifyParseResult
-            {
-                Ok = true,
-                Keep = item.Keep,
-                Term = item.Term,
-                Kind = item.Kind,
-                Summary = item.Summary,
-                Reason = item.Reason,
-                KeepReason = item.KeepReason,
-                Category = item.Category
-            };
-        }
-
-        if (mapped.Count == 0)
-        {
-            return null;
-        }
-
-        return mapped;
     }
 
     private static string? ReadAlternateText(JsonElement message, string propertyName)
@@ -1881,7 +1325,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             Timeout = TimeSpan.FromSeconds(90)
         };
         client.DefaultRequestHeaders.UserAgent.Add(
-            new ProductInfoHeaderValue("Jellyfin.Plugin.LookItUp", "1.2.51"));
+            new ProductInfoHeaderValue("Jellyfin.Plugin.LookItUp", "1.2.54"));
         return client;
     }
 
@@ -1891,26 +1335,8 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         AiVerifyDecision Decision,
         string? Error);
 
-    private sealed class BatchHttpResult
-    {
-        public Dictionary<int, VerifyParseResult>? Mapped { get; private init; }
-
-        public string? Error { get; private init; }
-
-        public bool FallBackToOneByOne { get; private init; }
-
-        public static BatchHttpResult Ok(Dictionary<int, VerifyParseResult> mapped) =>
-            new() { Mapped = mapped };
-
-        public static BatchHttpResult Fail(string error, bool fallBackToOneByOne) =>
-            new() { Error = error, FallBackToOneByOne = fallBackToOneByOne };
-    }
-
     private sealed class VerifyResponse
     {
-        [JsonPropertyName("id")]
-        public int? Id { get; set; }
-
         [JsonPropertyName("keep")]
         public bool Keep { get; set; }
 

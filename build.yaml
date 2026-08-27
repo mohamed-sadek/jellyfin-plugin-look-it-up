@@ -1,7 +1,7 @@
 ---
 name: "Look it up"
 guid: "a8ab0fed-cac9-406d-b98b-58161bf970b8"
-version: "1.2.53.0"
+version: "1.2.54.0"
 targetAbi: "10.11.0.0"
 framework: "net9.0"
 overview: "AI-prepare subtitle references, then show short popups during playback"
@@ -13,5 +13,5 @@ owner: "lookitup"
 artifacts:
   - "Jellyfin.Plugin.LookItUp.dll"
 changelog: >
-  Retry HTTP 429 AI verifies on later windows; stop false in-show rejects for real
-  places/brands (Tiki Ti); reject in-universe show programs (Transitional Focus).
+  Revert AI name verification to one HTTP call per name (disable multi-name
+  batching).

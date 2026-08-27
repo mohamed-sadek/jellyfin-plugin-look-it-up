@@ -127,14 +127,9 @@
                         <input id="txtAiBaseUrl" type="text" is="emby-input" />
                     </div>
                     <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="txtAiNamesPerRequest">Names per AI request</label>
-                        <input id="txtAiNamesPerRequest" type="number" is="emby-input" min="1" max="25" />
-                        <div class="fieldDescription">Batch size for one HTTP call (default 8). Higher = fewer rate-limit hits; 1 = one name per call.</div>
-                    </div>
-                    <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="txtPrepareMaxRpm">Max AI calls per minute</label>
                         <input id="txtPrepareMaxRpm" type="number" is="emby-input" min="1" max="120" />
-                        <div class="fieldDescription">HTTP requests/minute (each request can cover several names when batching).</div>
+                        <div class="fieldDescription">HTTP requests per minute (one request per name, with a short delay between names).</div>
                     </div>
 
                     <div class="sectionTitleContainer flex align-items-center" style="margin-top:1.5em;">
@@ -195,7 +190,7 @@
                     <p>Paste into JavaScript Injector (not an HTML <code>&lt;script&gt;</code> tag):</p>
                     <pre style="white-space:pre-wrap;word-break:break-all;background:rgba(0,0,0,.08);padding:12px;border-radius:8px;">(function () {
   var s = document.createElement('script');
-  s.src = '/LookItUp/script.js?v=1.2.53';
+  s.src = '/LookItUp/script.js?v=1.2.54';
   s.async = true;
   document.head.appendChild(s);
 })();</pre>
@@ -316,7 +311,6 @@
                     if (!model || !baseUrl) {
                         applyProviderPreset(provider, false);
                     }
-                    document.querySelector('#txtAiNamesPerRequest').value = cfgVal(config, 'AiNamesPerRequest', 'aiNamesPerRequest', 8);
                     document.querySelector('#txtPrepareMaxRpm').value = cfgVal(config, 'PrepareMaxAiCallsPerMinute', 'prepareMaxAiCallsPerMinute', 30);
                     document.querySelector('#txtPopupDurationSec').value = Math.max(1, Math.round((cfgVal(config, 'PopupDurationMs', 'popupDurationMs', 3000) || 3000) / 1000));
                     document.querySelector('#txtPopupDelaySec').value = Math.max(0, Math.round((Number(cfgVal(config, 'PopupDelayMs', 'popupDelayMs', 1000)) || 1000) / 100) / 10);
@@ -355,7 +349,7 @@
                     config.AiProvider = document.querySelector('#selAiProvider').value || 'Groq';
                     config.AiModel = document.querySelector('#txtAiModel').value || 'openai/gpt-oss-20b';
                     config.AiBaseUrl = document.querySelector('#txtAiBaseUrl').value || 'https://api.groq.com/openai/v1';
-                    config.AiNamesPerRequest = Math.min(25, Math.max(1, parseInt(document.querySelector('#txtAiNamesPerRequest').value, 10) || 8));
+                    config.AiNamesPerRequest = 1;
                     config.PrepareMaxAiCallsPerMinute = parseInt(document.querySelector('#txtPrepareMaxRpm').value, 10) || 30;
                     config.PopupDurationMs = Math.min(30000, Math.max(1000, (parseInt(document.querySelector('#txtPopupDurationSec').value, 10) || 3) * 1000));
                     config.PopupDelayMs = Math.min(10000, Math.max(0, Math.round((parseFloat(document.querySelector('#txtPopupDelaySec').value) || 1) * 1000)));
