@@ -18,7 +18,6 @@
         "checksum": "2f91aaf56f98e389a3559de64c923ac5",
         "timestamp": "2026-08-27T12:15:00Z"
       },{
-{
         "version": "1.2.49.0",
         "changelog": "Fixed narrower popup width (default 320px, configurable); text wraps instead of stretching wide",
         "targetAbi": "10.11.0.0",
