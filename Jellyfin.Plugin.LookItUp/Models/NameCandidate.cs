@@ -17,6 +17,9 @@ public sealed class NameCandidate
     /// <summary>Gets or sets the subtitle line where it first appeared.</summary>
     public string CueText { get; set; } = string.Empty;
 
+    /// <summary>Gets or sets adjacent cue text used only for Wikipedia search disambiguation.</summary>
+    public string? SearchContext { get; set; }
+
     /// <summary>Gets or sets ranking score (higher = likelier name).</summary>
     public int Score { get; set; }
 

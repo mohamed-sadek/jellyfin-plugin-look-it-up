@@ -100,6 +100,7 @@ public sealed class IncrementalPrepareEngine
         var popupMs = Math.Max(config.PopupDurationMs, 8000);
         var budget = groqOn ? AiComplementBudget.ForWindow() : new AiComplementBudget();
         var windowCues = cues.Where(c => c.StartMs >= fromMs && c.StartMs < toMs).ToList();
+        CueSearchContext.Attach(cues, windowCandidates);
         foreach (var candidate in windowCandidates)
         {
             cancellationToken.ThrowIfCancellationRequested();

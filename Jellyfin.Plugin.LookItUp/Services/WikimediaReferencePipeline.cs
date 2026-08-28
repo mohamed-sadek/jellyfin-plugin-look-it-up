@@ -40,7 +40,7 @@ public sealed class WikimediaReferencePipeline : IWikimediaReferencePipeline
         }
 
         var hit = await _resolver
-            .ResolveAsync(candidate.Term, candidate.CueText, language, cancellationToken)
+            .ResolveAsync(candidate.Term, candidate.SearchContext ?? candidate.CueText, language, cancellationToken)
             .ConfigureAwait(false);
         var decision = _gate.Decide(candidate, hit, showName, excludeCast);
         _logger.LogInformation(

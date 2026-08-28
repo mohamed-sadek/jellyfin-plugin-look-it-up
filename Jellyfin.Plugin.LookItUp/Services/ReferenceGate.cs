@@ -73,6 +73,14 @@ public sealed class ReferenceGate : IReferenceGate
         "Q11315",      // shopping mall? skip
         "Q131734",     // brewery
         "Q131527",     // distillery
+        "Q657449",     // parade
+        "Q898830",     // procession
+        "Q1261214",    // television special
+        "Q132241",     // festival
+        "Q179630",     // syndrome
+        "Q163740",     // nonprofit organization
+        "Q1329436",    // consumer organization
+        "Q431603",     // advocacy group
     };
 
     /// <summary>Wikidata P31 types that are never popups.</summary>
@@ -118,6 +126,8 @@ public sealed class ReferenceGate : IReferenceGate
         "Q482994",     // album
         "Q2188189",    // musical work
         "Q134556",     // single
+        "Q79007",      // street
+        "Q34442",      // road
     };
 
     private static readonly HashSet<string> MegaGeography = new(StringComparer.OrdinalIgnoreCase)
@@ -133,7 +143,12 @@ public sealed class ReferenceGate : IReferenceGate
         "god", "jesus", "jesus christ", "christ", "hell", "heaven",
         "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
         "january", "february", "march", "april", "june", "july", "august",
-        "september", "october", "november", "december"
+        "september", "october", "november", "december",
+        "thanksgiving", "thanksgiving day", "thanksgiving eve",
+        "american", "british", "french", "german", "italian", "japanese", "chinese",
+        "mexican", "canadian", "irish", "scottish", "russian", "spanish", "korean",
+        "indian", "australian",
+        "street", "avenue", "road", "boulevard"
     };
 
     /// <inheritdoc />
@@ -294,9 +309,20 @@ public sealed class ReferenceGate : IReferenceGate
             }
 
             if (term.Equals(name, StringComparison.OrdinalIgnoreCase)
-                || term.StartsWith(name + " ", StringComparison.OrdinalIgnoreCase)
+                || term.Equals(name + "'s", StringComparison.OrdinalIgnoreCase)
+                || term.Equals(name + "’s", StringComparison.OrdinalIgnoreCase)
                 || term.StartsWith(name + "'s", StringComparison.OrdinalIgnoreCase)
                 || term.StartsWith(name + "’s", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            // Full names only: "George Costanza" matches that character, not "George Washington".
+            // Do not let a first name like "Jon" swallow "Jon Voight".
+            if (name.Contains(' ', StringComparison.Ordinal)
+                && (term.StartsWith(name + " ", StringComparison.OrdinalIgnoreCase)
+                    || term.StartsWith(name + "'s", StringComparison.OrdinalIgnoreCase)
+                    || term.StartsWith(name + "’s", StringComparison.OrdinalIgnoreCase)))
             {
                 return true;
             }

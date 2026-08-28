@@ -19,7 +19,10 @@ public sealed class WikimediaReferenceResolver : IWikimediaReferenceResolver
         "a", "an", "the", "and", "or", "but", "if", "to", "of", "in", "on", "at", "for", "from",
         "with", "this", "that", "these", "those", "is", "are", "was", "were", "be", "been",
         "have", "has", "had", "do", "does", "did", "you", "your", "we", "they", "he", "she",
-        "it", "my", "his", "her", "our", "no", "not", "ever", "owned", "has", "have"
+        "it", "my", "his", "her", "our", "no", "not", "ever", "owned", "said", "says", "gonna",
+        "going", "got", "get", "just", "also", "very", "too", "then", "than", "them", "their",
+        "doesn't", "doesnt", "isn't", "aren't", "can't", "won't", "except", "otherwise",
+        "he's", "she's", "it's", "that's", "there's", "here's"
     };
 
     private readonly ILogger<WikimediaReferenceResolver> _logger;
@@ -55,9 +58,11 @@ public sealed class WikimediaReferenceResolver : IWikimediaReferenceResolver
 
         try
         {
+            var extraToken = TakeCueExtra(trimmed, cueText);
+            var neighbors = TakeNeighborPhrases(trimmed, cueText);
             var titles = await SearchTitlesAsync(trimmed, cueText, languageCode, cancellationToken)
                 .ConfigureAwait(false);
-            titles = PreferTitlesMatchingTerm(trimmed, TakeCueExtra(trimmed, cueText), titles);
+            titles = PreferTitlesMatchingTerm(trimmed, extraToken, neighbors, titles);
             var scored = new List<(WikimediaReferenceHit Hit, int Score)>();
             foreach (var title in titles.Take(6))
             {
@@ -96,21 +101,23 @@ public sealed class WikimediaReferenceResolver : IWikimediaReferenceResolver
                 };
                 var score = ScoreHit(trimmed, hit, cueText);
                 scored.Add((hit, score));
-                if (score >= 80
-                    && TitleMatchesTerm(summary.Title, trimmed)
-                    && (TakeCueExtra(trimmed, cueText) is not { } extraReq
-                        || summary.Title.Contains(extraReq, StringComparison.OrdinalIgnoreCase)))
+                if (neighbors.Count == 0
+                    && score >= 80
+                    && TitleContainsAllSignificantTokens(summary.Title, trimmed)
+                    && (extraToken is null
+                        || summary.Title.Contains(extraToken, StringComparison.OrdinalIgnoreCase)
+                        || HitMentions(hit, extraToken)))
                 {
                     break;
                 }
             }
 
-            var extraToken = TakeCueExtra(trimmed, cueText);
-            var matching = scored.Where(s => TitleMatchesTerm(s.Hit.Title, trimmed)).ToList();
+            var matching = scored.Where(s => TitleContainsAllSignificantTokens(s.Hit.Title, trimmed)).ToList();
             if (extraToken is not null)
             {
                 var withExtra = matching
-                    .Where(s => s.Hit.Title.Contains(extraToken, StringComparison.OrdinalIgnoreCase))
+                    .Where(s => s.Hit.Title.Contains(extraToken, StringComparison.OrdinalIgnoreCase)
+                                || HitMentions(s.Hit, extraToken))
                     .ToList();
                 if (withExtra.Count > 0)
                 {
@@ -118,8 +125,26 @@ public sealed class WikimediaReferenceResolver : IWikimediaReferenceResolver
                 }
             }
 
-            var pool = matching.Count > 0 ? matching : scored;
-            var ordered = pool.OrderByDescending(s => s.Score).ToList();
+            if (neighbors.Count > 0)
+            {
+                var withNeighbor = matching
+                    .Where(s => neighbors.Any(n => HitMentions(s.Hit, n)))
+                    .ToList();
+                if (withNeighbor.Count > 0)
+                {
+                    matching = withNeighbor;
+                }
+                else if (scored.Any(s => neighbors.Any(n =>
+                             TitleContainsAllSignificantTokens(s.Hit.Title, n)
+                             || (s.Hit.Title?.Equals(n, StringComparison.OrdinalIgnoreCase) ?? false))))
+                {
+                    // Adjacent cue resolved to its own Wikipedia page; do not keep a namesake
+                    // that never mentions that work (Joe Buck the sportscaster vs Midnight Cowboy).
+                    matching = [];
+                }
+            }
+
+            var ordered = matching.OrderByDescending(s => s.Score).ToList();
             var best = ordered.FirstOrDefault().Hit;
             if (best is not null)
             {
@@ -136,7 +161,8 @@ public sealed class WikimediaReferenceResolver : IWikimediaReferenceResolver
                 }
 
                 if (extraToken is not null
-                    && !best.Title.Contains(extraToken, StringComparison.OrdinalIgnoreCase))
+                    && !best.Title.Contains(extraToken, StringComparison.OrdinalIgnoreCase)
+                    && !HitMentions(best, extraToken))
                 {
                     best.Ambiguous = true;
                 }
@@ -163,25 +189,30 @@ public sealed class WikimediaReferenceResolver : IWikimediaReferenceResolver
     {
         var queries = new List<string>();
         var extra = TakeCueExtra(term, cueText);
-        var wordCount = term.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
-        if (wordCount == 1 && extra is not null)
+        var neighbors = TakeNeighborPhrases(term, cueText);
+        var wordCount = term.Split([' ', ','], StringSplitOptions.RemoveEmptyEntries).Length;
+        if (extra is not null)
         {
             queries.Add(term + " " + extra);
         }
-        else if (wordCount == 1)
-        {
-            queries.Add(term + " automobile");
-        }
 
-        var withCue = extra is null ? term : term + " " + extra;
-        if (!queries.Contains(withCue, StringComparer.OrdinalIgnoreCase))
+        foreach (var neighbor in neighbors)
         {
-            queries.Add(withCue);
+            var q = term + " " + neighbor;
+            if (!queries.Contains(q, StringComparer.OrdinalIgnoreCase))
+            {
+                queries.Add(q);
+            }
         }
 
         if (!queries.Contains(term, StringComparer.OrdinalIgnoreCase))
         {
             queries.Add(term);
+        }
+
+        if (wordCount == 1 && extra is null && neighbors.Count == 0)
+        {
+            queries.Add(term + " automobile");
         }
 
         var titles = new List<string>();
@@ -255,21 +286,54 @@ public sealed class WikimediaReferenceResolver : IWikimediaReferenceResolver
         return titles;
     }
 
-    private static bool TitleMatchesTerm(string title, string term)
+    private static bool TitleContainsAllSignificantTokens(string title, string term)
     {
         if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(term))
         {
             return false;
         }
 
-        if (title.Contains(term, StringComparison.OrdinalIgnoreCase))
+        var tokens = SignificantTokens(term);
+        if (tokens.Count == 0)
         {
-            return true;
+            return title.Contains(term, StringComparison.OrdinalIgnoreCase);
         }
 
-        var compactTitle = title.Replace(" ", string.Empty, StringComparison.Ordinal);
-        var compactTerm = term.Replace(" ", string.Empty, StringComparison.Ordinal);
-        return compactTitle.Contains(compactTerm, StringComparison.OrdinalIgnoreCase);
+        return tokens.All(t => title.Contains(t, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static List<string> SignificantTokens(string term)
+    {
+        var tokens = new List<string>();
+        foreach (var raw in term.Split([' ', ',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var token = raw.Trim('\'', '’', '"', '.', '!', '?');
+            if (token.EndsWith("'s", StringComparison.OrdinalIgnoreCase)
+                || token.EndsWith("’s", StringComparison.OrdinalIgnoreCase))
+            {
+                token = token[..^2];
+            }
+
+            if (token.Length < 2 || CueStop.Contains(token))
+            {
+                continue;
+            }
+
+            tokens.Add(token);
+        }
+
+        return tokens;
+    }
+
+    private static bool HitMentions(WikimediaReferenceHit hit, string phrase)
+    {
+        if (string.IsNullOrWhiteSpace(phrase))
+        {
+            return false;
+        }
+
+        var blob = $"{hit.Title}\n{hit.WikidataDescription}\n{hit.Summary}";
+        return blob.Contains(phrase, StringComparison.OrdinalIgnoreCase);
     }
 
     private static int ScoreHit(string term, WikimediaReferenceHit hit, string? cueText)
@@ -280,7 +344,7 @@ public sealed class WikimediaReferenceResolver : IWikimediaReferenceResolver
         {
             score += 60;
         }
-        else if (TitleMatchesTerm(title, term))
+        else if (TitleContainsAllSignificantTokens(title, term))
         {
             score += 40;
         }
@@ -306,41 +370,45 @@ public sealed class WikimediaReferenceResolver : IWikimediaReferenceResolver
 
         if (!string.IsNullOrWhiteSpace(cueText))
         {
-            var idx = cueText.IndexOf(term, StringComparison.OrdinalIgnoreCase);
-            var after = idx < 0 ? string.Empty : cueText[(idx + term.Length)..];
-            foreach (Match match in TokenRegex.Matches(after))
+            var extra = TakeCueExtra(term, cueText);
+            if (extra is not null
+                && (title.Contains(extra, StringComparison.OrdinalIgnoreCase) || HitMentions(hit, extra)))
             {
-                if (CueStop.Contains(match.Value) || !char.IsUpper(match.Value[0]))
-                {
-                    break;
-                }
+                score += 20;
+            }
 
-                if (title.Contains(match.Value, StringComparison.OrdinalIgnoreCase))
+            foreach (var neighbor in TakeNeighborPhrases(term, cueText))
+            {
+                if (HitMentions(hit, neighbor))
                 {
-                    score += 20;
+                    score += 30;
                 }
-
-                break;
             }
         }
 
         return score;
     }
 
-    private static List<string> PreferTitlesMatchingTerm(string term, string? extra, List<string> titles)
+    private static List<string> PreferTitlesMatchingTerm(
+        string term,
+        string? extra,
+        IReadOnlyList<string> neighbors,
+        List<string> titles)
     {
         return titles
             .OrderByDescending(t => extra is not null && t.Contains(extra, StringComparison.OrdinalIgnoreCase))
+            .ThenByDescending(t => neighbors.Any(n =>
+                t.Equals(n, StringComparison.OrdinalIgnoreCase)
+                || TitleContainsAllSignificantTokens(t, n)))
             .ThenByDescending(t => t.Equals(term, StringComparison.OrdinalIgnoreCase))
             .ThenByDescending(t => t.StartsWith(term, StringComparison.OrdinalIgnoreCase))
-            .ThenByDescending(t => t.Contains(term, StringComparison.OrdinalIgnoreCase))
+            .ThenByDescending(t => TitleContainsAllSignificantTokens(t, term))
             .ToList();
     }
 
     private static string? TakeCueExtra(string term, string? cueText)
     {
-        if (string.IsNullOrWhiteSpace(cueText)
-            || term.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length != 1)
+        if (string.IsNullOrWhiteSpace(cueText))
         {
             return null;
         }
@@ -349,20 +417,75 @@ public sealed class WikimediaReferenceResolver : IWikimediaReferenceResolver
         var after = idx < 0 ? string.Empty : cueText[(idx + term.Length)..];
         foreach (Match match in TokenRegex.Matches(after))
         {
-            if (CueStop.Contains(match.Value))
+            if (CueStop.Contains(match.Value)
+                || match.Value.Length < 3
+                || match.Value.Equals(term, StringComparison.OrdinalIgnoreCase))
             {
                 continue;
-            }
-
-            if (!char.IsUpper(match.Value[0]))
-            {
-                return null;
             }
 
             return match.Value;
         }
 
         return null;
+    }
+
+    private static List<string> TakeNeighborPhrases(string term, string? cueText)
+    {
+        if (string.IsNullOrWhiteSpace(cueText))
+        {
+            return [];
+        }
+
+        var phrases = new List<string>();
+        foreach (var line in cueText.Split(['\n', '\r'], StringSplitOptions.RemoveEmptyEntries))
+        {
+            var trimmed = line.Trim();
+            if (trimmed.Length == 0 || trimmed.Contains(term, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var run = new List<string>();
+            void Flush()
+            {
+                if (run.Count >= 2 && run.Count <= 6)
+                {
+                    var phrase = string.Join(' ', run);
+                    if (phrase.Contains(term, StringComparison.OrdinalIgnoreCase)
+                        || term.Contains(phrase, StringComparison.OrdinalIgnoreCase))
+                    {
+                        run.Clear();
+                        return;
+                    }
+
+                    if (!phrases.Contains(phrase, StringComparer.OrdinalIgnoreCase))
+                    {
+                        phrases.Add(phrase);
+                    }
+                }
+
+                run.Clear();
+            }
+
+            foreach (Match match in TokenRegex.Matches(trimmed))
+            {
+                if (match.Value.Length >= 2
+                    && char.IsUpper(match.Value[0])
+                    && !CueStop.Contains(match.Value))
+                {
+                    run.Add(match.Value);
+                }
+                else
+                {
+                    Flush();
+                }
+            }
+
+            Flush();
+        }
+
+        return phrases.Take(3).ToList();
     }
 
     private async Task<SummaryPage?> FetchSummaryAsync(
@@ -493,7 +616,7 @@ public sealed class WikimediaReferenceResolver : IWikimediaReferenceResolver
     {
         var client = new HttpClient { Timeout = TimeSpan.FromSeconds(12) };
         client.DefaultRequestHeaders.UserAgent.Add(
-            new ProductInfoHeaderValue("Jellyfin.Plugin.LookItUp", "1.2.56"));
+            new ProductInfoHeaderValue("Jellyfin.Plugin.LookItUp", "1.2.57"));
         client.DefaultRequestHeaders.UserAgent.Add(
             new ProductInfoHeaderValue("(+https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up)"));
         client.DefaultRequestHeaders.AcceptLanguage.ParseAdd("en");

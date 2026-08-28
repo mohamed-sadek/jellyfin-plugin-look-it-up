@@ -114,7 +114,7 @@ public partial class LookItUpService : ILookItUpService
     /// <summary>
     /// Bump when scan logic changes so stale caches are ignored.
     /// </summary>
-    public const int CurrentCacheVersion = 14;
+    public const int CurrentCacheVersion = 16;
 
     private static readonly HashSet<string> TextSubtitleCodecs = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -960,7 +960,10 @@ public partial class LookItUpService : ILookItUpService
     private HashSet<string> BuildCastExcludeNames(BaseItem item, int minLength)
     {
         var exclude = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        AddPeopleToExclude(exclude, _libraryManager.GetPeople(item), minLength);
+        if (item is not Episode)
+        {
+            AddPeopleToExclude(exclude, _libraryManager.GetPeople(item), minLength);
+        }
 
         if (item is Episode episode)
         {
@@ -975,7 +978,7 @@ public partial class LookItUpService : ILookItUpService
                     AddNameTokens(exclude, series.Name, minLength);
                 }
 
-                // Season-level guests/hosts often aren't copied onto every episode.
+                // Season-level hosts (not episode guest stars like Jon Voight).
                 if (episode.SeasonId != Guid.Empty)
                 {
                     var season = _libraryManager.GetItemById(episode.SeasonId);
@@ -1209,6 +1212,11 @@ public partial class LookItUpService : ILookItUpService
     {
         foreach (var person in people)
         {
+            if (person.Type == PersonKind.GuestStar)
+            {
+                continue;
+            }
+
             AddNameTokens(exclude, person.Role, minLength);
             AddNameTokens(exclude, person.Name, minLength);
         }
@@ -1447,6 +1455,7 @@ public partial class LookItUpService : ILookItUpService
         var groqOn = _complement.IsEnabled(config);
         var budget = groqOn ? AiComplementBudget.ForFullPrepare() : new AiComplementBudget();
 
+        CueSearchContext.Attach(cues, batch);
         foreach (var candidate in batch)
         {
             cancellationToken.ThrowIfCancellationRequested();

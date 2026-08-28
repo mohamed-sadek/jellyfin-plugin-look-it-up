@@ -48,18 +48,25 @@ public partial class NameCandidateFinder : INameCandidateFinder
         "have", "has", "had", "do", "does", "did", "done",
         "will", "would", "could", "should", "may", "might", "must", "can", "shall",
         "not", "don", "didn", "isn", "aren", "wasn", "weren", "hasn", "haven", "hadn", "won", "wouldn",
+        "doesn", "doesnt", "doesn't", "isnt", "isn't", "arent", "aren't", "couldn't", "couldn",
+        "shouldn", "shouldn't", "wouldnt", "wouldn't",
         "mr", "mrs", "ms", "dr",
-        // Contractionsictions / dialogue false positives (I'm often looks title-case).
+        // Contractions / dialogue false positives (I'm often looks title-case).
         "i'm", "im", "i've", "ive", "i'd", "i'll",
         "you're", "youre", "you've", "youve", "you'd", "youd", "you'll", "youll",
         "he's", "hes", "she's", "shes", "we're", "they're", "theyre",
+        "he'll", "she'll", "we'll", "they'll", "it'll",
         "it's", "that's", "thats", "what's", "whats", "who's", "whos", "there's", "theres",
         "here's", "heres", "let's", "lets", "don't", "dont", "can't", "cant", "won't", "wont",
         "all", "any", "some", "every", "each", "both", "few", "more", "most", "other", "such",
         "just", "also", "only", "even", "still", "already", "yet", "very", "too", "quite",
         "up", "down", "out", "off", "back", "away", "here", "now", "then", "once",
         "get", "got", "go", "goes", "went", "come", "came", "see", "saw", "look", "let", "make", "made",
-        "know", "think", "want", "like", "take", "give", "tell", "say", "said", "ask"
+        "know", "think", "want", "like", "take", "give", "tell", "say", "said", "ask",
+        "otherwise", "however", "anyway", "meanwhile", "therefore", "except", "although", "though",
+        "unless", "until", "whether", "while", "perhaps", "maybe",
+        "afternoon", "morning", "evening", "tonight", "tomorrow", "yesterday",
+        "whoo", "woo", "yay", "yeah", "yep", "nah"
     };
 
     /// <summary>
@@ -83,10 +90,16 @@ public partial class NameCandidateFinder : INameCandidateFinder
         // Sound / stage directions often capitalized in subs
         "thud", "bang", "boom", "beep", "ring", "knock", "sighs", "gasps", "laughs", "applause",
         // Filler caps / dialogue noise
-        "ok", "okay", "oh", "uh", "um", "ah", "hmm", "huh", "wow", "whoa",
+        "ok", "okay", "oh", "uh", "um", "ah", "hmm", "huh", "wow", "whoa", "whoo", "woo",
         "one", "two", "three", "first", "last", "next", "right", "left",
         "everything", "nothing", "something", "anything", "everyone", "someone",
-        "through", "without", "feeling", "playing", "winning", "office", "screaming"
+        "through", "without", "feeling", "playing", "winning", "office", "screaming",
+        "otherwise", "afternoon", "morning", "evening", "tonight",
+        "mom", "dad", "ma", "pa",
+        "street", "avenue", "road", "boulevard", "lane", "drive", "place", "way",
+        "american", "british", "french", "german", "italian", "japanese", "chinese",
+        "mexican", "canadian", "irish", "scottish", "russian", "spanish", "korean",
+        "indian", "australian"
     };
 
     /// <inheritdoc />
@@ -199,6 +212,8 @@ public partial class NameCandidateFinder : INameCandidateFinder
 
         var candidates = new Dictionary<string, NameCandidate>(StringComparer.OrdinalIgnoreCase);
 
+        AddQuotedPhrases(cues, candidates, tokenStats, titleNorm, excludeNames, minLength);
+
         // Cap(+particle)+Cap phrases (Vincent van Gogh, Jon Voight), first occurrence.
         // Skip dialogue particles as phrase heads so "Uh… Vincent van Gogh" → Vincent van Gogh, not Uh….
         foreach (var group in occurrences.GroupBy(o => o.CueIndex))
@@ -243,25 +258,39 @@ public partial class NameCandidateFinder : INameCandidateFinder
 
             if (!strong && !repeatedCapOnly)
             {
-                // Repeated at sentence starts (e.g. a character name always capitalized after a period).
                 var repeatedInitial = stats.SentenceInitialCapCount >= 2
                                       && stats.MidSentenceCapCount == 0
                                       && stats.LowercaseCount == 0;
-                if (!repeatedInitial)
+                if (repeatedInitial)
                 {
+                    TryAddCandidate(
+                        candidates,
+                        occ.Surface,
+                        occ,
+                        tokenStats,
+                        titleNorm,
+                        excludeNames,
+                        minLength,
+                        scoreBonus: 8,
+                        reason: "repeated-sentence-initial");
                     continue;
                 }
 
-                TryAddCandidate(
-                    candidates,
-                    occ.Surface,
-                    occ,
-                    tokenStats,
-                    titleNorm,
-                    excludeNames,
-                    minLength,
-                    scoreBonus: 8,
-                    reason: "repeated-sentence-initial");
+                // "Deliverance, canoe" — a title at a cue/clause start followed by a lowercase noun.
+                if (IsListTitleBeforeLowercase(occ))
+                {
+                    TryAddCandidate(
+                        candidates,
+                        occ.Surface,
+                        occ,
+                        tokenStats,
+                        titleNorm,
+                        excludeNames,
+                        minLength,
+                        scoreBonus: 20,
+                        reason: "list-title");
+                }
+
                 continue;
             }
 
@@ -300,47 +329,90 @@ public partial class NameCandidateFinder : INameCandidateFinder
 
     private static bool IsCoveredByLongerPhrase(NameCandidate candidate, IEnumerable<NameCandidate> all)
     {
-        if (candidate.Term.Contains(' ', StringComparison.Ordinal))
+        var candParts = SplitTermParts(candidate.Term, stripPossessive: true);
+        if (candParts.Length == 0)
         {
             return false;
         }
 
         foreach (var other in all)
         {
-            if (ReferenceEquals(other, candidate) || other.Score < candidate.Score - 5)
+            if (ReferenceEquals(other, candidate) || other.Term.Length <= candidate.Term.Length)
             {
                 continue;
             }
 
-            if (!other.Term.Contains(' ', StringComparison.Ordinal))
+            if (Math.Abs(other.StartMs - candidate.StartMs) > 8_000)
             {
                 continue;
             }
 
-            var parts = other.Term.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            for (var i = 0; i < parts.Length; i++)
+            var otherRaw = SplitTermParts(other.Term, stripPossessive: false);
+            var parts = otherRaw.Select(StripPossessiveToken).Where(t => t.Length > 0).ToArray();
+            var start = IndexOfSubsequence(parts, candParts);
+            if (start < 0)
             {
-                if (!parts[i].Equals(candidate.Term, StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                // Token after a possessive ("…'s LeBaron") is its own entity — keep it.
-                if (i > 0 && IsPossessiveToken(parts[i - 1]))
-                {
-                    continue;
-                }
-
-                if (i > 0 && parts.Take(i).Any(IsPossessiveToken))
-                {
-                    continue;
-                }
-
-                return true;
+                continue;
             }
+
+            var end = start + candParts.Length;
+            // "Jon Voight" in "Jon Voight's LeBaron" is the possessor — keep it.
+            if (end > 0 && end <= otherRaw.Length && IsPossessiveToken(otherRaw[end - 1]))
+            {
+                continue;
+            }
+
+            // Token after a possessive ("…'s LeBaron") is its own entity — keep it.
+            if (candParts.Length == 1
+                && start > 0
+                && otherRaw.Take(Math.Min(start, otherRaw.Length)).Any(IsPossessiveToken))
+            {
+                continue;
+            }
+
+            return true;
         }
 
         return false;
+    }
+
+    private static string[] SplitTermParts(string term, bool stripPossessive)
+    {
+        var parts = term.Split([' ', ',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (!stripPossessive)
+        {
+            return parts;
+        }
+
+        return parts.Select(StripPossessiveToken).Where(t => t.Length > 0).ToArray();
+    }
+
+    private static int IndexOfSubsequence(string[] haystack, string[] needle)
+    {
+        if (needle.Length == 0 || needle.Length > haystack.Length)
+        {
+            return -1;
+        }
+
+        for (var i = 0; i <= haystack.Length - needle.Length; i++)
+        {
+            var ok = true;
+            for (var j = 0; j < needle.Length; j++)
+            {
+                if (!haystack[i + j].Equals(needle[j], StringComparison.OrdinalIgnoreCase))
+                {
+                    ok = false;
+                    break;
+                }
+            }
+
+            if (ok)
+            {
+                return i;
+            }
+        }
+
+        return -1;
     }
 
     private static bool IsPossessiveToken(string token)
@@ -398,6 +470,20 @@ public partial class NameCandidateFinder : INameCandidateFinder
             return;
         }
 
+        if (split.Count > 0 && IsPossessiveToken(split[^1]))
+        {
+            split[^1] = StripPossessiveToken(split[^1]);
+            if (split[^1].Length == 0)
+            {
+                split.RemoveAt(split.Count - 1);
+            }
+        }
+
+        if (split.Count == 0)
+        {
+            return;
+        }
+
         term = string.Join(' ', split);
         if (term.Length < minLength)
         {
@@ -405,10 +491,12 @@ public partial class NameCandidateFinder : INameCandidateFinder
         }
 
         // Never keep multi-clause dialogue fragments ("Wonderful, Hank …").
-        if (term.Contains(',', StringComparison.Ordinal)
-            || term.Contains(';', StringComparison.Ordinal)
-            || term.Contains('?', StringComparison.Ordinal)
-            || term.Contains('!', StringComparison.Ordinal))
+        // Quoted titles may contain commas ("Next Stop, Pottersville").
+        if (reason != "quoted"
+            && (term.Contains(',', StringComparison.Ordinal)
+                || term.Contains(';', StringComparison.Ordinal)
+                || term.Contains('?', StringComparison.Ordinal)
+                || term.Contains('!', StringComparison.Ordinal)))
         {
             return;
         }
@@ -551,6 +639,86 @@ public partial class NameCandidateFinder : INameCandidateFinder
         }
 
         return term;
+    }
+
+    private static bool IsListTitleBeforeLowercase(Occurrence occ)
+    {
+        if (occ.Tokens is null || occ.TokenIndex < 0)
+        {
+            return false;
+        }
+
+        var i = occ.TokenIndex + 1;
+        var sawBreak = false;
+        while (i < occ.Tokens.Count && occ.Tokens[i].IsPunctuationOnly)
+        {
+            if (occ.Tokens[i].EndsSentence)
+            {
+                return false;
+            }
+
+            if (occ.Tokens[i].BreaksPhrase)
+            {
+                sawBreak = true;
+            }
+
+            i++;
+        }
+
+        return sawBreak
+               && i < occ.Tokens.Count
+               && occ.Tokens[i].IsLower
+               && occ.Tokens[i].Surface.Length >= 3
+               && !FunctionWords.Contains(occ.Tokens[i].Surface);
+    }
+
+    private static void AddQuotedPhrases(
+        IReadOnlyList<SubtitleCue> cues,
+        Dictionary<string, NameCandidate> candidates,
+        Dictionary<string, TokenStats> tokenStats,
+        string? titleNorm,
+        IReadOnlySet<string> excludeNames,
+        int minLength)
+    {
+        for (var cueIndex = 0; cueIndex < cues.Count; cueIndex++)
+        {
+            var cue = cues[cueIndex];
+            if (string.IsNullOrWhiteSpace(cue.Text))
+            {
+                continue;
+            }
+
+            foreach (Match match in QuotedPhraseRegex().Matches(cue.Text))
+            {
+                var phrase = WhitespaceRegex().Replace(match.Groups[1].Value.Trim(), " ");
+                phrase = phrase.TrimEnd('.', '!', '?', ';', ':');
+                if (phrase.Length < minLength)
+                {
+                    continue;
+                }
+
+                var occ = new Occurrence
+                {
+                    CueIndex = cueIndex,
+                    TokenIndex = 0,
+                    Surface = phrase,
+                    StartMs = cue.StartMs,
+                    EndMs = cue.EndMs,
+                    CueText = NormalizeCueText(cue.Text),
+                    SentenceInitial = false
+                };
+                TryAddCandidate(
+                    candidates,
+                    phrase,
+                    occ,
+                    tokenStats,
+                    titleNorm,
+                    excludeNames,
+                    minLength,
+                    scoreBonus: 50,
+                    reason: "quoted");
+            }
+        }
     }
 
     private static void AddCapPhrasesFromOccurrences(
@@ -1083,8 +1251,11 @@ public partial class NameCandidateFinder : INameCandidateFinder
     [GeneratedRegex(@"\[([^\]]{2,60})\]", RegexOptions.CultureInvariant)]
     private static partial Regex SpeakerBracketRegex();
 
-    [GeneratedRegex(@"\b[\p{L}][\p{L}\p{Mn}']*\b|[,;:!?.…\-—–\[\]\(\)]", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"\b\d{1,4}(?:st|nd|rd|th)\b|\b[\p{L}][\p{L}\p{Mn}']*\b|[,;:!?.…\-—–\[\]\(\)]", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase)]
     private static partial Regex TokenRegex();
+
+    [GeneratedRegex(@"[\u201C""]([^""\u201C\u201D]{2,80})[\u201D""]", RegexOptions.CultureInvariant)]
+    private static partial Regex QuotedPhraseRegex();
 
     [GeneratedRegex(@"\.{2,}|…", RegexOptions.CultureInvariant)]
     private static partial Regex EllipsisRegex();
