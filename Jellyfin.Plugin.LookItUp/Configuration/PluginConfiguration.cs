@@ -31,7 +31,7 @@ public class PluginConfiguration : BasePluginConfiguration
         IncrementalPrepareOnPlayback = true;
         IncrementalPrepareWindowMs = 300_000;
         IncrementalPrepareBootstrapWindowMs = 60_000;
-        IncrementalAiNamesPerWindow = 40;
+        IncrementalAiNamesPerWindow = 20;
         StoreAiDecisions = true;
         ShowPopupsDuringPlayback = true;
         WriteSidecarFiles = true;
@@ -116,7 +116,7 @@ public class PluginConfiguration : BasePluginConfiguration
     /// </summary>
     public int IncrementalPrepareBootstrapWindowMs { get; set; }
 
-    /// <summary>Gets or sets max AI verifications per incremental playback window.</summary>
+    /// <summary>Gets or sets subtitle cues sent in each model HTTP call (clamped 8–40).</summary>
     public int IncrementalAiNamesPerWindow { get; set; }
 
     /// <summary>Gets or sets whether to persist AI keep/reject reasons in cache JSON for debugging.</summary>

@@ -15,6 +15,9 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
     {
         serviceCollection.AddSingleton<ISubtitleParser, SubtitleParser>();
         serviceCollection.AddSingleton<IEntityExtractor, EntityExtractor>();
+        serviceCollection.AddSingleton<IPhraseIndexStore, PhraseIndexStore>();
+        serviceCollection.AddSingleton<IPhraseIndexScanner, PhraseIndexScanner>();
+        serviceCollection.AddSingleton<IPhraseReferencePipeline, PhraseReferencePipeline>();
         serviceCollection.AddSingleton<INameCandidateFinder, NameCandidateFinder>();
         serviceCollection.AddSingleton<IWikipediaLookupService, WikipediaLookupService>();
         serviceCollection.AddSingleton<IReferenceGate, ReferenceGate>();

@@ -7,3 +7,5 @@ artifacts/
 *.suo
 repo/look-it-up_1.0.0.0/
 repo/serve.ps1
+Jellyfin.Plugin.LookItUp/Data/phrase-index.json
+

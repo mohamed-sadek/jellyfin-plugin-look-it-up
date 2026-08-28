@@ -52,25 +52,13 @@ static async Task<int> MainAsync(string[] args)
         builder.SetMinimumLevel(options.Verbose ? LogLevel.Debug : LogLevel.Information);
     });
 
-    var pipeline = new WikimediaReferencePipeline(
-        new WikimediaReferenceResolver(loggerFactory.CreateLogger<WikimediaReferenceResolver>()),
-        new ReferenceGate(),
-        loggerFactory.CreateLogger<WikimediaReferencePipeline>());
-
     var aiExtractor = new OpenAiCompatibleEntityExtractor(
         loggerFactory.CreateLogger<OpenAiCompatibleEntityExtractor>(),
         new AiCallRateLimiter());
-    var wikipedia = new WikipediaLookupService(loggerFactory.CreateLogger<WikipediaLookupService>());
-    var complement = new AiComplementService(
-        aiExtractor,
-        wikipedia,
-        loggerFactory.CreateLogger<AiComplementService>());
     var engine = new IncrementalPrepareEngine(
         new SubtitleParser(),
-        new NameCandidateFinder(),
-        wikipedia,
-        pipeline,
-        complement,
+        aiExtractor,
+        new ReferenceGate(),
         loggerFactory.CreateLogger<IncrementalPrepareEngine>());
 
     var request = new IncrementalPrepareRequest
@@ -90,7 +78,7 @@ static async Task<int> MainAsync(string[] args)
     Console.WriteLine($"  Input: {DescribeInput(options, subtitleName)}");
     Console.WriteLine($"  Show: {request.ShowName}");
     Console.WriteLine(
-        $"  Mode: {(options.DryRun ? "dry-run (candidates only)" : (complement.IsEnabled(config) ? "Wikimedia + Groq complement" : "Wikimedia"))}");
+        $"  Mode: {(options.DryRun ? "dry-run" : (aiExtractor.IsConfigured(config) ? "local/cloud model" : "no model configured"))}");
     Console.WriteLine();
 
     var result = await engine
@@ -481,7 +469,7 @@ static void PrintUsage()
           --item-id <guid>          Stable item id in output JSON
           -w, --window-minutes <n>  Incremental window size (default: 5)
           --exclude-cast <name>     Cast name to exclude (repeatable)
-          --dry-run                 List candidates without Wikipedia
+          --dry-run                 List phrase-index matches without Wikipedia
           -v, --verbose             Debug logging
           -h, --help                Show this help
 

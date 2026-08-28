@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "1.2.59.0",
+        "changelog": "Keep popup appearance across plugin updates. Batch subtitle lines into Groq/OpenAI calls instead of one request per name (fewer rate limits). Re-prepare items (cache v20).",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.59.0/look-it-up_1.2.59.0.zip",
+        "checksum": "3fd1d840ecd73c1be197384c7b283c42",
+        "timestamp": "2026-08-28T17:20:00Z"
+      },
+      {
         "version": "1.2.58.0",
         "changelog": "Groq can no longer keep a page Wikipedia did not find. Skip quoted filler (\"yes, yes\"), require a Wikipedia URL for idiom popups, and use the next capitalized cue word as search extra.",
         "targetAbi": "10.11.0.0",

@@ -41,7 +41,7 @@ public sealed class AiMediaContext
 }
 
 /// <summary>
-/// Verifies local name candidates with an LLM (one request per name).
+/// Reads subtitle cues in batches and asks a chat model for popup terms and definitions.
 /// </summary>
 public interface IAiEntityExtractor
 {
@@ -51,8 +51,18 @@ public interface IAiEntityExtractor
     bool IsConfigured(PluginConfiguration config);
 
     /// <summary>
+    /// Reads a window of subtitle cues and returns cultural popups (term + definition).
+    /// The model both chooses what to explain and writes the summary.
+    /// </summary>
+    Task<AiExtractionResult> ExtractCuesAsync(
+        AiMediaContext media,
+        IReadOnlyList<SubtitleCue> cues,
+        IReadOnlyCollection<string> alreadyKnown,
+        PluginConfiguration config,
+        CancellationToken cancellationToken);
+
+    /// <summary>
     /// Verifies candidates one-by-one and returns kept mentions with short summaries.
-    /// Legacy full-replace path; prepare now uses Wikimedia plus <see cref="TieBreakAsync"/>.
     /// </summary>
     Task<AiExtractionResult> ResolveNamesAsync(
         AiMediaContext media,
@@ -134,7 +144,7 @@ public sealed class AiIdiomSweepResult
 }
 
 /// <summary>
-/// OpenAI-compatible per-name verifier (Groq, OpenAI, OpenRouter, Ollama).
+/// OpenAI-compatible batched cue extractor (Groq, OpenAI, OpenRouter, Ollama).
 /// </summary>
 public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
 {
@@ -177,6 +187,165 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         }
 
         return !string.IsNullOrWhiteSpace(config.AiApiKey);
+    }
+
+    /// <inheritdoc />
+    public async Task<AiExtractionResult> ExtractCuesAsync(
+        AiMediaContext media,
+        IReadOnlyList<SubtitleCue> cues,
+        IReadOnlyCollection<string> alreadyKnown,
+        PluginConfiguration config,
+        CancellationToken cancellationToken)
+    {
+        if (!IsConfigured(config))
+        {
+            return new AiExtractionResult
+            {
+                Warning = "Set Provider to Groq (API key) or Ollama. Look it up sends subtitle batches to that model."
+            };
+        }
+
+        var all = cues.Where(c => !string.IsNullOrWhiteSpace(c.Text)).OrderBy(c => c.StartMs).ToList();
+        if (all.Count == 0)
+        {
+            return new AiExtractionResult();
+        }
+
+        var batchSize = Math.Clamp(config.IncrementalAiNamesPerWindow, 8, 40);
+        var mentions = new List<AiEntityMention>();
+        var decisions = new List<AiVerifyDecision>();
+        var seen = new HashSet<string>(alreadyKnown, StringComparer.OrdinalIgnoreCase);
+        string? warning = null;
+
+        for (var offset = 0; offset < all.Count; offset += batchSize)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var batch = all.Skip(offset).Take(batchSize).ToList();
+            var part = await ExtractCueBatchAsync(media, batch, seen, config, cancellationToken)
+                .ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(part.Warning) && warning is null)
+            {
+                warning = part.Warning;
+            }
+
+            foreach (var mention in part.Mentions)
+            {
+                if (seen.Add(mention.Term))
+                {
+                    mentions.Add(mention);
+                }
+            }
+
+            decisions.AddRange(part.Decisions);
+        }
+
+        _logger.LogInformation(
+            "Look it up model extracted {Kept} popups from {Cues} cues in {Batches} batched calls",
+            mentions.Count,
+            all.Count,
+            (all.Count + batchSize - 1) / batchSize);
+
+        return new AiExtractionResult
+        {
+            Mentions = mentions,
+            Decisions = decisions,
+            Warning = warning
+        };
+    }
+
+    private async Task<AiExtractionResult> ExtractCueBatchAsync(
+        AiMediaContext media,
+        IReadOnlyList<SubtitleCue> window,
+        IReadOnlySet<string> alreadyKnown,
+        PluginConfiguration config,
+        CancellationToken cancellationToken)
+    {
+        var show = string.IsNullOrWhiteSpace(media.ShowName) ? "unknown show" : media.ShowName.Trim();
+        var cast = media.KnownCastNames.Count == 0
+            ? "(none)"
+            : string.Join(", ", media.KnownCastNames.Take(40));
+        var known = alreadyKnown.Count == 0
+            ? "(none)"
+            : string.Join(", ", alreadyKnown.Take(40));
+        var lines = new StringBuilder();
+        for (var i = 0; i < window.Count; i++)
+        {
+            lines.Append('[').Append(i + 1).Append("] ")
+                .Append(window[i].StartMs).Append("ms: ")
+                .Append(Truncate(window[i].Text, 180))
+                .Append('\n');
+        }
+
+        var user =
+            "You explain culture a non-US viewer would not know, from TV/movie subtitle lines.\n" +
+            "For each cue, list real-world references that need a popup. You write the definition yourself.\n" +
+            "KEEP: US brands, cars, sports teams, politicians, celebrities, TV/film titles, songs, regional US places that are not NYC/LA/Chicago.\n" +
+            "SKIP: New York, God, Monday, greetings, filler (wait, sure, boys, coffee), in-show people listed below, the current show title.\n" +
+            "Use the full canonical name when you know who they mean (James T. Kirk, not Kirk).\n" +
+            "If unsure, omit. Never invent a person or brand that is not implied by the cue.\n" +
+            "JSON only: {\"mentions\":[{\"cue\":1,\"term\":\"Dan Quayle\",\"kind\":\"person\",\"summary\":\"one sentence for a non-US viewer\"}]}\n" +
+            "Empty mentions array if nothing. Summary is the definition. No URLs.\n" +
+            "Show: " + show + "\n" +
+            "Skip in-show people: " + cast + "\n" +
+            "Already explained: " + known + "\n" +
+            "Cues:\n" + lines;
+
+        var json = await CompleteJsonAsync(config, user, maxTokens: 900, cancellationToken).ConfigureAwait(false);
+        if (json?.Error is not null)
+        {
+            return new AiExtractionResult { Warning = json.Error };
+        }
+
+        if (json is null || !json.Root.TryGetProperty("mentions", out var items) || items.ValueKind != JsonValueKind.Array)
+        {
+            return new AiExtractionResult();
+        }
+
+        var mentions = new List<AiEntityMention>();
+        var decisions = new List<AiVerifyDecision>();
+        var seen = new HashSet<string>(alreadyKnown, StringComparer.OrdinalIgnoreCase);
+        foreach (var item in items.EnumerateArray())
+        {
+            var term = item.TryGetProperty("term", out var termEl) ? termEl.GetString() : null;
+            var summary = item.TryGetProperty("summary", out var sumEl) ? sumEl.GetString() : null;
+            if (string.IsNullOrWhiteSpace(term) || string.IsNullOrWhiteSpace(summary) || !seen.Add(term.Trim()))
+            {
+                continue;
+            }
+
+            var cueIndex = 0;
+            if (item.TryGetProperty("cue", out var cueEl) && cueEl.TryGetInt32(out var parsedCue))
+            {
+                cueIndex = parsedCue - 1;
+            }
+
+            var cue = cueIndex >= 0 && cueIndex < window.Count
+                ? window[cueIndex]
+                : window.FirstOrDefault(c => c.Text.Contains(term, StringComparison.OrdinalIgnoreCase)) ?? window[0];
+            var kind = item.TryGetProperty("kind", out var kindEl) ? kindEl.GetString() : "other";
+            var cleanedTerm = term.Trim();
+            var cleanedSummary = ClampSummary(SanitizeSummary(summary.Trim(), cleanedTerm), 220);
+            mentions.Add(new AiEntityMention
+            {
+                Term = cleanedTerm,
+                Kind = string.IsNullOrWhiteSpace(kind) ? "other" : kind.Trim().ToLowerInvariant(),
+                Summary = cleanedSummary,
+                StartMs = cue.StartMs,
+                EndMs = cue.EndMs
+            });
+            decisions.Add(new AiVerifyDecision
+            {
+                Term = cleanedTerm,
+                StartMs = cue.StartMs,
+                CueText = cue.Text,
+                Kept = true,
+                Reason = "model-batch",
+                Category = string.IsNullOrWhiteSpace(kind) ? "other" : kind.Trim().ToLowerInvariant(),
+                AtUtc = DateTime.UtcNow
+            });
+        }
+
+        return new AiExtractionResult { Mentions = mentions, Decisions = decisions };
     }
 
     /// <inheritdoc />
@@ -543,13 +712,13 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             };
             if (IsGptOssModel(model))
             {
-                payload["max_completion_tokens"] = Math.Clamp(maxTokens, 80, 512);
+                payload["max_completion_tokens"] = Math.Clamp(maxTokens, 80, 2048);
                 payload["reasoning_effort"] = "low";
                 payload["include_reasoning"] = false;
             }
             else
             {
-                payload["max_tokens"] = Math.Clamp(maxTokens, 80, 512);
+                payload["max_tokens"] = Math.Clamp(maxTokens, 80, 2048);
             }
 
             using var request = new HttpRequestMessage(HttpMethod.Post, url);
@@ -1579,7 +1748,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
     {
         var client = new HttpClient
         {
-            Timeout = TimeSpan.FromSeconds(90)
+            Timeout = TimeSpan.FromMinutes(3)
         };
         client.DefaultRequestHeaders.UserAgent.Add(
             new ProductInfoHeaderValue("Jellyfin.Plugin.LookItUp", "1.2.39"));

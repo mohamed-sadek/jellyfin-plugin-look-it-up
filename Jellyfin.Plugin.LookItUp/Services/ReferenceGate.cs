@@ -130,26 +130,7 @@ public sealed class ReferenceGate : IReferenceGate
         "Q34442",      // road
     };
 
-    private static readonly HashSet<string> MegaGeography = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "united states", "usa", "u.s.", "u.s.a.", "america", "the states",
-        "new york", "new york city", "nyc", "los angeles", "la", "chicago",
-        "london", "paris", "tokyo", "beijing", "moscow", "rome", "berlin",
-        "madrid", "sydney", "toronto", "mexico city", "cairo", "dubai",
-        "china", "india", "russia", "england", "france", "germany", "italy",
-        "spain", "canada", "mexico", "australia", "japan", "brazil", "africa",
-        "europe", "asia", "antarctica", "earth", "the world", "world",
-        "california", "texas", "florida", "dallas",
-        "god", "jesus", "jesus christ", "christ", "hell", "heaven",
-        "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
-        "january", "february", "march", "april", "june", "july", "august",
-        "september", "october", "november", "december",
-        "thanksgiving", "thanksgiving day", "thanksgiving eve",
-        "american", "british", "french", "german", "italian", "japanese", "chinese",
-        "mexican", "canadian", "irish", "scottish", "russian", "spanish", "korean",
-        "indian", "australian",
-        "street", "avenue", "road", "boulevard"
-    };
+    private static HashSet<string> MegaGeography => CulturalSkipList.ObviousTerms;
 
     /// <inheritdoc />
     public ReferenceDecision? TryRejectLocal(

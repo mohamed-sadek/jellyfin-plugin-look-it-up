@@ -26,6 +26,8 @@
     <EmbeddedResource Include="Configuration\preparePage.html" />
     <None Remove="Web\lookitup.js" />
     <EmbeddedResource Include="Web\lookitup.js" />
+    <EmbeddedResource Include="Data\phrase-index.json.gz" />
+    <None Remove="Data\phrase-index.json.gz" />
   </ItemGroup>
 
 </Project>

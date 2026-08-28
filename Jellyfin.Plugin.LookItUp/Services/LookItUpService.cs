@@ -114,7 +114,7 @@ public partial class LookItUpService : ILookItUpService
     /// <summary>
     /// Bump when scan logic changes so stale caches are ignored.
     /// </summary>
-    public const int CurrentCacheVersion = 17;
+    public const int CurrentCacheVersion = 20;
 
     private static readonly HashSet<string> TextSubtitleCodecs = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -131,6 +131,10 @@ public partial class LookItUpService : ILookItUpService
     private readonly ISubtitleParser _subtitleParser;
     private readonly IEntityExtractor _entityExtractor;
     private readonly IWikipediaLookupService _wikipedia;
+    private readonly IPhraseIndexScanner _scanner;
+    private readonly IPhraseReferencePipeline _phrasePipeline;
+    private readonly IAiEntityExtractor _ai;
+    private readonly IReferenceGate _gate;
     private readonly IWikimediaReferencePipeline _wikimedia;
     private readonly IAiComplementService _complement;
     private readonly INameCandidateFinder _nameCandidateFinder;
@@ -155,6 +159,10 @@ public partial class LookItUpService : ILookItUpService
         ISubtitleParser subtitleParser,
         IEntityExtractor entityExtractor,
         IWikipediaLookupService wikipedia,
+        IPhraseIndexScanner scanner,
+        IPhraseReferencePipeline phrasePipeline,
+        IAiEntityExtractor ai,
+        IReferenceGate gate,
         IWikimediaReferencePipeline wikimedia,
         IAiComplementService complement,
         INameCandidateFinder nameCandidateFinder,
@@ -171,6 +179,10 @@ public partial class LookItUpService : ILookItUpService
         _subtitleParser = subtitleParser;
         _entityExtractor = entityExtractor;
         _wikipedia = wikipedia;
+        _scanner = scanner;
+        _phrasePipeline = phrasePipeline;
+        _ai = ai;
+        _gate = gate;
         _wikimedia = wikimedia;
         _complement = complement;
         _nameCandidateFinder = nameCandidateFinder;
@@ -735,7 +747,8 @@ public partial class LookItUpService : ILookItUpService
         var minLen = Math.Max(2, config?.MinEntityLength ?? 3);
         var excludedCast = BuildCastExcludeNames(item, minLen);
         AddSubtitleSpeakerNames(excludedCast, cues, minLen);
-        var candidates = _nameCandidateFinder.Find(cues, item.Name, excludedCast, minLen, max);
+        var matches = _scanner.Find(cues, minLen, Math.Max(max, 40));
+        var candidates = matches.Select(ToNameCandidate).ToList();
 
         _logger.LogInformation(
             "Look it up name candidates for {Item}: {Count} from {Subtitle} ({Cues} cues), excluded cast tokens={Excluded}",
@@ -859,8 +872,8 @@ public partial class LookItUpService : ILookItUpService
         AddSubtitleSpeakerNames(excludedCast, cues, minLen);
         // Load every local candidate; suggestedN only controls which boxes start checked.
         const int previewCandidateCap = 500;
-        var ranked = _nameCandidateFinder
-            .Find(cues, item.Name, excludedCast, minLen, previewCandidateCap)
+        var ranked = _scanner.Find(cues, minLen, previewCandidateCap)
+            .Select(ToNameCandidate)
             .ToList();
         var suggested = new HashSet<string>(
             NameCandidateBatchSelector.SelectAiBatch(ranked, suggestedN).Select(c => c.Term),
@@ -1339,8 +1352,8 @@ public partial class LookItUpService : ILookItUpService
             string outcome = "success";
             IReadOnlyList<AiVerifyDecision> aiDecisions = [];
 
-            var groqOn = _complement.IsEnabled(config);
-            mode = groqOn ? "wikimedia+ai" : "wikimedia";
+            var groqOn = _ai.IsConfigured(config);
+            mode = groqOn ? "model" : "model-missing";
             if (groqOn)
             {
                 aiModel = OpenAiCompatibleEntityExtractor.ResolveModel(config);
@@ -1348,15 +1361,13 @@ public partial class LookItUpService : ILookItUpService
             }
 
             _logger.LogInformation(
-                "Look it up preparing {Item} with Wikimedia{Ai}",
-                item.Name,
-                groqOn ? " + Groq complement" : string.Empty);
-            var prepared = await PrepareWithWikimediaAsync(
+                "Look it up preparing {Item} with local/cloud model",
+                item.Name);
+            var prepared = await PrepareWithModelAsync(
                     item,
                     cues,
                     config,
                     max,
-                    selectedTerms,
                     cancellationToken)
                 .ConfigureAwait(false);
             annotations = prepared.Annotations;
@@ -1412,112 +1423,77 @@ public partial class LookItUpService : ILookItUpService
         }
     }
 
-    private async Task<(List<ContextAnnotation> Annotations, List<AiVerifyDecision> Decisions, string? Warning)> PrepareWithWikimediaAsync(
+    private async Task<(List<ContextAnnotation> Annotations, List<AiVerifyDecision> Decisions, string? Warning)> PrepareWithModelAsync(
         BaseItem item,
         IReadOnlyList<SubtitleCue> cues,
         Configuration.PluginConfiguration config,
         int max,
-        IReadOnlyList<string>? selectedTerms,
         CancellationToken cancellationToken)
     {
+        if (!_ai.IsConfigured(config))
+        {
+            return ([], [], "Set Provider to Groq and paste an API key (batched subtitle calls). Ollama only works on a machine you control.");
+        }
+
         var minLen = Math.Max(2, config.MinEntityLength);
         var excludedCast = BuildCastExcludeNames(item, minLen);
         AddSubtitleSpeakerNames(excludedCast, cues, minLen);
         var media = BuildAiMediaContext(item, excludedCast);
-        var wikiLang = string.IsNullOrWhiteSpace(config.WikipediaLanguage) ? "en" : config.WikipediaLanguage;
         var popupMs = Math.Max(config.PopupDurationMs, 8000);
-        const int prepareCandidateCap = 750;
-        var rankedLimit = selectedTerms is { Count: > 0 }
-            ? Math.Max(prepareCandidateCap, selectedTerms.Count)
-            : prepareCandidateCap;
-        var ranked = _nameCandidateFinder
-            .Find(cues, item.Name, excludedCast, minLen, rankedLimit)
-            .ToList();
-        var nameLimit = config.AiNamesPerPrepare <= 0
-            ? 250
-            : Math.Clamp(config.AiNamesPerPrepare, 1, 250);
-        List<NameCandidate> batch;
-        if (selectedTerms is { Count: > 0 })
-        {
-            batch = FilterCandidatesBySelectedTerms(ranked, selectedTerms, cues);
-            if (batch.Count == 0)
-            {
-                return ([], [], "None of the selected terms were found in subtitles.");
-            }
-        }
-        else
-        {
-            batch = NameCandidateBatchSelector.SelectAiBatch(ranked, nameLimit);
-        }
-
         var annotations = new List<ContextAnnotation>();
         var decisions = new List<AiVerifyDecision>();
-        var groqOn = _complement.IsEnabled(config);
-        var budget = groqOn ? AiComplementBudget.ForFullPrepare() : new AiComplementBudget();
+        var known = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        string? warning = null;
 
-        CueSearchContext.Attach(cues, batch);
-        foreach (var candidate in batch)
+        var extracted = await _ai
+            .ExtractCuesAsync(media, cues, known, config, cancellationToken)
+            .ConfigureAwait(false);
+        warning = extracted.Warning;
+
+        foreach (var mention in extracted.Mentions)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (annotations.Count >= max)
+            if (annotations.Count >= max || !known.Add(mention.Term))
             {
-                break;
+                continue;
             }
 
-            var decision = await _wikimedia
-                .EvaluateAsync(candidate, media.ShowName, excludedCast, wikiLang, cancellationToken)
-                .ConfigureAwait(false);
-            if (groqOn)
+            var candidate = new NameCandidate
             {
-                decision = await _complement
-                    .ApplyToDecisionAsync(decision, media, config, budget, wikiLang, cancellationToken)
-                    .ConfigureAwait(false);
+                Term = mention.Term,
+                StartMs = mention.StartMs,
+                EndMs = mention.EndMs,
+                CueText = cues.FirstOrDefault(c => c.StartMs == mention.StartMs)?.Text ?? string.Empty
+            };
+            var local = _gate.TryRejectLocal(candidate, media.ShowName, excludedCast);
+            if (local is not null)
+            {
+                decisions.Add(PhraseReferencePipeline.ToStoreDecision(local));
+                continue;
             }
 
-            decisions.Add(WikimediaReferencePipeline.ToStoreDecision(decision));
-            var annotation = WikimediaReferencePipeline.ToAnnotation(decision, popupMs);
-            if (annotation is not null)
+            var term = mention.Term.Trim();
+            var summary = mention.Summary.Trim();
+            annotations.Add(new ContextAnnotation
             {
-                annotations.Add(annotation);
-            }
-        }
-
-        if (groqOn)
-        {
-            var known = annotations
-                .Select(a => a.Term)
-                .Concat(batch.Select(c => c.Term))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            var idioms = await _complement
-                .SweepLeftoverCuesAsync(
-                    cues,
-                    batch,
-                    known,
-                    media,
-                    config,
-                    budget,
-                    popupMs,
-                    cancellationToken)
-                .ConfigureAwait(false);
-            foreach (var idiom in idioms)
+                Term = term,
+                Summary = summary.StartsWith(term, StringComparison.OrdinalIgnoreCase)
+                    ? summary
+                    : $"{term}: {summary}",
+                Kind = string.IsNullOrWhiteSpace(mention.Kind) ? "other" : mention.Kind,
+                StartMs = mention.StartMs,
+                EndMs = Math.Max(mention.EndMs, mention.StartMs + popupMs)
+            });
+            decisions.Add(new AiVerifyDecision
             {
-                if (annotations.Count >= max)
-                {
-                    break;
-                }
-
-                annotations.Add(idiom);
-                decisions.Add(new AiVerifyDecision
-                {
-                    Term = idiom.Term,
-                    StartMs = idiom.StartMs,
-                    Kept = true,
-                    Reason = "groq-idiom",
-                    Category = "groq-idiom",
-                    AtUtc = DateTime.UtcNow
-                });
-            }
+                Term = term,
+                StartMs = mention.StartMs,
+                CueText = candidate.CueText,
+                Kept = true,
+                Reason = "model-batch",
+                Category = mention.Kind,
+                AtUtc = DateTime.UtcNow
+            });
         }
 
         var deduped = annotations
@@ -1526,8 +1502,32 @@ public partial class LookItUpService : ILookItUpService
             .OrderBy(a => a.StartMs)
             .Take(max)
             .ToList();
+        return (deduped, decisions, warning);
+    }
 
-        return (deduped, decisions, null);
+    private static NameCandidate ToNameCandidate(PhraseMatch match)
+    {
+        return new NameCandidate
+        {
+            Term = match.Title,
+            StartMs = match.StartMs,
+            EndMs = match.EndMs,
+            CueText = match.CueText,
+            Score = match.Phrase.Length,
+            Reason = "phrase-index:" + match.Phrase
+        };
+    }
+
+    private static List<PhraseMatch> FilterMatchesBySelectedTerms(
+        IReadOnlyList<PhraseMatch> matches,
+        IReadOnlyList<string> selectedTerms)
+    {
+        var wanted = new HashSet<string>(
+            selectedTerms.Where(t => !string.IsNullOrWhiteSpace(t)).Select(t => t.Trim()),
+            StringComparer.OrdinalIgnoreCase);
+        return matches
+            .Where(m => wanted.Contains(m.Title) || wanted.Contains(m.Phrase))
+            .ToList();
     }
 
     private ItemAnnotationCache SaveCache(

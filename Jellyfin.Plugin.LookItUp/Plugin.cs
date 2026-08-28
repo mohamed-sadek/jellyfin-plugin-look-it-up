@@ -23,6 +23,7 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
         : base(applicationPaths, xmlSerializer)
     {
         Instance = this;
+        RestorePopupAppearance();
     }
 
     /// <inheritdoc />
@@ -68,14 +69,46 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     /// <inheritdoc />
     public override void UpdateConfiguration(BasePluginConfiguration configuration)
     {
-        if (configuration is PluginConfiguration incoming
-            && string.IsNullOrWhiteSpace(incoming.AiApiKey)
-            && !string.IsNullOrWhiteSpace(Configuration.AiApiKey))
+        if (configuration is PluginConfiguration incoming)
         {
-            // Config UI leaves the key field blank on purpose; never wipe a saved key.
-            incoming.AiApiKey = Configuration.AiApiKey;
+            PreserveSecret(incoming, Configuration);
+            PopupAppearanceStore.Save(ApplicationPaths, incoming);
         }
 
         base.UpdateConfiguration(configuration);
+    }
+
+    private void RestorePopupAppearance()
+    {
+        var config = Configuration;
+        if (PopupAppearanceStore.TryRestore(ApplicationPaths, config))
+        {
+            SaveConfiguration(config);
+            return;
+        }
+
+        // First run of this backup: keep whatever XML still has so the next update can restore it.
+        PopupAppearanceStore.Save(ApplicationPaths, config);
+    }
+
+    private static void PreserveSecret(PluginConfiguration incoming, PluginConfiguration existing)
+    {
+        if (string.IsNullOrWhiteSpace(incoming.AiApiKey)
+            && !string.IsNullOrWhiteSpace(existing.AiApiKey))
+        {
+            incoming.AiApiKey = existing.AiApiKey;
+        }
+
+        if (string.IsNullOrWhiteSpace(incoming.OpenSubtitlesPassword)
+            && !string.IsNullOrWhiteSpace(existing.OpenSubtitlesPassword))
+        {
+            incoming.OpenSubtitlesPassword = existing.OpenSubtitlesPassword;
+        }
+
+        if (string.IsNullOrWhiteSpace(incoming.OpenSubtitlesApiKey)
+            && !string.IsNullOrWhiteSpace(existing.OpenSubtitlesApiKey))
+        {
+            incoming.OpenSubtitlesApiKey = existing.OpenSubtitlesApiKey;
+        }
     }
 }
