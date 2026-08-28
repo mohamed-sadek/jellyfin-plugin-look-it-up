@@ -197,7 +197,7 @@ public sealed class ReferenceGate : IReferenceGate
 
         if (!hit.Found || string.IsNullOrWhiteSpace(hit.Title))
         {
-            return Drop(candidate, "not-found", "No Wikipedia article.", uncertain: true);
+            return Drop(candidate, "not-found", "No Wikipedia article.");
         }
 
         if (hit.Title.Contains("list of", StringComparison.OrdinalIgnoreCase)

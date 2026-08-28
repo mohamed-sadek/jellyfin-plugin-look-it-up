@@ -44,7 +44,8 @@ public interface IAiComplementService
     bool IsEnabled(PluginConfiguration config);
 
     /// <summary>
-    /// Tie-break or rewrite one Wikimedia decision. Never drops a confident Wikimedia keep on AI failure.
+    /// Rewrite a confident Wikimedia keep, or drop/switch among real Wikipedia pages when the hit is ambiguous.
+    /// Never promotes a not-found drop into a keep.
     /// </summary>
     Task<ReferenceDecision> ApplyToDecisionAsync(
         ReferenceDecision decision,
@@ -107,7 +108,10 @@ public sealed class AiComplementService : IAiComplementService
             return decision;
         }
 
-        if (decision.Uncertain && budget.TieBreaksLeft > 0)
+        if (decision.Kept
+            && decision.Uncertain
+            && !string.IsNullOrWhiteSpace(decision.Url)
+            && budget.TieBreaksLeft > 0)
         {
             budget.TieBreaksLeft--;
             var tie = await _ai
@@ -222,26 +226,28 @@ public sealed class AiComplementService : IAiComplementService
 
             string? imageUrl = null;
             string? url = null;
-            if (string.Equals(mention.Kind, "person", StringComparison.OrdinalIgnoreCase))
+            string? wikiTitle = null;
+            try
             {
-                try
+                var wiki = await _wikipedia
+                    .LookupAsync(mention.Term, WikipediaLanguageOrEn(config), cancellationToken)
+                    .ConfigureAwait(false);
+                if (!wiki.Found || string.IsNullOrWhiteSpace(wiki.Url))
                 {
-                    var wiki = await _wikipedia
-                        .LookupAsync(mention.Term, WikipediaLanguageOrEn(config), cancellationToken)
-                        .ConfigureAwait(false);
-                    if (wiki.Found)
-                    {
-                        imageUrl = wiki.ImageUrl;
-                        url = wiki.Url;
-                    }
+                    continue;
                 }
-                catch (Exception ex)
-                {
-                    _logger.LogDebug(ex, "Idiom person image lookup failed for {Term}", mention.Term);
-                }
+
+                imageUrl = wiki.ImageUrl;
+                url = wiki.Url;
+                wikiTitle = wiki.Title;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Idiom Wikipedia lookup failed for {Term}", mention.Term);
+                continue;
             }
 
-            var title = mention.Term.Trim();
+            var title = string.IsNullOrWhiteSpace(wikiTitle) ? mention.Term.Trim() : wikiTitle.Trim();
             var summary = mention.Summary.Trim();
             added.Add(new ContextAnnotation
             {
@@ -275,25 +281,33 @@ public sealed class AiComplementService : IAiComplementService
             {
                 var wiki = await _wikipedia.LookupAsync(title, wikipediaLanguage, cancellationToken)
                     .ConfigureAwait(false);
-                if (wiki.Found)
+                if (!wiki.Found || string.IsNullOrWhiteSpace(wiki.Url))
                 {
-                    decision.Url = wiki.Url ?? decision.Url;
-                    decision.ImageUrl = wiki.ImageUrl ?? decision.ImageUrl;
-                    if (!string.IsNullOrWhiteSpace(wiki.Title))
-                    {
-                        title = wiki.Title.Trim();
-                    }
+                    return;
+                }
 
-                    if (string.IsNullOrWhiteSpace(summary) && !string.IsNullOrWhiteSpace(wiki.Summary))
-                    {
-                        summary = wiki.Summary;
-                    }
+                decision.Url = wiki.Url;
+                decision.ImageUrl = wiki.ImageUrl ?? decision.ImageUrl;
+                if (!string.IsNullOrWhiteSpace(wiki.Title))
+                {
+                    title = wiki.Title.Trim();
+                }
+
+                if (string.IsNullOrWhiteSpace(summary) && !string.IsNullOrWhiteSpace(wiki.Summary))
+                {
+                    summary = wiki.Summary;
                 }
             }
             catch (Exception ex)
             {
                 _logger.LogDebug(ex, "Tie-break Wikipedia lookup failed for {Title}", title);
+                return;
             }
+        }
+
+        if (string.IsNullOrWhiteSpace(decision.Url))
+        {
+            return;
         }
 
         if (string.Equals(tie.Kind, "person", StringComparison.OrdinalIgnoreCase)

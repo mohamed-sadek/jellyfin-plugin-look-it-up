@@ -672,6 +672,23 @@ public partial class NameCandidateFinder : INameCandidateFinder
                && !FunctionWords.Contains(occ.Tokens[i].Surface);
     }
 
+    /// <summary>
+    /// Quoted dialogue like "yes, yes" / "go, go" is not a work title.
+    /// </summary>
+    private static bool IsQuotedFiller(string phrase)
+    {
+        var parts = phrase.Split(
+            [' ', ',', ';', '-', '—', '–'],
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return !parts.Any(p =>
+        {
+            var token = p.Trim('\'', '"', '.', '!', '?');
+            return token.Length >= 4
+                   && token.Any(char.IsUpper)
+                   && !FunctionWords.Contains(token);
+        });
+    }
+
     private static void AddQuotedPhrases(
         IReadOnlyList<SubtitleCue> cues,
         Dictionary<string, NameCandidate> candidates,
@@ -692,7 +709,7 @@ public partial class NameCandidateFinder : INameCandidateFinder
             {
                 var phrase = WhitespaceRegex().Replace(match.Groups[1].Value.Trim(), " ");
                 phrase = phrase.TrimEnd('.', '!', '?', ';', ':');
-                if (phrase.Length < minLength)
+                if (phrase.Length < minLength || IsQuotedFiller(phrase))
                 {
                     continue;
                 }

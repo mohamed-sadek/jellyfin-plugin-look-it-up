@@ -22,7 +22,8 @@ public sealed class WikimediaReferenceResolver : IWikimediaReferenceResolver
         "it", "my", "his", "her", "our", "no", "not", "ever", "owned", "said", "says", "gonna",
         "going", "got", "get", "just", "also", "very", "too", "then", "than", "them", "their",
         "doesn't", "doesnt", "isn't", "aren't", "can't", "won't", "except", "otherwise",
-        "he's", "she's", "it's", "that's", "there's", "here's"
+        "he's", "she's", "it's", "that's", "there's", "here's",
+        "yes", "yeah", "yep", "go"
     };
 
     private readonly ILogger<WikimediaReferenceResolver> _logger;
@@ -158,13 +159,6 @@ public sealed class WikimediaReferenceResolver : IWikimediaReferenceResolver
                         .Take(3)
                         .ToList();
                     best.Ambiguous = ordered[0].Score - ordered[1].Score < 20;
-                }
-
-                if (extraToken is not null
-                    && !best.Title.Contains(extraToken, StringComparison.OrdinalIgnoreCase)
-                    && !HitMentions(best, extraToken))
-                {
-                    best.Ambiguous = true;
                 }
 
                 _cache[cacheKey] = best;
@@ -415,6 +409,8 @@ public sealed class WikimediaReferenceResolver : IWikimediaReferenceResolver
 
         var idx = cueText.IndexOf(term, StringComparison.OrdinalIgnoreCase);
         var after = idx < 0 ? string.Empty : cueText[(idx + term.Length)..];
+        string? firstCap = null;
+        string? firstAny = null;
         foreach (Match match in TokenRegex.Matches(after))
         {
             if (CueStop.Contains(match.Value)
@@ -424,10 +420,15 @@ public sealed class WikimediaReferenceResolver : IWikimediaReferenceResolver
                 continue;
             }
 
-            return match.Value;
+            firstAny ??= match.Value;
+            if (char.IsUpper(match.Value[0]))
+            {
+                firstCap = match.Value;
+                break;
+            }
         }
 
-        return null;
+        return firstCap ?? firstAny;
     }
 
     private static List<string> TakeNeighborPhrases(string term, string? cueText)
@@ -616,7 +617,7 @@ public sealed class WikimediaReferenceResolver : IWikimediaReferenceResolver
     {
         var client = new HttpClient { Timeout = TimeSpan.FromSeconds(12) };
         client.DefaultRequestHeaders.UserAgent.Add(
-            new ProductInfoHeaderValue("Jellyfin.Plugin.LookItUp", "1.2.57"));
+            new ProductInfoHeaderValue("Jellyfin.Plugin.LookItUp", "1.2.58"));
         client.DefaultRequestHeaders.UserAgent.Add(
             new ProductInfoHeaderValue("(+https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up)"));
         client.DefaultRequestHeaders.AcceptLanguage.ParseAdd("en");
