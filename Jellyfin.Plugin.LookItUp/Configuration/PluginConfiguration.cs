@@ -38,7 +38,7 @@ public class PluginConfiguration : BasePluginConfiguration
         PrepareMovies = true;
         PrepareEpisodes = true;
         SkipAlreadyPrepared = true;
-        AiProvider = "Groq";
+        AiProvider = "None";
         AiApiKey = string.Empty;
         AiModel = "openai/gpt-oss-20b";
         AiBaseUrl = "https://api.groq.com/openai/v1";

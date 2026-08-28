@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  const CLIENT_VERSION = '1.2.55.0';
+  const CLIENT_VERSION = '1.2.56.0';
   const STYLE_ID = 'lookitup-styles';
   const STACK_ID = 'lookitup-stack';
   const POPUP_ID = 'lookitup-popup'; // legacy single-popup id (removed on upgrade)
@@ -1301,6 +1301,11 @@
 
     prepareAheadInFlight = true;
     lastPrepareAheadAt = Date.now();
+    console.info('[Look it up] prepare-ahead starting', {
+      itemId,
+      playbackMs: Math.max(0, Math.floor(playbackMs)),
+      preparedThroughMs
+    });
     try {
       const url = api.getUrl(
         'LookItUp/' + itemId + '/prepare-ahead?playbackMs=' + Math.max(0, Math.floor(playbackMs))

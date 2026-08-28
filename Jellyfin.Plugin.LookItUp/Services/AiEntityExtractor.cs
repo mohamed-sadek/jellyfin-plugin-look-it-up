@@ -52,12 +52,85 @@ public interface IAiEntityExtractor
 
     /// <summary>
     /// Verifies candidates one-by-one and returns kept mentions with short summaries.
+    /// Legacy full-replace path; prepare now uses Wikimedia plus <see cref="TieBreakAsync"/>.
     /// </summary>
     Task<AiExtractionResult> ResolveNamesAsync(
         AiMediaContext media,
         IReadOnlyList<NameCandidate> candidates,
         PluginConfiguration config,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Chooses among close Wikipedia hits or salvages a weak drop. Tiny prompt.
+    /// </summary>
+    Task<AiTieBreakResult> TieBreakAsync(
+        AiMediaContext media,
+        ReferenceDecision decision,
+        PluginConfiguration config,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Rewrites a kept Wikipedia extract for a non-US viewer. Does not change keep/drop.
+    /// </summary>
+    Task<string?> RewritePopupAsync(
+        string title,
+        string kind,
+        string cueText,
+        string wikipediaSummary,
+        PluginConfiguration config,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Scans leftover subtitle lines (no Cap candidates) for uncapitalized US idioms.
+    /// </summary>
+    Task<AiIdiomSweepResult> SweepIdiomsAsync(
+        AiMediaContext media,
+        IReadOnlyList<SubtitleCue> leftoverCues,
+        IReadOnlyCollection<string> alreadyKnown,
+        PluginConfiguration config,
+        CancellationToken cancellationToken);
+}
+
+/// <summary>
+/// Groq/OpenAI choice among close Wikimedia pages, or a salvage keep.
+/// </summary>
+public sealed class AiTieBreakResult
+{
+    /// <summary>Gets whether the model returned a usable JSON decision.</summary>
+    public bool Ok { get; init; }
+
+    /// <summary>Gets whether the candidate should become a popup.</summary>
+    public bool Keep { get; init; }
+
+    /// <summary>Gets the Wikipedia title to use when keep is true.</summary>
+    public string? Title { get; init; }
+
+    /// <summary>Gets a one-sentence viewer summary.</summary>
+    public string? Summary { get; init; }
+
+    /// <summary>Gets popup kind.</summary>
+    public string? Kind { get; init; }
+
+    /// <summary>Gets a short reason.</summary>
+    public string Reason { get; init; } = string.Empty;
+
+    /// <summary>Gets a category tag.</summary>
+    public string Category { get; init; } = "no-value";
+
+    /// <summary>Gets a transport/parse error when <see cref="Ok"/> is false.</summary>
+    public string? Error { get; init; }
+}
+
+/// <summary>
+/// Uncapitalized idiom hits from leftover cues.
+/// </summary>
+public sealed class AiIdiomSweepResult
+{
+    /// <summary>Gets extracted idiom mentions.</summary>
+    public IReadOnlyList<AiEntityMention> Mentions { get; init; } = [];
+
+    /// <summary>Gets a transport/parse error when the call failed.</summary>
+    public string? Error { get; init; }
 }
 
 /// <summary>
@@ -257,6 +330,311 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             Decisions = decisions,
             Warning = failed > 0 ? summary : null
         };
+    }
+
+    /// <inheritdoc />
+    public async Task<AiTieBreakResult> TieBreakAsync(
+        AiMediaContext media,
+        ReferenceDecision decision,
+        PluginConfiguration config,
+        CancellationToken cancellationToken)
+    {
+        if (!IsConfigured(config))
+        {
+            return new AiTieBreakResult { Ok = false, Error = "AI not configured." };
+        }
+
+        var show = string.IsNullOrWhiteSpace(media.ShowName) ? "unknown show" : media.ShowName.Trim();
+        var alts = decision.AlternateTitles is { Count: > 0 }
+            ? string.Join("; ", decision.AlternateTitles)
+            : "(none)";
+        var user =
+            "Wikimedia already searched Wikipedia. You only break a tie or salvage a weak miss.\n" +
+            "KEEP US culture a non-US viewer may not know: people, cars, brands, sports, institutions.\n" +
+            "REJECT in-show fiction, calendar, mega-geography (New York, God, Monday), and filler.\n" +
+            "Prefer the Wikipedia title that matches distinctive cue words (Ford LTD → Ford LTD, not Ford Motor Company).\n" +
+            "JSON: {\"keep\":true|false,\"title\":\"Wikipedia title or null\",\"kind\":\"person|brand|film|place|other\"," +
+            "\"summary\":\"one sentence for a non-US viewer\",\"reason\":\"one sentence\",\"category\":\"wikidata-type\"}\n" +
+            "Show: " + show + "\n" +
+            "Term: " + decision.Candidate.Term + "\n" +
+            "Cue: " + Truncate(decision.Candidate.CueText, 180) + "\n" +
+            "Wikimedia: " + (decision.Kept ? "KEEP" : "DROP") + " " + (decision.Title ?? decision.Candidate.Term) +
+            " [" + decision.Category + "] " + Truncate(decision.Reason, 120) + "\n" +
+            "Alternate titles: " + alts;
+
+        var json = await CompleteJsonAsync(config, user, maxTokens: 280, cancellationToken).ConfigureAwait(false);
+        if (json is null)
+        {
+            return new AiTieBreakResult { Ok = false, Error = "empty or failed AI response" };
+        }
+
+        if (json.Error is not null)
+        {
+            return new AiTieBreakResult { Ok = false, Error = json.Error };
+        }
+
+        var root = json.Root;
+        var keep = root.TryGetProperty("keep", out var keepEl) && keepEl.ValueKind == JsonValueKind.True;
+        var title = root.TryGetProperty("title", out var titleEl) ? titleEl.GetString() : null;
+        var summary = root.TryGetProperty("summary", out var sumEl) ? sumEl.GetString() : null;
+        var kind = root.TryGetProperty("kind", out var kindEl) ? kindEl.GetString() : "other";
+        var reason = root.TryGetProperty("reason", out var reasonEl) ? reasonEl.GetString() : "groq-tiebreak";
+        var category = root.TryGetProperty("category", out var catEl) ? catEl.GetString() : "groq-tiebreak";
+        return new AiTieBreakResult
+        {
+            Ok = true,
+            Keep = keep,
+            Title = string.IsNullOrWhiteSpace(title) ? null : title.Trim(),
+            Summary = string.IsNullOrWhiteSpace(summary) ? null : ClampSummary(SanitizeSummary(summary.Trim(), decision.Candidate.Term), 220),
+            Kind = string.IsNullOrWhiteSpace(kind) ? "other" : kind.Trim().ToLowerInvariant(),
+            Reason = reason ?? "groq-tiebreak",
+            Category = string.IsNullOrWhiteSpace(category) ? "groq-tiebreak" : category.Trim()
+        };
+    }
+
+    /// <inheritdoc />
+    public async Task<string?> RewritePopupAsync(
+        string title,
+        string kind,
+        string cueText,
+        string wikipediaSummary,
+        PluginConfiguration config,
+        CancellationToken cancellationToken)
+    {
+        if (!IsConfigured(config) || string.IsNullOrWhiteSpace(wikipediaSummary))
+        {
+            return null;
+        }
+
+        var user =
+            "Rewrite this Wikipedia sentence for a non-US TV viewer. One sentence. Keep facts. Do not mention any TV show.\n" +
+            "JSON: {\"summary\":\"...\"}\n" +
+            "Title: " + title + "\n" +
+            "Kind: " + kind + "\n" +
+            "Cue: " + Truncate(cueText, 140) + "\n" +
+            "Wikipedia: " + Truncate(wikipediaSummary, 280);
+
+        var json = await CompleteJsonAsync(config, user, maxTokens: 160, cancellationToken).ConfigureAwait(false);
+        if (json is null || json.Error is not null)
+        {
+            return null;
+        }
+
+        var root = json.Root;
+
+        var summary = root.TryGetProperty("summary", out var sumEl) ? sumEl.GetString() : null;
+        if (string.IsNullOrWhiteSpace(summary))
+        {
+            return null;
+        }
+
+        var cleaned = ClampSummary(SanitizeSummary(summary.Trim(), title), 220);
+        return string.IsNullOrWhiteSpace(cleaned) ? null : cleaned;
+    }
+
+    /// <inheritdoc />
+    public async Task<AiIdiomSweepResult> SweepIdiomsAsync(
+        AiMediaContext media,
+        IReadOnlyList<SubtitleCue> leftoverCues,
+        IReadOnlyCollection<string> alreadyKnown,
+        PluginConfiguration config,
+        CancellationToken cancellationToken)
+    {
+        if (!IsConfigured(config) || leftoverCues.Count == 0)
+        {
+            return new AiIdiomSweepResult();
+        }
+
+        var show = string.IsNullOrWhiteSpace(media.ShowName) ? "unknown show" : media.ShowName.Trim();
+        var known = alreadyKnown.Count == 0
+            ? "(none)"
+            : string.Join(", ", alreadyKnown.Take(30));
+        var lines = new StringBuilder();
+        foreach (var cue in leftoverCues.Take(12))
+        {
+            lines.Append(cue.StartMs).Append("ms: ").Append(Truncate(cue.Text, 140)).Append('\n');
+        }
+
+        var user =
+            "These subtitle lines had no proper-noun candidates. Extract at most 3 US-culture idioms or slang a non-US viewer would miss.\n" +
+            "Skip in-show jokes, calendar, geography, and anything already listed.\n" +
+            "JSON: {\"items\":[{\"term\":\"third base\",\"kind\":\"other\",\"summary\":\"one sentence\",\"startMs\":0}]}\n" +
+            "Use startMs from the line you took the idiom from. Empty items array if nothing.\n" +
+            "Show: " + show + "\n" +
+            "Already: " + known + "\n" +
+            "Lines:\n" + lines;
+
+        var json = await CompleteJsonAsync(config, user, maxTokens: 360, cancellationToken).ConfigureAwait(false);
+        if (json?.Error is not null)
+        {
+            return new AiIdiomSweepResult { Error = json.Error };
+        }
+
+        if (json is null || !json.Root.TryGetProperty("items", out var items) || items.ValueKind != JsonValueKind.Array)
+        {
+            return new AiIdiomSweepResult();
+        }
+
+        var mentions = new List<AiEntityMention>();
+        foreach (var item in items.EnumerateArray())
+        {
+            var term = item.TryGetProperty("term", out var termEl) ? termEl.GetString() : null;
+            var summary = item.TryGetProperty("summary", out var sumEl) ? sumEl.GetString() : null;
+            if (string.IsNullOrWhiteSpace(term) || string.IsNullOrWhiteSpace(summary))
+            {
+                continue;
+            }
+
+            var startMs = 0L;
+            if (item.TryGetProperty("startMs", out var startEl) && startEl.TryGetInt64(out var parsedStart))
+            {
+                startMs = parsedStart;
+            }
+
+            var cue = leftoverCues.FirstOrDefault(c => c.StartMs == startMs)
+                      ?? leftoverCues.FirstOrDefault(c => c.Text.Contains(term, StringComparison.OrdinalIgnoreCase))
+                      ?? leftoverCues[0];
+            var kind = item.TryGetProperty("kind", out var kindEl) ? kindEl.GetString() : "other";
+            mentions.Add(new AiEntityMention
+            {
+                Term = term.Trim(),
+                Kind = string.IsNullOrWhiteSpace(kind) ? "other" : kind.Trim().ToLowerInvariant(),
+                Summary = ClampSummary(SanitizeSummary(summary.Trim(), term.Trim()), 220),
+                StartMs = cue.StartMs,
+                EndMs = cue.EndMs
+            });
+            if (mentions.Count >= 3)
+            {
+                break;
+            }
+        }
+
+        return new AiIdiomSweepResult { Mentions = mentions };
+    }
+
+    private async Task<ChatJsonResult?> CompleteJsonAsync(
+        PluginConfiguration config,
+        string userPrompt,
+        int maxTokens,
+        CancellationToken cancellationToken)
+    {
+        var model = ResolveModel(config);
+        var baseUrl = ResolveBaseUrl(config, model);
+        var url = baseUrl + "/chat/completions";
+        string? lastError = null;
+        const int maxAttempts = 2;
+
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await _rateLimiter
+                .WaitTurnAsync(config.PrepareMaxAiCallsPerMinute, cancellationToken)
+                .ConfigureAwait(false);
+
+            var payload = new Dictionary<string, object?>
+            {
+                ["model"] = model,
+                ["temperature"] = 0.1,
+                ["messages"] = new object[]
+                {
+                    new { role = "user", content = userPrompt }
+                },
+                ["response_format"] = new { type = "json_object" }
+            };
+            if (IsGptOssModel(model))
+            {
+                payload["max_completion_tokens"] = Math.Clamp(maxTokens, 80, 512);
+                payload["reasoning_effort"] = "low";
+                payload["include_reasoning"] = false;
+            }
+            else
+            {
+                payload["max_tokens"] = Math.Clamp(maxTokens, 80, 512);
+            }
+
+            using var request = new HttpRequestMessage(HttpMethod.Post, url);
+            request.Headers.Authorization = new AuthenticationHeaderValue(
+                "Bearer",
+                string.IsNullOrWhiteSpace(config.AiApiKey) ? "ollama" : config.AiApiKey.Trim());
+            request.Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+
+            try
+            {
+                using var response = await Http.SendAsync(request, cancellationToken).ConfigureAwait(false);
+                var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                if ((int)response.StatusCode == 429)
+                {
+                    var delay = ParseRetryDelay(body) ?? TimeSpan.FromSeconds(2 * attempt);
+                    lastError = $"HTTP 429 (retry in {delay.TotalSeconds:0.0}s)";
+                    _logger.LogWarning("Look it up complement rate-limited: {Error}", lastError);
+                    await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    lastError = $"HTTP {(int)response.StatusCode}: {Truncate(body, 180)}";
+                    return new ChatJsonResult { Error = lastError };
+                }
+
+                using var doc = JsonDocument.Parse(body);
+                if (!doc.RootElement.TryGetProperty("choices", out var choices) || choices.GetArrayLength() == 0)
+                {
+                    lastError = "missing choices";
+                    continue;
+                }
+
+                var choice = choices[0];
+                if (!choice.TryGetProperty("message", out var message))
+                {
+                    lastError = "missing message";
+                    continue;
+                }
+
+                var content = ReadMessageContent(message);
+                if (string.IsNullOrWhiteSpace(content))
+                {
+                    content = ReadAlternateText(message, "reasoning")
+                              ?? ReadAlternateText(message, "reasoning_content");
+                }
+
+                if (string.IsNullOrWhiteSpace(content))
+                {
+                    lastError = "empty content";
+                    continue;
+                }
+
+                content = StripCodeFence(content.Trim());
+                var start = content.IndexOf('{');
+                var end = content.LastIndexOf('}');
+                if (start < 0 || end <= start)
+                {
+                    lastError = "no JSON object";
+                    continue;
+                }
+
+                using var parsed = JsonDocument.Parse(content[start..(end + 1)]);
+                return new ChatJsonResult { Root = parsed.RootElement.Clone() };
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                lastError = ex.Message;
+                _logger.LogWarning(ex, "Look it up complement HTTP failed");
+            }
+        }
+
+        return new ChatJsonResult { Error = lastError ?? "AI complement failed" };
+    }
+
+    private sealed class ChatJsonResult
+    {
+        public JsonElement Root { get; init; }
+
+        public string? Error { get; init; }
     }
 
     private async Task<(AiEntityMention? Mention, AiVerifyDecision Decision, string? Error)> VerifyOneAsync(

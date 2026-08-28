@@ -1,17 +1,19 @@
 ---
 name: "Look it up"
 guid: "a8ab0fed-cac9-406d-b98b-58161bf970b8"
-version: "1.2.55.0"
+version: "1.2.56.0"
 targetAbi: "10.11.0.0"
 framework: "net9.0"
-overview: "AI-prepare subtitle references, then show short popups during playback"
+overview: "Timed subtitle popups via Wikipedia + Wikidata (optional Groq complement)"
 description: >
-  Prepares timed explainer popups from subtitles using an OpenAI-compatible model
-  with full cue context (or legacy Wikipedia heuristics), then shows them during playback.
+  Prepares timed explainer popups from subtitle names using Wikipedia search and Wikidata
+  types (no API key). Groq is optional for ambiguous pages, popup rewrites, and leftover idioms.
 category: "General"
 owner: "lookitup"
 artifacts:
   - "Jellyfin.Plugin.LookItUp.dll"
 changelog: >
-  When AI is configured, drop Wikipedia-only popup text and re-verify those names
-  with the AI so definitions come from Groq, not encyclopedia leads.
+  Default prepare uses Wikipedia search + Wikidata types (no API key). Groq is optional:
+  tie-break ambiguous pages, rewrite popups for non-US viewers, and scan leftover cues
+  for uncapitalized US idioms. Also persist sidecar early and extract possessive heads
+  (Jon Voight from "Jon Voight's LeBaron").

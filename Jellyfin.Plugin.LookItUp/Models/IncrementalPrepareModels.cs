@@ -74,7 +74,7 @@ public sealed class IncrementalPrepareSimulationResult
     /// <summary>Gets or sets subtitle duration inferred from cues (ms).</summary>
     public long SubtitleDurationMs { get; init; }
 
-    /// <summary>Gets or sets prepare mode: ai, legacy, or dry-run.</summary>
+    /// <summary>Gets or sets prepare mode: ai, wikimedia, or dry-run.</summary>
     public string Mode { get; init; } = "ai";
 
     /// <summary>Gets or sets optional warning (e.g. AI not configured).</summary>

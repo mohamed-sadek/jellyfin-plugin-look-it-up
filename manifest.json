@@ -7,9 +7,14 @@
     "owner": "mohamed-sadek",
     "category": "General",
     "versions": [
-      
-      
-      
+      {
+        "version": "1.2.56.0",
+        "changelog": "Default prepare uses Wikipedia search + Wikidata types (no API key). Groq is optional: tie-break ambiguous pages, rewrite popups for non-US viewers, leftover US idioms. Early sidecar persist and possessive-head finder (Jon Voight's LeBaron).",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.56.0/look-it-up_1.2.56.0.zip",
+        "checksum": "f37a77b1c18052fa1dc13b040094af46",
+        "timestamp": "2026-08-28T09:40:00Z"
+      },
       {
         "version": "1.2.55.0",
         "changelog": "When AI is configured, replace Wikipedia-only popup text by re-verifying names with Groq",

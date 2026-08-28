@@ -8,15 +8,15 @@ namespace Jellyfin.Plugin.LookItUp.Services;
 
 /// <summary>
 /// Simulates incremental playback prepare over a subtitle timeline in fixed windows.
-/// Uses the same name finding, AI verification, and annotation shaping as full prepare.
+/// Uses the same name finding, Wikimedia (default) or optional AI verification, and annotation shaping as full prepare.
 /// </summary>
 public sealed class IncrementalPrepareEngine
 {
     private readonly ISubtitleParser _subtitleParser;
     private readonly INameCandidateFinder _nameCandidateFinder;
-    private readonly IEntityExtractor _entityExtractor;
     private readonly IWikipediaLookupService _wikipedia;
-    private readonly IAiEntityExtractor _aiExtractor;
+    private readonly IWikimediaReferencePipeline _wikimedia;
+    private readonly IAiComplementService _complement;
     private readonly ILogger<IncrementalPrepareEngine> _logger;
 
     /// <summary>
@@ -25,16 +25,16 @@ public sealed class IncrementalPrepareEngine
     public IncrementalPrepareEngine(
         ISubtitleParser subtitleParser,
         INameCandidateFinder nameCandidateFinder,
-        IEntityExtractor entityExtractor,
         IWikipediaLookupService wikipedia,
-        IAiEntityExtractor aiExtractor,
+        IWikimediaReferencePipeline wikimedia,
+        IAiComplementService complement,
         ILogger<IncrementalPrepareEngine> logger)
     {
         _subtitleParser = subtitleParser;
         _nameCandidateFinder = nameCandidateFinder;
-        _entityExtractor = entityExtractor;
         _wikipedia = wikipedia;
-        _aiExtractor = aiExtractor;
+        _wikimedia = wikimedia;
+        _complement = complement;
         _logger = logger;
     }
 
@@ -51,7 +51,8 @@ public sealed class IncrementalPrepareEngine
         long toMs,
         PluginConfiguration config,
         CancellationToken cancellationToken,
-        bool retriesOnly = false)
+        bool retriesOnly = false,
+        Action? persistCache = null)
     {
         if ((!retriesOnly && fromMs >= toMs) || cues.Count == 0)
         {
@@ -81,141 +82,117 @@ public sealed class IncrementalPrepareEngine
         var skipped = GetSkippedTerms(ranked, fromMs, toMs, cache.Annotations);
         var beforeCount = cache.Annotations.Count;
         string? warning = null;
-        var mode = _aiExtractor.IsConfigured(config) ? "ai" : "legacy";
+        var groqOn = _complement.IsEnabled(config);
+        var mode = groqOn ? "wikimedia+ai" : "wikimedia";
         var windowLimit = Math.Clamp(config.IncrementalAiNamesPerWindow, 5, 250);
 
-        if (_aiExtractor.IsConfigured(config))
-        {
-            var windowCandidates = NameCandidateBatchSelector
-                .SelectForWindow(
-                    ranked,
-                    fromMs,
-                    toMs,
-                    cache.Annotations,
-                    windowLimit,
-                    cache.AiDecisions,
-                    retriesOnly);
-
-            if (windowCandidates.Count > 0)
-            {
-                var aiResult = await _aiExtractor
-                    .ResolveNamesAsync(mediaContext, windowCandidates, config, cancellationToken)
-                    .ConfigureAwait(false);
-                warning = aiResult.Warning;
-                AiDecisionStore.Merge(cache, aiResult.Decisions, config.StoreAiDecisions);
-
-                var added = await BuildAnnotationsFromAiAsync(
-                        aiResult.Mentions,
-                        cues,
-                        config,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-                MergeAnnotations(cache, added, max);
-            }
-
-            // Only advance the timeline cursor when this was a forward window (not a catch-up retry).
-            if (toMs > cache.PreparedThroughMs)
-            {
-                cache.PreparedThroughMs = toMs;
-            }
-
-            cache.ScannedAtUtc = DateTime.UtcNow;
-
-            var window = new IncrementalPrepareWindowResult
-            {
-                FromMs = fromMs,
-                ToMs = toMs,
-                CandidatesInWindow = CountCandidatesInWindow(ranked, fromMs, toMs),
-                CandidatesVerified = windowCandidates.Count,
-                AnnotationsAdded = cache.Annotations.Count - beforeCount,
-                SkippedTerms = skipped,
-                VerifiedTerms = windowCandidates.Select(c => c.Term).ToList()
-            };
-
-            _logger.LogInformation(
-                "Incremental window {From}-{To}ms: verified={Verified} added={Added} total={Total}",
+        var windowCandidates = NameCandidateBatchSelector
+            .SelectForWindow(
+                ranked,
                 fromMs,
                 toMs,
-                windowCandidates.Count,
-                window.AnnotationsAdded,
-                cache.Annotations.Count);
+                cache.Annotations,
+                windowLimit,
+                cache.AiDecisions,
+                retriesOnly);
 
-            return (window, mode, warning);
-        }
-
-        mode = "legacy";
+        var wikiLang = string.IsNullOrWhiteSpace(config.WikipediaLanguage) ? "en" : config.WikipediaLanguage;
         var popupMs = Math.Max(config.PopupDurationMs, 8000);
-        var usedTerms = new HashSet<string>(
-            cache.Annotations.Select(a => a.Term),
-            StringComparer.OrdinalIgnoreCase);
+        var budget = groqOn ? AiComplementBudget.ForWindow() : new AiComplementBudget();
         var windowCues = cues.Where(c => c.StartMs >= fromMs && c.StartMs < toMs).ToList();
-        var verifiedTerms = new List<string>();
-
-        foreach (var cue in windowCues)
+        foreach (var candidate in windowCandidates)
         {
-            if (cache.Annotations.Count >= max)
+            cancellationToken.ThrowIfCancellationRequested();
+            var decision = await _wikimedia
+                .EvaluateAsync(candidate, mediaContext.ShowName, excludeCast, wikiLang, cancellationToken)
+                .ConfigureAwait(false);
+            if (groqOn)
             {
-                break;
-            }
-
-            IReadOnlyList<string> entities;
-            try
-            {
-                entities = _entityExtractor.Extract(cue.Text, config.MinEntityLength);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogDebug(ex, "Entity extract failed for cue at {StartMs}", cue.StartMs);
-                continue;
-            }
-
-            foreach (var entity in entities)
-            {
-                if (!usedTerms.Add(entity))
-                {
-                    continue;
-                }
-
-                verifiedTerms.Add(entity);
-                var lookup = await _wikipedia
-                    .LookupAsync(entity, config.WikipediaLanguage, cancellationToken)
+                decision = await _complement
+                    .ApplyToDecisionAsync(decision, mediaContext, config, budget, wikiLang, cancellationToken)
                     .ConfigureAwait(false);
-                if (!lookup.Found)
-                {
-                    continue;
-                }
+            }
 
-                MergeAnnotations(
+            AiDecisionStore.Merge(
+                cache,
+                [WikimediaReferencePipeline.ToStoreDecision(decision)],
+                enabled: true);
+            var annotation = WikimediaReferencePipeline.ToAnnotation(decision, popupMs);
+            if (annotation is not null)
+            {
+                MergeAnnotations(cache, [annotation], max);
+            }
+
+            persistCache?.Invoke();
+        }
+
+        if (groqOn)
+        {
+            var known = cache.Annotations
+                .Select(a => a.Term)
+                .Concat(windowCandidates.Select(c => c.Term))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var idioms = await _complement
+                .SweepLeftoverCuesAsync(
+                    windowCues,
+                    windowCandidates,
+                    known,
+                    mediaContext,
+                    config,
+                    budget,
+                    popupMs,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            if (idioms.Count > 0)
+            {
+                MergeAnnotations(cache, idioms, max);
+                AiDecisionStore.Merge(
                     cache,
-                    [
-                        new ContextAnnotation
-                        {
-                            Term = lookup.Title,
-                            Summary = $"{lookup.Title}: {lookup.Summary}",
-                            Url = lookup.Url,
-                            ImageUrl = lookup.ImageUrl,
-                            Kind = "other",
-                            StartMs = cue.StartMs,
-                            EndMs = Math.Max(cue.EndMs, cue.StartMs + popupMs)
-                        }
-                    ],
-                    max);
+                    idioms.Select(a => new AiVerifyDecision
+                    {
+                        Term = a.Term,
+                        StartMs = a.StartMs,
+                        CueText = windowCues.FirstOrDefault(c => c.StartMs == a.StartMs)?.Text,
+                        Kept = true,
+                        Reason = "groq-idiom",
+                        Category = "groq-idiom",
+                        AtUtc = DateTime.UtcNow
+                    }),
+                    enabled: true);
+                persistCache?.Invoke();
             }
         }
 
-        cache.PreparedThroughMs = toMs;
+        // Only advance the timeline cursor when this was a forward window (not a catch-up retry).
+        if (toMs > cache.PreparedThroughMs)
+        {
+            cache.PreparedThroughMs = toMs;
+        }
+
         cache.ScannedAtUtc = DateTime.UtcNow;
 
-        return (new IncrementalPrepareWindowResult
+        var window = new IncrementalPrepareWindowResult
         {
             FromMs = fromMs,
             ToMs = toMs,
-            CandidatesInWindow = windowCues.Count,
-            CandidatesVerified = verifiedTerms.Count,
+            CandidatesInWindow = CountCandidatesInWindow(ranked, fromMs, toMs),
+            CandidatesVerified = windowCandidates.Count,
             AnnotationsAdded = cache.Annotations.Count - beforeCount,
             SkippedTerms = skipped,
-            VerifiedTerms = verifiedTerms
-        }, mode, warning);
+            VerifiedTerms = windowCandidates.Select(c => c.Term).ToList()
+        };
+
+        _logger.LogInformation(
+            "Incremental window {From}-{To}ms: verified={Verified} added={Added} total={Total} mode={Mode}",
+            fromMs,
+            toMs,
+            windowCandidates.Count,
+            window.AnnotationsAdded,
+            cache.Annotations.Count,
+            mode);
+
+        return (window, mode, warning);
     }
 
     /// <summary>
@@ -232,14 +209,13 @@ public sealed class IncrementalPrepareEngine
             return new IncrementalPrepareSimulationResult
             {
                 Cache = BuildEmptyCache(request, config, durationMs: 0),
-                Mode = request.DryRun ? "dry-run" : (_aiExtractor.IsConfigured(config) ? "ai" : "legacy"),
+                Mode = request.DryRun ? "dry-run" : (_complement.IsEnabled(config) ? "wikimedia+ai" : "wikimedia"),
                 Warning = "No subtitle cues parsed.",
                 SubtitleDurationMs = 0
             };
         }
 
         var durationMs = cues.Max(c => c.EndMs);
-        var max = Math.Max(1, config.MaxAnnotationsPerItem);
         var excludeCast = new HashSet<string>(request.ExcludeCastNames, StringComparer.OrdinalIgnoreCase);
         var minLen = Math.Max(2, config.MinEntityLength);
         // Find() also harvests speakers; seed exclude cast for AI hints the same way.
@@ -256,7 +232,7 @@ public sealed class IncrementalPrepareEngine
         cache.DurationCheckOk = true;
 
         var windows = new List<IncrementalPrepareWindowResult>();
-        var mode = request.DryRun ? "dry-run" : (_aiExtractor.IsConfigured(config) ? "ai" : "legacy");
+        var mode = request.DryRun ? "dry-run" : (_complement.IsEnabled(config) ? "wikimedia+ai" : "wikimedia");
         string? warning = null;
         var windowLimit = Math.Clamp(config.IncrementalAiNamesPerWindow, 5, 250);
 
@@ -297,155 +273,35 @@ public sealed class IncrementalPrepareEngine
             };
         }
 
-        if (_aiExtractor.IsConfigured(config))
+        var mediaContext = new AiMediaContext
         {
-            var nameLimit = config.AiNamesPerPrepare <= 0
-                ? windowLimit
-                : Math.Clamp(config.AiNamesPerPrepare, 1, 250);
-            var mediaContext = new AiMediaContext
-            {
-                ShowName = request.ShowName,
-                EpisodeName = request.EpisodeName,
-                KnownCastNames = excludeCast.OrderBy(n => n, StringComparer.OrdinalIgnoreCase).Take(100).ToList()
-            };
+            ShowName = request.ShowName,
+            EpisodeName = request.EpisodeName,
+            KnownCastNames = excludeCast.OrderBy(n => n, StringComparer.OrdinalIgnoreCase).Take(100).ToList()
+        };
 
-            for (var fromMs = 0L; fromMs < durationMs; fromMs += request.WindowMs)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var toMs = Math.Min(fromMs + request.WindowMs, durationMs);
-                var windowCandidates = NameCandidateBatchSelector
-                    .SelectForWindow(ranked, fromMs, toMs, cache.Annotations, nameLimit, cache.AiDecisions);
-                var skipped = GetSkippedTerms(ranked, fromMs, toMs, cache.Annotations);
-                var beforeCount = cache.Annotations.Count;
-
-                if (windowCandidates.Count > 0)
-                {
-                    var aiResult = await _aiExtractor
-                        .ResolveNamesAsync(mediaContext, windowCandidates, config, cancellationToken)
-                        .ConfigureAwait(false);
-
-                    if (string.IsNullOrWhiteSpace(warning) && !string.IsNullOrWhiteSpace(aiResult.Warning))
-                    {
-                        warning = aiResult.Warning;
-                    }
-
-                    AiDecisionStore.Merge(cache, aiResult.Decisions, config.StoreAiDecisions);
-
-                    var added = await BuildAnnotationsFromAiAsync(
-                            aiResult.Mentions,
-                            cues,
-                            config,
-                            cancellationToken)
-                        .ConfigureAwait(false);
-
-                    MergeAnnotations(cache, added, max);
-                }
-
-                cache.PreparedThroughMs = toMs;
-                cache.ScannedAtUtc = DateTime.UtcNow;
-
-                windows.Add(new IncrementalPrepareWindowResult
-                {
-                    FromMs = fromMs,
-                    ToMs = toMs,
-                    CandidatesInWindow = CountCandidatesInWindow(ranked, fromMs, toMs),
-                    CandidatesVerified = windowCandidates.Count,
-                    AnnotationsAdded = cache.Annotations.Count - beforeCount,
-                    SkippedTerms = skipped,
-                    VerifiedTerms = windowCandidates.Select(c => c.Term).ToList()
-                });
-
-                _logger.LogInformation(
-                    "Incremental window {From}-{To}ms: verified={Verified} added={Added} total={Total}",
+        for (var fromMs = 0L; fromMs < durationMs; fromMs += request.WindowMs)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var toMs = Math.Min(fromMs + request.WindowMs, durationMs);
+            var (window, windowMode, windowWarning) = await PrepareWindowAsync(
+                    cache,
+                    cues,
+                    request.ItemTitle,
+                    excludeCast,
+                    mediaContext,
                     fromMs,
                     toMs,
-                    windowCandidates.Count,
-                    cache.Annotations.Count - beforeCount,
-                    cache.Annotations.Count);
-            }
-        }
-        else
-        {
-            mode = "legacy";
-            var popupMs = Math.Max(config.PopupDurationMs, 8000);
-            var usedTerms = new HashSet<string>(
-                cache.Annotations.Select(a => a.Term),
-                StringComparer.OrdinalIgnoreCase);
-
-            for (var fromMs = 0L; fromMs < durationMs; fromMs += request.WindowMs)
+                    config,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            mode = windowMode;
+            if (string.IsNullOrWhiteSpace(warning) && !string.IsNullOrWhiteSpace(windowWarning))
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                var toMs = Math.Min(fromMs + request.WindowMs, durationMs);
-                var windowCues = cues.Where(c => c.StartMs >= fromMs && c.StartMs < toMs).ToList();
-                var beforeCount = cache.Annotations.Count;
-                var verifiedTerms = new List<string>();
-
-                foreach (var cue in windowCues)
-                {
-                    if (cache.Annotations.Count >= max)
-                    {
-                        break;
-                    }
-
-                    IReadOnlyList<string> entities;
-                    try
-                    {
-                        entities = _entityExtractor.Extract(cue.Text, config.MinEntityLength);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogDebug(ex, "Entity extract failed for cue at {StartMs}", cue.StartMs);
-                        continue;
-                    }
-
-                    foreach (var entity in entities)
-                    {
-                        if (!usedTerms.Add(entity))
-                        {
-                            continue;
-                        }
-
-                        verifiedTerms.Add(entity);
-                        var lookup = await _wikipedia
-                            .LookupAsync(entity, config.WikipediaLanguage, cancellationToken)
-                            .ConfigureAwait(false);
-                        if (!lookup.Found)
-                        {
-                            continue;
-                        }
-
-                        MergeAnnotations(
-                            cache,
-                            [
-                                new ContextAnnotation
-                                {
-                                    Term = lookup.Title,
-                                    Summary = $"{lookup.Title}: {lookup.Summary}",
-                                    Url = lookup.Url,
-                                    ImageUrl = lookup.ImageUrl,
-                                    Kind = "other",
-                                    StartMs = cue.StartMs,
-                                    EndMs = Math.Max(cue.EndMs, cue.StartMs + popupMs)
-                                }
-                            ],
-                            max);
-                    }
-                }
-
-                cache.PreparedThroughMs = toMs;
-                cache.ScannedAtUtc = DateTime.UtcNow;
-
-                windows.Add(new IncrementalPrepareWindowResult
-                {
-                    FromMs = fromMs,
-                    ToMs = toMs,
-                    CandidatesInWindow = windowCues.Count,
-                    CandidatesVerified = verifiedTerms.Count,
-                    AnnotationsAdded = cache.Annotations.Count - beforeCount,
-                    SkippedTerms = [],
-                    VerifiedTerms = verifiedTerms
-                });
+                warning = windowWarning;
             }
+
+            windows.Add(window);
         }
 
         cache.FullyPrepared = cache.PreparedThroughMs >= durationMs

@@ -16,25 +16,31 @@ static async Task<int> MainAsync(string[] args)
         return 1;
     }
 
-    if (!File.Exists(options.SubtitlePath))
+    string subtitleContent;
+    string subtitleName;
+    try
     {
-        Console.Error.WriteLine($"Subtitle file not found: {options.SubtitlePath}");
+        (subtitleContent, subtitleName) = await LoadInputAsync(options).ConfigureAwait(false);
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine(ex.Message);
+        return 1;
+    }
+
+    if (string.IsNullOrWhiteSpace(subtitleContent))
+    {
+        Console.Error.WriteLine("No subtitle or text to scan.");
         return 1;
     }
 
     var config = LoadConfig(options.ConfigPath);
     ApplyEnvOverrides(config);
-
-    if (!options.DryRun && !HasAiOrLegacy(config))
+    config.StoreAiDecisions = true;
+    if (string.IsNullOrWhiteSpace(config.AiProvider))
     {
-        Console.Error.WriteLine(
-            "AI is not configured (set AiProvider + AiApiKey in config or LOOKITUP_AI_API_KEY). " +
-            "Use --dry-run to test window candidate selection without API calls.");
-        return 1;
+        config.AiProvider = "None";
     }
-
-    var subtitleContent = await File.ReadAllTextAsync(options.SubtitlePath).ConfigureAwait(false);
-    var subtitleName = Path.GetFileName(options.SubtitlePath);
 
     using var loggerFactory = LoggerFactory.Create(builder =>
     {
@@ -46,14 +52,25 @@ static async Task<int> MainAsync(string[] args)
         builder.SetMinimumLevel(options.Verbose ? LogLevel.Debug : LogLevel.Information);
     });
 
+    var pipeline = new WikimediaReferencePipeline(
+        new WikimediaReferenceResolver(loggerFactory.CreateLogger<WikimediaReferenceResolver>()),
+        new ReferenceGate(),
+        loggerFactory.CreateLogger<WikimediaReferencePipeline>());
+
+    var aiExtractor = new OpenAiCompatibleEntityExtractor(
+        loggerFactory.CreateLogger<OpenAiCompatibleEntityExtractor>(),
+        new AiCallRateLimiter());
+    var wikipedia = new WikipediaLookupService(loggerFactory.CreateLogger<WikipediaLookupService>());
+    var complement = new AiComplementService(
+        aiExtractor,
+        wikipedia,
+        loggerFactory.CreateLogger<AiComplementService>());
     var engine = new IncrementalPrepareEngine(
         new SubtitleParser(),
         new NameCandidateFinder(),
-        new EntityExtractor(),
-        new WikipediaLookupService(loggerFactory.CreateLogger<WikipediaLookupService>()),
-        new OpenAiCompatibleEntityExtractor(
-            loggerFactory.CreateLogger<OpenAiCompatibleEntityExtractor>(),
-            new AiCallRateLimiter()),
+        wikipedia,
+        pipeline,
+        complement,
         loggerFactory.CreateLogger<IncrementalPrepareEngine>());
 
     var request = new IncrementalPrepareRequest
@@ -64,14 +81,16 @@ static async Task<int> MainAsync(string[] args)
         ItemId = options.ItemId ?? Guid.NewGuid(),
         WindowMs = options.WindowMinutes * 60_000L,
         ExcludeCastNames = options.ExcludeCast,
-        ShowName = options.ShowName ?? options.ItemTitle ?? Path.GetFileNameWithoutExtension(subtitleName),
+        ShowName = options.ShowName ?? options.ItemTitle ?? "Unknown show",
         EpisodeName = options.EpisodeName,
         DryRun = options.DryRun
     };
 
     Console.WriteLine($"Simulating incremental prepare ({options.WindowMinutes} min windows)");
-    Console.WriteLine($"  Subtitle: {options.SubtitlePath}");
-    Console.WriteLine($"  Mode: {(options.DryRun ? "dry-run (candidates only)" : (string.IsNullOrWhiteSpace(config.AiApiKey) && !IsOllama(config) ? "legacy Wikipedia" : "AI"))}");
+    Console.WriteLine($"  Input: {DescribeInput(options, subtitleName)}");
+    Console.WriteLine($"  Show: {request.ShowName}");
+    Console.WriteLine(
+        $"  Mode: {(options.DryRun ? "dry-run (candidates only)" : (complement.IsEnabled(config) ? "Wikimedia + Groq complement" : "Wikimedia"))}");
     Console.WriteLine();
 
     var result = await engine
@@ -79,6 +98,11 @@ static async Task<int> MainAsync(string[] args)
         .ConfigureAwait(false);
 
     PrintWindowSummary(result);
+    if (!options.DryRun)
+    {
+        Console.WriteLine();
+        PrintDecisionTable(result.Cache);
+    }
 
     var jsonOptions = new JsonSerializerOptions
     {
@@ -99,7 +123,7 @@ static async Task<int> MainAsync(string[] args)
         Console.WriteLine();
         Console.WriteLine($"Wrote cache JSON: {options.OutputPath}");
     }
-    else
+    else if (options.DumpJson)
     {
         Console.WriteLine();
         Console.WriteLine("=== ItemAnnotationCache JSON ===");
@@ -113,6 +137,66 @@ static async Task<int> MainAsync(string[] args)
     }
 
     return 0;
+}
+
+static string DescribeInput(CliOptions options, string subtitleName)
+{
+    if (!string.IsNullOrWhiteSpace(options.Text))
+    {
+        return "pasted --text";
+    }
+
+    if (options.FromStdin || options.SubtitlePath == "-")
+    {
+        return "stdin";
+    }
+
+    return options.SubtitlePath ?? subtitleName;
+}
+
+static void PrintDecisionTable(ItemAnnotationCache cache)
+{
+    var decisions = cache.AiDecisions ?? [];
+    Console.WriteLine("=== KEEP / DROP ===");
+    if (decisions.Count == 0)
+    {
+        Console.WriteLine("(no decisions)");
+        return;
+    }
+
+    foreach (var d in decisions.OrderBy(x => x.StartMs).ThenBy(x => x.Term, StringComparer.OrdinalIgnoreCase))
+    {
+        var flag = d.Kept ? "KEEP" : "DROP";
+        var category = (d.Category ?? "").PadRight(16);
+        var annotation = cache.Annotations.FirstOrDefault(a =>
+            a.Term.Equals(d.Term, StringComparison.OrdinalIgnoreCase)
+            || (!string.IsNullOrWhiteSpace(d.Term) && a.Term.Contains(d.Term, StringComparison.OrdinalIgnoreCase)));
+        var detail = annotation?.Summary ?? d.Reason ?? "";
+        if (detail.Length > 90)
+        {
+            detail = detail[..87] + "...";
+        }
+
+        Console.WriteLine($"{flag,-4}  {d.Term,-22}  {category}  {detail}");
+    }
+
+    Console.WriteLine();
+    Console.WriteLine($"Kept {decisions.Count(d => d.Kept)} / {decisions.Count} candidates.");
+    if (cache.Annotations.Count > 0)
+    {
+        Console.WriteLine();
+        Console.WriteLine("=== POPUPS ===");
+        foreach (var a in cache.Annotations.OrderBy(x => x.StartMs))
+        {
+            var summary = a.Summary ?? "";
+            if (summary.Length > 120)
+            {
+                summary = summary[..117] + "...";
+            }
+
+            Console.WriteLine($"  {FormatClock(a.StartMs)}  {a.Term}: {summary}");
+        }
+    }
 }
 
 static void PrintWindowSummary(IncrementalPrepareSimulationResult result)
@@ -153,13 +237,50 @@ static string FormatClock(long ms)
         : $"{m}:{s:D2}";
 }
 
-static bool HasAiOrLegacy(PluginConfiguration config)
-    => !string.IsNullOrWhiteSpace(config.AiApiKey)
-       || IsOllama(config)
-       || true; // legacy Wikipedia always available
+static async Task<(string Content, string FileName)> LoadInputAsync(CliOptions options)
+{
+    if (!string.IsNullOrWhiteSpace(options.Text))
+    {
+        return (WrapPlainTextAsSrt(options.Text), "paste.srt");
+    }
 
-static bool IsOllama(PluginConfiguration config)
-    => string.Equals(config.AiProvider, "Ollama", StringComparison.OrdinalIgnoreCase);
+    if (options.FromStdin || options.SubtitlePath == "-")
+    {
+        var raw = await Console.In.ReadToEndAsync().ConfigureAwait(false);
+        return LooksLikeSubtitle(raw)
+            ? (raw, "stdin.srt")
+            : (WrapPlainTextAsSrt(raw), "paste.srt");
+    }
+
+    var path = options.SubtitlePath!;
+    if (!File.Exists(path))
+    {
+        throw new FileNotFoundException($"Subtitle file not found: {path}");
+    }
+
+    var rawFile = await File.ReadAllTextAsync(path).ConfigureAwait(false);
+    var ext = Path.GetExtension(path).ToLowerInvariant();
+    if (ext is ".txt" or "" || !LooksLikeSubtitle(rawFile))
+    {
+        return (WrapPlainTextAsSrt(rawFile), Path.GetFileNameWithoutExtension(path) + ".srt");
+    }
+
+    return (rawFile, Path.GetFileName(path));
+}
+
+static bool LooksLikeSubtitle(string content)
+    => content.Contains("-->", StringComparison.Ordinal);
+
+static string WrapPlainTextAsSrt(string text)
+{
+    var body = (text ?? string.Empty).Trim();
+    return $"""
+        1
+        00:00:00,000 --> 00:00:08,000
+        {body}
+
+        """;
+}
 
 static PluginConfiguration LoadConfig(string? path)
 {
@@ -215,12 +336,13 @@ static void ApplyEnvOverrides(PluginConfiguration config)
 
 static CliOptions? ParseArgs(string[] args)
 {
-    if (args.Length == 0 || args.Contains("-h") || args.Contains("--help"))
+    if (args.Contains("-h") || args.Contains("--help"))
     {
         return null;
     }
 
     string? subtitle = null;
+    string? text = null;
     string? config = null;
     string? output = null;
     string? title = null;
@@ -230,6 +352,8 @@ static CliOptions? ParseArgs(string[] args)
     var windowMinutes = 5;
     var dryRun = false;
     var verbose = false;
+    var dumpJson = false;
+    var fromStdin = false;
     var excludeCast = new List<string>();
 
     for (var i = 0; i < args.Length; i++)
@@ -261,11 +385,24 @@ static CliOptions? ParseArgs(string[] args)
             case "--exclude-cast":
                 excludeCast.Add(RequireValue(args, ref i, arg));
                 break;
+            case "--text":
+                text = RequireValue(args, ref i, arg);
+                break;
+            case "--file":
+                subtitle = RequireValue(args, ref i, arg);
+                break;
+            case "--json":
+                dumpJson = true;
+                break;
             case "--dry-run":
                 dryRun = true;
                 break;
             case "--verbose" or "-v":
                 verbose = true;
+                break;
+            case "-":
+                fromStdin = true;
+                subtitle = "-";
                 break;
             default:
                 if (arg.StartsWith('-'))
@@ -278,13 +415,23 @@ static CliOptions? ParseArgs(string[] args)
         }
     }
 
-    if (string.IsNullOrWhiteSpace(subtitle))
+    if (string.IsNullOrWhiteSpace(text)
+        && string.IsNullOrWhiteSpace(subtitle)
+        && !fromStdin
+        && !Console.IsInputRedirected)
     {
         return null;
     }
 
+    if (string.IsNullOrWhiteSpace(text) && string.IsNullOrWhiteSpace(subtitle) && Console.IsInputRedirected)
+    {
+        fromStdin = true;
+        subtitle = "-";
+    }
+
     return new CliOptions(
         subtitle,
+        text,
         config,
         output,
         title,
@@ -294,6 +441,8 @@ static CliOptions? ParseArgs(string[] args)
         windowMinutes,
         dryRun,
         verbose,
+        dumpJson,
+        fromStdin,
         excludeCast);
 }
 
@@ -312,43 +461,40 @@ static void PrintUsage()
 {
     Console.WriteLine(
         """
-        Look it up — incremental prepare simulator
+        Look it up — local preview (no plugin install)
 
         Usage:
-          dotnet run --project tools/LookItUp.IncrementalPrepareSimulator -- [options] <subtitle.srt|vtt>
-          ./scripts/simulate-incremental-prepare.sh [options] <subtitle.srt|vtt>
+          dotnet run --project tools/LookItUp.IncrementalPrepareSimulator -- --show Seinfeld --text "..."
+          dotnet run --project tools/LookItUp.IncrementalPrepareSimulator -- --show Seinfeld --file episode.srt
+          type episode.srt | dotnet run --project tools/LookItUp.IncrementalPrepareSimulator -- --show Seinfeld -
 
         Options:
+          --text <dialogue>         Paste cue text (wrapped as a single 8s cue)
+          --file <path>             Subtitle .srt/.vtt or plain .txt
+          -                         Read stdin
           -c, --config <file>       JSON config (PluginConfiguration fields)
-          -o, --output <file>       Write ItemAnnotationCache JSON to file (default: stdout)
+          -o, --output <file>       Write cache JSON to file
+          --json                    Also print cache JSON to stdout
           -t, --title <name>        Media/episode title for name finding
-          --show <name>             Show/series title for AI context
-          --episode <name>          Episode title for AI context
+          --show <name>             Show/series title (in-show filter)
+          --episode <name>          Episode title
           --item-id <guid>          Stable item id in output JSON
           -w, --window-minutes <n>  Incremental window size (default: 5)
           --exclude-cast <name>     Cast name to exclude (repeatable)
-          --dry-run                 List per-window candidates without AI/Wikipedia
+          --dry-run                 List candidates without Wikipedia
           -v, --verbose             Debug logging
           -h, --help                Show this help
 
-        Environment (override config):
-          LOOKITUP_AI_API_KEY
-          LOOKITUP_AI_PROVIDER
-          LOOKITUP_AI_MODEL
-          LOOKITUP_AI_BASE_URL
-          LOOKITUP_AI_RPM
-
         Example:
-          LOOKITUP_AI_API_KEY=gsk_... ./scripts/simulate-incremental-prepare.sh \
-            -c tools/incremental-prepare.config.example.json \
-            -o /tmp/out.lookitup.json \
-            -t "Pilot" --show "My Show" \
-            ~/subs/episode01.srt
+          dotnet run --project tools/LookItUp.IncrementalPrepareSimulator -- \
+            --show Seinfeld --exclude-cast Jerry --exclude-cast George \
+            --text "No baron has ever owned a LeBaron. Jon Voight's LeBaron."
         """);
 }
 
 file sealed record CliOptions(
-    string SubtitlePath,
+    string? SubtitlePath,
+    string? Text,
     string? ConfigPath,
     string? OutputPath,
     string? ItemTitle,
@@ -358,4 +504,6 @@ file sealed record CliOptions(
     int WindowMinutes,
     bool DryRun,
     bool Verbose,
+    bool DumpJson,
+    bool FromStdin,
     IReadOnlyList<string> ExcludeCast);

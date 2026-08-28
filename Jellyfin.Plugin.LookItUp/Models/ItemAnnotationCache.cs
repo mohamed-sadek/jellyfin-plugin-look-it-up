@@ -39,7 +39,7 @@ public class ItemAnnotationCache
 
     /// <summary>
     /// Gets or sets prepare outcome:
-    /// <c>success</c>, <c>no-candidates</c>, <c>no-subtitles</c>, <c>failed</c>.
+    /// <c>success</c>, <c>in-progress</c>, <c>no-candidates</c>, <c>no-subtitles</c>, <c>failed</c>.
     /// </summary>
     public string? PrepareOutcome { get; set; }
 

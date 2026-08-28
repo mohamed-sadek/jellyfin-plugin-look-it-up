@@ -114,7 +114,7 @@ public partial class LookItUpService : ILookItUpService
     /// <summary>
     /// Bump when scan logic changes so stale caches are ignored.
     /// </summary>
-    public const int CurrentCacheVersion = 11;
+    public const int CurrentCacheVersion = 14;
 
     private static readonly HashSet<string> TextSubtitleCodecs = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -131,7 +131,8 @@ public partial class LookItUpService : ILookItUpService
     private readonly ISubtitleParser _subtitleParser;
     private readonly IEntityExtractor _entityExtractor;
     private readonly IWikipediaLookupService _wikipedia;
-    private readonly IAiEntityExtractor _aiExtractor;
+    private readonly IWikimediaReferencePipeline _wikimedia;
+    private readonly IAiComplementService _complement;
     private readonly INameCandidateFinder _nameCandidateFinder;
     private readonly IOpenSubtitlesClient _openSubtitles;
     private readonly IAnnotationStore _store;
@@ -154,7 +155,8 @@ public partial class LookItUpService : ILookItUpService
         ISubtitleParser subtitleParser,
         IEntityExtractor entityExtractor,
         IWikipediaLookupService wikipedia,
-        IAiEntityExtractor aiExtractor,
+        IWikimediaReferencePipeline wikimedia,
+        IAiComplementService complement,
         INameCandidateFinder nameCandidateFinder,
         IOpenSubtitlesClient openSubtitles,
         IAnnotationStore store,
@@ -169,7 +171,8 @@ public partial class LookItUpService : ILookItUpService
         _subtitleParser = subtitleParser;
         _entityExtractor = entityExtractor;
         _wikipedia = wikipedia;
-        _aiExtractor = aiExtractor;
+        _wikimedia = wikimedia;
+        _complement = complement;
         _nameCandidateFinder = nameCandidateFinder;
         _openSubtitles = openSubtitles;
         _store = store;
@@ -416,11 +419,11 @@ public partial class LookItUpService : ILookItUpService
             };
         }
 
+        ItemAnnotationCache? cache = null;
         try
         {
             var existing = _store.Get(itemId);
             var priorDisabled = existing?.Disabled ?? false;
-            ItemAnnotationCache cache;
             if (existing is not null && existing.Version >= CurrentCacheVersion)
             {
                 cache = existing;
@@ -436,21 +439,18 @@ public partial class LookItUpService : ILookItUpService
                 };
             }
 
+            void Persist() => PersistCache(item, cache!, config);
+
+            if (item is Episode epMeta)
+            {
+                cache.SeriesName ??= epMeta.SeriesName;
+                cache.SeasonNumber ??= epMeta.ParentIndexNumber;
+                cache.EpisodeNumber ??= epMeta.IndexNumber;
+            }
+
             if (cache.Disabled)
             {
                 return new PrepareAheadResult { Changed = false, Cache = cache, Mode = "disabled" };
-            }
-
-            if (_aiExtractor.IsConfigured(config) && config.StoreAiDecisions)
-            {
-                var dropped = AiDecisionStore.DiscardSummariesWithoutAiKeep(cache);
-                if (dropped > 0)
-                {
-                    _logger.LogInformation(
-                        "Look it up dropped {Count} Wikipedia-only summaries for {Item}; re-verifying with AI",
-                        dropped,
-                        item.Name);
-                }
             }
 
             SubtitleContent? subtitle;
@@ -461,6 +461,7 @@ public partial class LookItUpService : ILookItUpService
             }
             catch (OpenSubtitlesRateLimitedException ex)
             {
+                Persist();
                 return new PrepareAheadResult { Mode = "failed", Warning = ex.Message, Cache = cache };
             }
 
@@ -468,7 +469,7 @@ public partial class LookItUpService : ILookItUpService
             {
                 cache.PrepareOutcome = "no-subtitles";
                 cache.ScannedAtUtc = DateTime.UtcNow;
-                PersistCache(item, cache, config);
+                Persist();
                 var noSubsWarning = string.IsNullOrWhiteSpace(_lastOpenSubtitlesFailureReason)
                     ? "No readable text subtitles found."
                     : "No readable text subtitles found. " + _lastOpenSubtitlesFailureReason;
@@ -484,9 +485,13 @@ public partial class LookItUpService : ILookItUpService
             var cues = _subtitleParser.Parse(subtitle.Content, subtitle.Label);
             if (cues.Count == 0)
             {
+                cache.PrepareOutcome = "no-subtitles";
+                cache.SubtitlePath ??= subtitle.Label;
+                cache.SubtitleSource ??= subtitle.Source;
+                Persist();
                 return new PrepareAheadResult
                 {
-                    Changed = false,
+                    Changed = true,
                     Cache = cache,
                     Mode = "none",
                     Warning = "No subtitle cues parsed."
@@ -505,6 +510,8 @@ public partial class LookItUpService : ILookItUpService
                 if (!AiDecisionStore.HasRetryableFailures(cache))
                 {
                     cache.FullyPrepared = true;
+                    cache.PrepareOutcome = "success";
+                    Persist();
                     return new PrepareAheadResult
                     {
                         Changed = false,
@@ -547,6 +554,7 @@ public partial class LookItUpService : ILookItUpService
 
             if (!retriesOnly && fromMs >= toMs)
             {
+                Persist();
                 return new PrepareAheadResult
                 {
                     Changed = false,
@@ -570,6 +578,14 @@ public partial class LookItUpService : ILookItUpService
             cache.MatchedBy ??= subtitle.MatchedBy;
             cache.MovieHash ??= subtitle.MovieHash;
             cache.DurationCheckOk = PassesDurationCheck(item, cues);
+            if (string.IsNullOrWhiteSpace(cache.PrepareOutcome)
+                || string.Equals(cache.PrepareOutcome, "in-progress", StringComparison.OrdinalIgnoreCase))
+            {
+                cache.PrepareOutcome = "in-progress";
+            }
+
+            // Write sidecar immediately so a file exists before the first Groq call returns.
+            Persist();
 
             var (window, mode, warning) = await _incrementalEngine
                 .PrepareWindowAsync(
@@ -582,7 +598,8 @@ public partial class LookItUpService : ILookItUpService
                     toMs,
                     config,
                     cancellationToken,
-                    retriesOnly)
+                    retriesOnly,
+                    Persist)
                 .ConfigureAwait(false);
 
             cache.FullyPrepared = cache.PreparedThroughMs >= durationMs
@@ -593,14 +610,7 @@ public partial class LookItUpService : ILookItUpService
                     ? "no-subtitles"
                     : "success";
 
-            if (item is Episode ep)
-            {
-                cache.SeriesName ??= ep.SeriesName;
-                cache.SeasonNumber ??= ep.ParentIndexNumber;
-                cache.EpisodeNumber ??= ep.IndexNumber;
-            }
-
-            PersistCache(item, cache, config);
+            Persist();
 
             var added = cache.Annotations
                 .Where(a => !knownBefore.Contains(a.Term))
@@ -620,7 +630,22 @@ public partial class LookItUpService : ILookItUpService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Look it up prepare-ahead failed for {ItemId}", itemId);
-            return new PrepareAheadResult { Mode = "failed", Warning = ex.Message };
+            if (cache is not null)
+            {
+                cache.PrepareOutcome = string.IsNullOrWhiteSpace(cache.PrepareOutcome)
+                    ? "failed"
+                    : cache.PrepareOutcome;
+                try
+                {
+                    PersistCache(item, cache, config);
+                }
+                catch (Exception persistEx)
+                {
+                    _logger.LogWarning(persistEx, "Look it up could not persist cache after prepare-ahead failure");
+                }
+            }
+
+            return new PrepareAheadResult { Mode = "failed", Warning = ex.Message, Cache = cache };
         }
         finally
         {
@@ -649,15 +674,7 @@ public partial class LookItUpService : ILookItUpService
             return [];
         }
 
-        var config = Plugin.Instance?.Configuration;
-        var list = FilterPlaybackAnnotations(cache.Annotations);
-        if (config is null || !_aiExtractor.IsConfigured(config) || !config.StoreAiDecisions)
-        {
-            return list;
-        }
-
-        var kept = AiDecisionStore.GetKeptTerms(cache.AiDecisions);
-        return list.Where(a => kept.Contains(a.Term)).ToList();
+        return FilterPlaybackAnnotations(cache.Annotations);
     }
 
     /// <inheritdoc />
@@ -668,28 +685,13 @@ public partial class LookItUpService : ILookItUpService
             return false;
         }
 
-        var config = Plugin.Instance?.Configuration;
-        if (config is null || !_aiExtractor.IsConfigured(config) || !config.StoreAiDecisions)
-        {
-            return true;
-        }
-
-        return !AiDecisionStore.HasSummariesWithoutAiKeep(cache);
+        return true;
     }
 
     /// <inheritdoc />
     public long GetPlaybackPreparedThroughMs(ItemAnnotationCache? cache)
     {
         if (cache is null)
-        {
-            return 0;
-        }
-
-        var config = Plugin.Instance?.Configuration;
-        if (config is not null
-            && _aiExtractor.IsConfigured(config)
-            && config.StoreAiDecisions
-            && AiDecisionStore.HasSummariesWithoutAiKeep(cache))
         {
             return 0;
         }
@@ -1329,196 +1331,29 @@ public partial class LookItUpService : ILookItUpService
             string outcome = "success";
             IReadOnlyList<AiVerifyDecision> aiDecisions = [];
 
-            if (_aiExtractor.IsConfigured(config))
+            var groqOn = _complement.IsEnabled(config);
+            mode = groqOn ? "wikimedia+ai" : "wikimedia";
+            if (groqOn)
             {
-                mode = "ai";
                 aiModel = OpenAiCompatibleEntityExtractor.ResolveModel(config);
                 aiBaseUrl = OpenAiCompatibleEntityExtractor.ResolveBaseUrl(config, aiModel);
-
-                var minLen = Math.Max(2, config.MinEntityLength);
-                var excludedCast = BuildCastExcludeNames(item, minLen);
-                AddSubtitleSpeakerNames(excludedCast, cues, minLen);
-                // 0 = unlimited (safety-capped later in AI extractor).
-                var nameLimit = config.AiNamesPerPrepare <= 0
-                    ? 250
-                    : Math.Clamp(config.AiNamesPerPrepare, 1, 250);
-                const int prepareCandidateCap = 750;
-                var rankedLimit = selectedTerms is { Count: > 0 }
-                    ? Math.Max(prepareCandidateCap, selectedTerms.Count)
-                    : prepareCandidateCap;
-                var ranked = _nameCandidateFinder
-                    .Find(cues, item.Name, excludedCast, minLen, rankedLimit)
-                    .ToList();
-
-                List<NameCandidate> nameCandidates;
-                if (selectedTerms is { Count: > 0 })
-                {
-                    nameCandidates = FilterCandidatesBySelectedTerms(ranked, selectedTerms, cues);
-                    if (nameCandidates.Count == 0)
-                    {
-                        return new PrepareItemResult
-                        {
-                            Mode = "ai",
-                            AiBaseUrl = aiBaseUrl,
-                            AiModel = aiModel,
-                            Warning = "None of the selected terms were found in subtitles."
-                        };
-                    }
-                }
-                else
-                {
-                    // Score-aware batch: prefer Jon Voight @ 0:59 over Jon Voight's LeBaron @ 2:31.
-                    nameCandidates = NameCandidateBatchSelector.SelectAiBatch(ranked, nameLimit);
-                }
-
-                if (nameCandidates.Count == 0)
-                {
-                    var noCand = SaveCache(
-                        item,
-                        annotations: [],
-                        subtitlePath: subtitle.Label,
-                        subtitleSource: subtitle.Source,
-                        matchedBy: subtitle.MatchedBy,
-                        movieHash: subtitle.MovieHash,
-                        durationOk: durationOk,
-                        outcome: "no-candidates",
-                        disabled: priorDisabled);
-                    MaybeWriteSidecar(item, noCand, config.WriteSidecarFiles);
-                    return new PrepareItemResult
-                    {
-                        Cache = noCand,
-                        Mode = "ai",
-                        AiBaseUrl = aiBaseUrl,
-                        AiModel = aiModel,
-                        Warning = "No local name candidates to verify."
-                    };
-                }
-
-                _logger.LogInformation(
-                    "Look it up preparing {Item} with AI ({Provider}/{Model}) via {BaseUrl}: verifying {Count} names",
-                    item.Name,
-                    config.AiProvider,
-                    aiModel,
-                    aiBaseUrl,
-                    nameCandidates.Count);
-
-                var mediaContext = BuildAiMediaContext(item, excludedCast);
-                _logger.LogInformation(
-                    "Look it up AI media context: show={Show} episode={Episode} castHints={CastCount}",
-                    mediaContext.ShowName,
-                    mediaContext.EpisodeName ?? "-",
-                    mediaContext.KnownCastNames.Count);
-
-                var aiResult = await _aiExtractor
-                    .ResolveNamesAsync(
-                        mediaContext,
-                        nameCandidates,
-                        config,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-
-                warning = aiResult.Warning;
-                aiDecisions = aiResult.Decisions;
-                if (!string.IsNullOrWhiteSpace(warning))
-                {
-                    _logger.LogWarning(
-                        "Look it up AI prepare warning for {Item}: {Warning}",
-                        item.Name,
-                        warning);
-                }
-
-                var popupMs = Math.Max(config.PopupDurationMs, 8000);
-                var wikiLang = string.IsNullOrWhiteSpace(config.WikipediaLanguage) ? "en" : config.WikipediaLanguage;
-                var built = new List<ContextAnnotation>();
-                foreach (var m in aiResult.Mentions)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    var term = m.Term.Trim();
-                    if (OpenAiCompatibleEntityExtractor.IsSongOrMusicWork(term, m.Kind, m.Summary))
-                    {
-                        continue;
-                    }
-
-                    var kind = string.IsNullOrWhiteSpace(m.Kind)
-                               || string.Equals(m.Kind, "other", StringComparison.OrdinalIgnoreCase)
-                        ? InferKind(term, m.Summary)
-                        : m.Kind.Trim().ToLowerInvariant();
-                    if (string.Equals(m.Kind, "person", StringComparison.OrdinalIgnoreCase))
-                    {
-                        kind = "person";
-                    }
-
-                    if (string.Equals(kind, "song", StringComparison.OrdinalIgnoreCase))
-                    {
-                        continue;
-                    }
-                    var anchored = FindEarliestMention(cues, term);
-                    var startMs = anchored?.StartMs ?? m.StartMs;
-                    var endMs = anchored?.EndMs ?? m.EndMs;
-                    if (anchored is { } hit && hit.StartMs != m.StartMs)
-                    {
-                        _logger.LogInformation(
-                            "Look it up re-anchored {Term} from {OldMs}ms → earliest cue {NewMs}ms",
-                            term,
-                            m.StartMs,
-                            hit.StartMs);
-                    }
-
-                    string? pageUrl = null;
-                    string? imageUrl = null;
-                    if (string.Equals(kind, "person", StringComparison.OrdinalIgnoreCase))
-                    {
-                        try
-                        {
-                            var wiki = await _wikipedia
-                                .LookupAsync(term, wikiLang, cancellationToken)
-                                .ConfigureAwait(false);
-                            if (wiki.Found)
-                            {
-                                pageUrl = wiki.Url;
-                                imageUrl = wiki.ImageUrl;
-                                _logger.LogInformation(
-                                    "Look it up Wikipedia image for {Term}: {HasImage}",
-                                    term,
-                                    !string.IsNullOrWhiteSpace(imageUrl));
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogDebug(ex, "Wikipedia image lookup failed for {Term}", term);
-                        }
-                    }
-
-                    built.Add(new ContextAnnotation
-                    {
-                        Term = term,
-                        Summary = m.Summary.Trim().StartsWith(term, StringComparison.OrdinalIgnoreCase)
-                            ? m.Summary.Trim()
-                            : $"{term}: {m.Summary.Trim()}",
-                        Url = pageUrl,
-                        ImageUrl = imageUrl,
-                        Kind = kind,
-                        StartMs = startMs,
-                        EndMs = Math.Max(endMs, startMs + popupMs)
-                    });
-                }
-
-                annotations = built
-                    .GroupBy(a => a.Term, StringComparer.OrdinalIgnoreCase)
-                    .Select(g => g.OrderBy(a => a.StartMs).First())
-                    .OrderBy(a => a.StartMs)
-                    .Take(max)
-                    .ToList();
             }
-            else
-            {
-                mode = "legacy";
-                _logger.LogInformation(
-                    "Look it up preparing {Item} with legacy Wikipedia heuristics (set AiProvider + AiApiKey for AI)",
-                    item.Name);
-                annotations = await PrepareWithHeuristicsAsync(cues, config, max, cancellationToken)
-                    .ConfigureAwait(false);
-            }
+
+            _logger.LogInformation(
+                "Look it up preparing {Item} with Wikimedia{Ai}",
+                item.Name,
+                groqOn ? " + Groq complement" : string.Empty);
+            var prepared = await PrepareWithWikimediaAsync(
+                    item,
+                    cues,
+                    config,
+                    max,
+                    selectedTerms,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            annotations = prepared.Annotations;
+            aiDecisions = prepared.Decisions;
+            warning = prepared.Warning;
 
             if (annotations.Count == 0 && string.IsNullOrWhiteSpace(warning))
             {
@@ -1569,77 +1404,121 @@ public partial class LookItUpService : ILookItUpService
         }
     }
 
-    private async Task<List<ContextAnnotation>> PrepareWithHeuristicsAsync(
+    private async Task<(List<ContextAnnotation> Annotations, List<AiVerifyDecision> Decisions, string? Warning)> PrepareWithWikimediaAsync(
+        BaseItem item,
         IReadOnlyList<SubtitleCue> cues,
         Configuration.PluginConfiguration config,
         int max,
+        IReadOnlyList<string>? selectedTerms,
         CancellationToken cancellationToken)
     {
-        var candidates = new List<(ContextAnnotation Annotation, int Score)>();
-        var usedTerms = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var minLen = Math.Max(2, config.MinEntityLength);
+        var excludedCast = BuildCastExcludeNames(item, minLen);
+        AddSubtitleSpeakerNames(excludedCast, cues, minLen);
+        var media = BuildAiMediaContext(item, excludedCast);
+        var wikiLang = string.IsNullOrWhiteSpace(config.WikipediaLanguage) ? "en" : config.WikipediaLanguage;
+        var popupMs = Math.Max(config.PopupDurationMs, 8000);
+        const int prepareCandidateCap = 750;
+        var rankedLimit = selectedTerms is { Count: > 0 }
+            ? Math.Max(prepareCandidateCap, selectedTerms.Count)
+            : prepareCandidateCap;
+        var ranked = _nameCandidateFinder
+            .Find(cues, item.Name, excludedCast, minLen, rankedLimit)
+            .ToList();
+        var nameLimit = config.AiNamesPerPrepare <= 0
+            ? 250
+            : Math.Clamp(config.AiNamesPerPrepare, 1, 250);
+        List<NameCandidate> batch;
+        if (selectedTerms is { Count: > 0 })
+        {
+            batch = FilterCandidatesBySelectedTerms(ranked, selectedTerms, cues);
+            if (batch.Count == 0)
+            {
+                return ([], [], "None of the selected terms were found in subtitles.");
+            }
+        }
+        else
+        {
+            batch = NameCandidateBatchSelector.SelectAiBatch(ranked, nameLimit);
+        }
 
-        foreach (var cue in cues)
+        var annotations = new List<ContextAnnotation>();
+        var decisions = new List<AiVerifyDecision>();
+        var groqOn = _complement.IsEnabled(config);
+        var budget = groqOn ? AiComplementBudget.ForFullPrepare() : new AiComplementBudget();
+
+        foreach (var candidate in batch)
         {
             cancellationToken.ThrowIfCancellationRequested();
-
-            IReadOnlyList<string> entities;
-            try
+            if (annotations.Count >= max)
             {
-                entities = _entityExtractor.Extract(cue.Text, config.MinEntityLength);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogDebug(ex, "Entity extract failed for cue at {StartMs}", cue.StartMs);
-                continue;
+                break;
             }
 
-            foreach (var entity in entities)
+            var decision = await _wikimedia
+                .EvaluateAsync(candidate, media.ShowName, excludedCast, wikiLang, cancellationToken)
+                .ConfigureAwait(false);
+            if (groqOn)
             {
-                if (!usedTerms.Add(entity))
-                {
-                    continue;
-                }
+                decision = await _complement
+                    .ApplyToDecisionAsync(decision, media, config, budget, wikiLang, cancellationToken)
+                    .ConfigureAwait(false);
+            }
 
-                EntityLookupResult lookup;
-                try
-                {
-                    lookup = await _wikipedia
-                        .LookupAsync(entity, config.WikipediaLanguage, cancellationToken)
-                        .ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogDebug(ex, "Wikipedia lookup failed for {Entity}", entity);
-                    continue;
-                }
-
-                if (!lookup.Found)
-                {
-                    continue;
-                }
-
-                var score = ScoreEntity(entity, lookup.Title);
-                var matchWindowMs = Math.Max(config.PopupDurationMs, score >= 30 ? 6000 : 4000);
-                candidates.Add((new ContextAnnotation
-                {
-                    Term = lookup.Title,
-                    Summary = $"{lookup.Title}: {lookup.Summary}",
-                    Url = lookup.Url,
-                    ImageUrl = lookup.ImageUrl,
-                    Kind = "other",
-                    StartMs = cue.StartMs,
-                    EndMs = Math.Max(cue.EndMs, cue.StartMs + matchWindowMs)
-                }, score));
+            decisions.Add(WikimediaReferencePipeline.ToStoreDecision(decision));
+            var annotation = WikimediaReferencePipeline.ToAnnotation(decision, popupMs);
+            if (annotation is not null)
+            {
+                annotations.Add(annotation);
             }
         }
 
-        return candidates
-            .OrderByDescending(c => c.Score)
-            .ThenBy(c => c.Annotation.StartMs)
-            .Take(max)
-            .Select(c => c.Annotation)
+        if (groqOn)
+        {
+            var known = annotations
+                .Select(a => a.Term)
+                .Concat(batch.Select(c => c.Term))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var idioms = await _complement
+                .SweepLeftoverCuesAsync(
+                    cues,
+                    batch,
+                    known,
+                    media,
+                    config,
+                    budget,
+                    popupMs,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            foreach (var idiom in idioms)
+            {
+                if (annotations.Count >= max)
+                {
+                    break;
+                }
+
+                annotations.Add(idiom);
+                decisions.Add(new AiVerifyDecision
+                {
+                    Term = idiom.Term,
+                    StartMs = idiom.StartMs,
+                    Kept = true,
+                    Reason = "groq-idiom",
+                    Category = "groq-idiom",
+                    AtUtc = DateTime.UtcNow
+                });
+            }
+        }
+
+        var deduped = annotations
+            .GroupBy(a => a.Term, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.OrderBy(a => a.StartMs).First())
             .OrderBy(a => a.StartMs)
+            .Take(max)
             .ToList();
+
+        return (deduped, decisions, null);
     }
 
     private ItemAnnotationCache SaveCache(
@@ -1768,11 +1647,11 @@ public partial class LookItUpService : ILookItUpService
                 cache,
                 new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
             File.WriteAllText(sidecar, json);
-            _logger.LogDebug("Wrote Look it up sidecar {Path}", sidecar);
+            _logger.LogInformation("Wrote Look it up sidecar {Path}", sidecar);
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Could not write Look it up sidecar for {Item}", item.Name);
+            _logger.LogWarning(ex, "Could not write Look it up sidecar for {Item} ({Path})", item.Name, item.Path);
         }
     }
 
