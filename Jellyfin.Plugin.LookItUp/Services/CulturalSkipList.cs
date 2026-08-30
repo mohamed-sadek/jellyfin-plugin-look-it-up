@@ -3,7 +3,7 @@ namespace Jellyfin.Plugin.LookItUp.Services;
 /// <summary>
 /// Closed-class terms that must never become popups (shared by the index compiler and runtime).
 /// </summary>
-public static class CulturalSkipList
+public static partial class CulturalSkipList
 {
     /// <summary>Globally obvious geography, calendar, and religious words.</summary>
     public static readonly HashSet<string> ObviousTerms = new(StringComparer.OrdinalIgnoreCase)
@@ -16,6 +16,15 @@ public static class CulturalSkipList
         "spain", "canada", "mexico", "australia", "japan", "brazil", "africa",
         "europe", "asia", "antarctica", "earth", "the world", "world",
         "california", "texas", "florida", "dallas",
+        "alabama", "alaska", "arizona", "arkansas", "colorado", "connecticut",
+        "delaware", "georgia", "hawaii", "idaho", "illinois", "indiana", "iowa",
+        "kansas", "kentucky", "louisiana", "maine", "maryland", "massachusetts",
+        "michigan", "minnesota", "mississippi", "missouri", "montana", "nebraska",
+        "nevada", "new hampshire", "new jersey", "new mexico", "new york state",
+        "north carolina", "north dakota", "ohio", "oklahoma", "oregon", "pennsylvania",
+        "rhode island", "south carolina", "south dakota", "tennessee", "utah",
+        "vermont", "virginia", "washington", "west virginia", "wisconsin", "wyoming",
+        "district of columbia", "washington d.c.", "washington dc", "d.c.",
         "god", "jesus", "jesus christ", "christ", "hell", "heaven",
         "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
         "january", "february", "march", "april", "june", "july", "august",
@@ -50,7 +59,8 @@ public static class CulturalSkipList
         "love", "life", "time", "day", "night", "home", "house", "car", "show",
         "movie", "song", "book", "game", "team", "city", "town", "place", "thing",
         "stuff", "kind", "sort", "way", "lot", "bit", "part", "end", "start",
-        "wait", "hold", "come", "gonna", "wanna", "yeah", "yep", "nope", "gee", "ooh"
+        "wait", "hold", "come", "gonna", "wanna", "yeah", "yep", "nope", "gee", "ooh",
+        "dollars", "dollar", "bucks", "buck", "cents", "cent", "money", "cash"
     };
 
     /// <summary>Wikidata types that are given names / family names, never phrases.</summary>
@@ -76,4 +86,48 @@ public static class CulturalSkipList
     /// <summary>True when the phrase is globally obvious.</summary>
     public static bool IsObvious(string phrase)
         => !string.IsNullOrWhiteSpace(phrase) && ObviousTerms.Contains(phrase.Trim());
+
+    /// <summary>True when the phrase is money, a bare number, or an amount.</summary>
+    public static bool IsCurrencyOrAmount(string phrase)
+    {
+        if (string.IsNullOrWhiteSpace(phrase))
+        {
+            return false;
+        }
+
+        var t = phrase.Trim();
+        if (t.Contains('$', StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (CurrencyOrAmountRegex().IsMatch(t))
+        {
+            return true;
+        }
+
+        return t.All(c => char.IsDigit(c) || c is '.' or ',' or ' ');
+    }
+
+    /// <summary>
+    /// True when the phrase must never be sent to the model or shown as a popup
+    /// (states, mega-geo, calendar, money, dictionary filler).
+    /// </summary>
+    public static bool ShouldNeverPopup(string phrase)
+    {
+        if (string.IsNullOrWhiteSpace(phrase))
+        {
+            return true;
+        }
+
+        var t = phrase.Trim();
+        return IsObvious(t)
+               || IsCurrencyOrAmount(t)
+               || CommonOneWord.Contains(t);
+    }
+
+    [System.Text.RegularExpressions.GeneratedRegex(
+        @"^\s*\$|\$\s*$|^\d[\d,.]*(?:\s*(?:dollars?|bucks|cents?))?$|^(?:usd)\b",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant)]
+    private static partial System.Text.RegularExpressions.Regex CurrencyOrAmountRegex();
 }

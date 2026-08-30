@@ -144,9 +144,12 @@ public sealed class ReferenceGate : IReferenceGate
             return Drop(candidate, "too-common", "Term is too short.");
         }
 
-        if (MegaGeography.Contains(term))
+        if (CulturalSkipList.ShouldNeverPopup(term))
         {
-            return Drop(candidate, "too-common", "Globally obvious geography, calendar, or religious term.");
+            var reason = CulturalSkipList.IsCurrencyOrAmount(term)
+                ? "Money, a number, or an amount is not a cultural name."
+                : "Globally obvious geography, calendar, money, or filler.";
+            return Drop(candidate, "too-common", reason);
         }
 
         if (IsExcludedCast(term, excludeCast))

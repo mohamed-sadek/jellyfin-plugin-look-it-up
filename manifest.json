@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "1.2.60.0",
+        "changelog": "Find names locally before Groq. Skip US states, money, and filler in code. Prompt for a non-native with some US knowledge (explain Roosevelt, not Missouri). Re-prepare items (cache v21).",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mohamed-sadek/jellyfin-plugin-look-it-up/releases/download/v1.2.60.0/look-it-up_1.2.60.0.zip",
+        "checksum": "a9deea684b1bdfb11f62d16116a69970",
+        "timestamp": "2026-08-30T18:28:00Z"
+      },
+      {
         "version": "1.2.59.0",
         "changelog": "Keep popup appearance across plugin updates. Batch subtitle lines into Groq/OpenAI calls instead of one request per name (fewer rate limits). Re-prepare items (cache v20).",
         "targetAbi": "10.11.0.0",

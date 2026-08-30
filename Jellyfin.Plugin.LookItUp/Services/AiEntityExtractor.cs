@@ -62,7 +62,7 @@ public interface IAiEntityExtractor
         CancellationToken cancellationToken);
 
     /// <summary>
-    /// Verifies candidates one-by-one and returns kept mentions with short summaries.
+    /// Verifies local name candidates in batches and returns kept mentions with short summaries.
     /// </summary>
     Task<AiExtractionResult> ResolveNamesAsync(
         AiMediaContext media,
@@ -357,148 +357,223 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
     {
         if (!IsConfigured(config))
         {
-            return new AiExtractionResult { Warning = "AI not configured." };
+            return new AiExtractionResult
+            {
+                Warning = "Set Provider to Groq (API key) or Ollama. Look it up sends name batches to that model."
+            };
         }
 
-        if (candidates.Count == 0)
+        var batchSize = Math.Clamp(config.IncrementalAiNamesPerWindow, 8, 40);
+        var work = candidates
+            .Where(c => !string.IsNullOrWhiteSpace(c.Term) && !CulturalSkipList.ShouldNeverPopup(c.Term))
+            .GroupBy(c => c.Term.Trim(), StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.OrderBy(c => c.StartMs).First())
+            .OrderBy(c => c.StartMs)
+            .ToList();
+        if (work.Count == 0)
         {
-            return new AiExtractionResult { Warning = "No local name candidates to verify." };
+            return new AiExtractionResult();
         }
 
-        var configuredModel = string.IsNullOrWhiteSpace(config.AiModel) ? "(default)" : config.AiModel.Trim();
-        var model = ResolveModel(config);
-        if (!string.Equals(configuredModel, model, StringComparison.OrdinalIgnoreCase)
-            && configuredModel != "(default)")
-        {
-            _logger.LogWarning(
-                "Look it up remapped deprecated AI model {Configured} → {Model}",
-                configuredModel,
-                model);
-        }
-
-        var baseUrl = ResolveBaseUrl(config, model);
-        // Caller controls batch size (auto top-N or full UI selection). Safety cap only.
-        const int absoluteMax = 250;
-        var batch = candidates.Take(absoluteMax).ToList();
         var mentions = new List<AiEntityMention>();
-        var decisions = new List<AiVerifyDecision>(batch.Count);
-        var outcomes = new List<string>(batch.Count);
-        var failed = 0;
-        var rejected = 0;
+        var decisions = new List<AiVerifyDecision>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        string? warning = null;
 
-        if (candidates.Count > absoluteMax)
-        {
-            _logger.LogWarning(
-                "Look it up AI verify truncating {Total} candidates to safety cap {Max}",
-                candidates.Count,
-                absoluteMax);
-        }
-
-        var itemLabel = string.IsNullOrWhiteSpace(media.ShowName)
-            ? (media.EpisodeName ?? "item")
-            : media.ShowName;
-
-        _logger.LogInformation(
-            "Look it up AI per-name verify for {Item}: {Count} candidates via {BaseUrl} model={Model}",
-            itemLabel,
-            batch.Count,
-            baseUrl,
-            model);
-
-        for (var i = 0; i < batch.Count; i++)
+        for (var offset = 0; offset < work.Count; offset += batchSize)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (i > 0)
+            var batch = work.Skip(offset).Take(batchSize).ToList();
+            var part = await VerifyNameBatchAsync(media, batch, seen, config, cancellationToken)
+                .ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(part.Warning) && warning is null)
             {
-                await Task.Delay(350, cancellationToken).ConfigureAwait(false);
+                warning = part.Warning;
             }
 
-            var candidate = batch[i];
-            _logger.LogInformation(
-                "Look it up AI verify {Index}/{Total}: {Term} @ {StartMs}ms cue={Cue}",
-                i + 1,
-                batch.Count,
-                candidate.Term,
-                candidate.StartMs,
-                Truncate(candidate.CueText, 120));
-
-            AiEntityMention? mention = null;
-            AiVerifyDecision? decision = null;
-            string? error = null;
-            try
+            foreach (var mention in part.Mentions)
             {
-                var result = await VerifyOneAsync(
-                        media,
-                        candidate,
-                        config,
-                        model,
-                        baseUrl,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-                mention = result.Mention;
-                decision = result.Decision;
-                error = result.Error;
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                error = $"exception: {ex.Message}";
-                decision = BuildDecision(candidate, kept: false, reason: error, category: "error");
-                _logger.LogWarning(
-                    ex,
-                    "Look it up AI verify threw for {Term}; continuing with remaining names",
-                    candidate.Term);
+                if (seen.Add(mention.Term))
+                {
+                    mentions.Add(mention);
+                }
             }
 
-            if (decision is not null)
-            {
-                decisions.Add(decision);
-            }
-
-            if (!string.IsNullOrWhiteSpace(error))
-            {
-                failed++;
-                outcomes.Add($"{candidate.Term}: FAIL ({error})");
-                _logger.LogWarning(
-                    "Look it up AI verify failed for {Term}; continuing ({Done}/{Total})",
-                    candidate.Term,
-                    i + 1,
-                    batch.Count);
-                continue;
-            }
-
-            if (mention is null)
-            {
-                rejected++;
-                outcomes.Add($"{candidate.Term}: reject ({decision?.Reason ?? "keep=false"})");
-                continue;
-            }
-
-            mentions.Add(mention);
-            outcomes.Add($"{candidate.Term}: keep ({decision?.Reason ?? "ok"})");
+            decisions.AddRange(part.Decisions);
         }
 
-        var summary =
-            $"AI verify {mentions.Count} kept / {rejected} rejected / {failed} failed of {batch.Count}. " +
-            string.Join("; ", outcomes);
-
-        _logger.LogInformation("Look it up AI batch result for {Item}: {Summary}", itemLabel, summary);
-
-        if (mentions.Count == 0)
-        {
-            _logger.LogWarning("Look it up AI produced 0 mentions for {Item}: {Summary}", itemLabel, summary);
-            return new AiExtractionResult { Decisions = decisions, Warning = summary };
-        }
+        _logger.LogInformation(
+            "Look it up verified {Kept} popups from {Names} local names in {Batches} batched calls",
+            mentions.Count,
+            work.Count,
+            (work.Count + batchSize - 1) / batchSize);
 
         return new AiExtractionResult
         {
-            Mentions = mentions.OrderBy(m => m.StartMs).ToList(),
+            Mentions = mentions,
             Decisions = decisions,
-            Warning = failed > 0 ? summary : null
+            Warning = warning
         };
+    }
+
+    private async Task<AiExtractionResult> VerifyNameBatchAsync(
+        AiMediaContext media,
+        IReadOnlyList<NameCandidate> batch,
+        IReadOnlySet<string> alreadyKnown,
+        PluginConfiguration config,
+        CancellationToken cancellationToken)
+    {
+        var show = string.IsNullOrWhiteSpace(media.ShowName) ? "unknown show" : media.ShowName.Trim();
+        var cast = media.KnownCastNames.Count == 0
+            ? "(none)"
+            : string.Join(", ", media.KnownCastNames.Take(40));
+        var known = alreadyKnown.Count == 0
+            ? "(none)"
+            : string.Join(", ", alreadyKnown.Take(40));
+        var lines = new StringBuilder();
+        for (var i = 0; i < batch.Count; i++)
+        {
+            var c = batch[i];
+            lines.Append('[').Append(i + 1).Append("] term=").Append(c.Term.Trim())
+                .Append(" | cue: ").Append(Truncate(c.CueText, 160))
+                .Append('\n');
+        }
+
+        var user =
+            "These phrases were already extracted from TV/movie subtitles. Decide keep or drop for each numbered term. Do not add extra terms from the cue.\n" +
+            "Viewer: not a US native, but has some US cultural knowledge (movies, news, big brands). They still need famous US people and institutions explained (Roosevelt, Dan Quayle, the IRS, the Oscars).\n" +
+            "KEEP: US celebrities, politicians, brands, cars, sports teams, TV/film titles, distinctive regional places that are not states or mega-cities.\n" +
+            "DROP: US states (Missouri, Ohio), New York/LA/Chicago/God/Monday, money and numbers ($25, 25 dollars), dictionary words, greetings, filler, in-show people listed below, the current show.\n" +
+            "If the cue is a well-known person, use the full canonical name (Theodore Roosevelt, not Roosevelt) and write one sentence for that viewer.\n" +
+            "If unsure, drop. Never invent a person or brand that is not this candidate.\n" +
+            "JSON only: {\"decisions\":[{\"index\":1,\"keep\":true,\"term\":\"Theodore Roosevelt\",\"kind\":\"person\",\"summary\":\"one sentence\"}]}\n" +
+            "keep=false needs no summary. Empty decisions if nothing.\n" +
+            "Show: " + show + "\n" +
+            "Skip in-show people: " + cast + "\n" +
+            "Already explained: " + known + "\n" +
+            "Candidates:\n" + lines;
+
+        var json = await CompleteJsonAsync(config, user, maxTokens: 900, cancellationToken).ConfigureAwait(false);
+        if (json?.Error is not null)
+        {
+            return new AiExtractionResult { Warning = json.Error };
+        }
+
+        if (json is null)
+        {
+            return new AiExtractionResult();
+        }
+
+        if (!json.Root.TryGetProperty("decisions", out var items) || items.ValueKind != JsonValueKind.Array)
+        {
+            if (!json.Root.TryGetProperty("mentions", out items) || items.ValueKind != JsonValueKind.Array)
+            {
+                return new AiExtractionResult();
+            }
+        }
+
+        var mentions = new List<AiEntityMention>();
+        var decisions = new List<AiVerifyDecision>();
+        var seen = new HashSet<string>(alreadyKnown, StringComparer.OrdinalIgnoreCase);
+        foreach (var item in items.EnumerateArray())
+        {
+            var keep = true;
+            if (item.TryGetProperty("keep", out var keepEl))
+            {
+                keep = keepEl.ValueKind == JsonValueKind.True;
+            }
+
+            var cueIndex = 0;
+            if (item.TryGetProperty("index", out var idxEl) && idxEl.TryGetInt32(out var parsedIndex))
+            {
+                cueIndex = parsedIndex - 1;
+            }
+            else if (item.TryGetProperty("cue", out var cueEl) && cueEl.TryGetInt32(out var parsedCue))
+            {
+                cueIndex = parsedCue - 1;
+            }
+
+            var candidate = cueIndex >= 0 && cueIndex < batch.Count
+                ? batch[cueIndex]
+                : batch[0];
+            var term = item.TryGetProperty("term", out var termEl) ? termEl.GetString() : null;
+            var cleanedTerm = string.IsNullOrWhiteSpace(term) ? candidate.Term.Trim() : term.Trim();
+            if (!keep)
+            {
+                decisions.Add(new AiVerifyDecision
+                {
+                    Term = cleanedTerm,
+                    StartMs = candidate.StartMs,
+                    CueText = candidate.CueText,
+                    Kept = false,
+                    Reason = item.TryGetProperty("reason", out var reasonEl)
+                        ? reasonEl.GetString() ?? "keep=false"
+                        : "keep=false",
+                    Category = "too-common",
+                    AtUtc = DateTime.UtcNow
+                });
+                continue;
+            }
+
+            var summary = item.TryGetProperty("summary", out var sumEl) ? sumEl.GetString() : null;
+            if (string.IsNullOrWhiteSpace(summary) || !seen.Add(cleanedTerm))
+            {
+                continue;
+            }
+
+            if (CulturalSkipList.ShouldNeverPopup(cleanedTerm) || IsTooBasicToKeep(cleanedTerm))
+            {
+                decisions.Add(new AiVerifyDecision
+                {
+                    Term = cleanedTerm,
+                    StartMs = candidate.StartMs,
+                    CueText = candidate.CueText,
+                    Kept = false,
+                    Reason = "Local filter: too obvious, money, or filler",
+                    Category = "too-common",
+                    AtUtc = DateTime.UtcNow
+                });
+                continue;
+            }
+
+            if (TryGetLocalKeepReject(cleanedTerm, candidate.CueText, media.KnownCastNames, out var localReason, out var localCategory))
+            {
+                decisions.Add(new AiVerifyDecision
+                {
+                    Term = cleanedTerm,
+                    StartMs = candidate.StartMs,
+                    CueText = candidate.CueText,
+                    Kept = false,
+                    Reason = localReason,
+                    Category = localCategory,
+                    AtUtc = DateTime.UtcNow
+                });
+                continue;
+            }
+
+            var kind = item.TryGetProperty("kind", out var kindEl) ? kindEl.GetString() : "other";
+            var cleanedSummary = ClampSummary(SanitizeSummary(summary.Trim(), cleanedTerm), 220);
+            mentions.Add(new AiEntityMention
+            {
+                Term = cleanedTerm,
+                Kind = string.IsNullOrWhiteSpace(kind) ? "other" : kind.Trim().ToLowerInvariant(),
+                Summary = cleanedSummary,
+                StartMs = candidate.StartMs,
+                EndMs = candidate.EndMs
+            });
+            decisions.Add(new AiVerifyDecision
+            {
+                Term = cleanedTerm,
+                StartMs = candidate.StartMs,
+                CueText = candidate.CueText,
+                Kept = true,
+                Reason = "name-batch",
+                Category = string.IsNullOrWhiteSpace(kind) ? "other" : kind.Trim().ToLowerInvariant(),
+                AtUtc = DateTime.UtcNow
+            });
+        }
+
+        return new AiExtractionResult { Mentions = mentions, Decisions = decisions };
     }
 
     /// <inheritdoc />
@@ -1824,6 +1899,11 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
         }
 
         var t = term.Trim();
+        if (CulturalSkipList.ShouldNeverPopup(t))
+        {
+            return true;
+        }
+
         // Mirror the local finder junk list for terms AI might still keep.
         var basic = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {

@@ -57,6 +57,7 @@ static async Task<int> MainAsync(string[] args)
         new AiCallRateLimiter());
     var engine = new IncrementalPrepareEngine(
         new SubtitleParser(),
+        new NameCandidateFinder(),
         aiExtractor,
         new ReferenceGate(),
         loggerFactory.CreateLogger<IncrementalPrepareEngine>());

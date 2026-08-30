@@ -14,8 +14,9 @@
                     </div>
                     <p>
                         Builds a <code>*.lookitup.json</code> cache incrementally while you watch.
-                        Subtitle lines are sent in batches to Groq (or another chat provider).
-                        The model picks names and writes the popup definition. Popups can be turned off while cache still builds.
+                        Capitalized names are found in subtitles first. Only those names (not every line) go to Groq in batches.
+                        The model explains US culture a non-native with some knowledge would still miss (Roosevelt), and must skip states, money, and filler.
+                        Popups can be turned off while cache still builds.
                     </p>
 
                     <div class="checkboxContainer checkboxContainer-withDescription">
@@ -64,9 +65,9 @@
                         <div class="fieldDescription">How far ahead to prepare once caught up (default 300000 = 5 minutes).</div>
                     </div>
                     <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="txtIncrementalAiPerWindow">Subtitle lines per API call</label>
+                        <label class="inputLabel inputLabelUnfocused" for="txtIncrementalAiPerWindow">Names per API call</label>
                         <input id="txtIncrementalAiPerWindow" type="number" is="emby-input" min="8" max="40" />
-                        <div class="fieldDescription">How many cues go in each Groq/OpenAI request (default 20). Lower if replies get truncated; higher uses fewer API calls.</div>
+                        <div class="fieldDescription">How many local name candidates go in each Groq/OpenAI request (default 20).</div>
                     </div>
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="txtMaxAnnotations">Max annotations per item</label>
@@ -105,7 +106,7 @@
                         <h2 class="sectionTitle">Chat model (required for popups)</h2>
                     </div>
                     <p>
-                        Look it up batches subtitle lines into a few API calls instead of one request per name.
+                        Look it up finds capitalized names locally, then batches those names to Groq (not every subtitle line).
                         On a shared Jellyfin host, use Groq and paste an API key.
                         Ollama only works if you can install it on the same machine as Jellyfin.
                     </p>
@@ -196,7 +197,7 @@
                     <p>Paste into JavaScript Injector (not an HTML <code>&lt;script&gt;</code> tag):</p>
                     <pre style="white-space:pre-wrap;word-break:break-all;background:rgba(0,0,0,.08);padding:12px;border-radius:8px;">(function () {
   var s = document.createElement('script');
-  s.src = '/LookItUp/script.js?v=1.2.59';
+  s.src = '/LookItUp/script.js?v=1.2.60';
   s.async = true;
   document.head.appendChild(s);
 })();</pre>

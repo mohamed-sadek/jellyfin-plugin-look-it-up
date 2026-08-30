@@ -114,7 +114,7 @@ public partial class LookItUpService : ILookItUpService
     /// <summary>
     /// Bump when scan logic changes so stale caches are ignored.
     /// </summary>
-    public const int CurrentCacheVersion = 20;
+    public const int CurrentCacheVersion = 21;
 
     private static readonly HashSet<string> TextSubtitleCodecs = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -743,12 +743,14 @@ public partial class LookItUpService : ILookItUpService
         }
 
         var cues = _subtitleParser.Parse(subtitle.Content, subtitle.Label);
-        var max = Math.Max(1, config?.MaxAnnotationsPerItem ?? 40);
         var minLen = Math.Max(2, config?.MinEntityLength ?? 3);
         var excludedCast = BuildCastExcludeNames(item, minLen);
         AddSubtitleSpeakerNames(excludedCast, cues, minLen);
-        var matches = _scanner.Find(cues, minLen, Math.Max(max, 40));
-        var candidates = matches.Select(ToNameCandidate).ToList();
+        var found = _nameCandidateFinder.Find(cues, item.Name, excludedCast, minLen, 400);
+        var media = BuildAiMediaContext(item, excludedCast);
+        var candidates = found
+            .Where(c => _gate.TryRejectLocal(c, media.ShowName, excludedCast) is null)
+            .ToList();
 
         _logger.LogInformation(
             "Look it up name candidates for {Item}: {Count} from {Subtitle} ({Cues} cues), excluded cast tokens={Excluded}",
@@ -1432,7 +1434,7 @@ public partial class LookItUpService : ILookItUpService
     {
         if (!_ai.IsConfigured(config))
         {
-            return ([], [], "Set Provider to Groq and paste an API key (batched subtitle calls). Ollama only works on a machine you control.");
+            return ([], [], "Set Provider to Groq and paste an API key (batched name calls). Ollama only works on a machine you control.");
         }
 
         var minLen = Math.Max(2, config.MinEntityLength);
@@ -1445,10 +1447,30 @@ public partial class LookItUpService : ILookItUpService
         var known = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         string? warning = null;
 
+        var found = _nameCandidateFinder.Find(
+            cues,
+            item.Name,
+            excludedCast,
+            minLen,
+            400);
+        var pending = new List<NameCandidate>();
+        foreach (var candidate in found)
+        {
+            var local = _gate.TryRejectLocal(candidate, media.ShowName, excludedCast);
+            if (local is not null)
+            {
+                decisions.Add(PhraseReferencePipeline.ToStoreDecision(local));
+                continue;
+            }
+
+            pending.Add(candidate);
+        }
+
         var extracted = await _ai
-            .ExtractCuesAsync(media, cues, known, config, cancellationToken)
+            .ResolveNamesAsync(media, pending, config, cancellationToken)
             .ConfigureAwait(false);
         warning = extracted.Warning;
+        decisions.AddRange(extracted.Decisions);
 
         foreach (var mention in extracted.Mentions)
         {
@@ -1483,16 +1505,6 @@ public partial class LookItUpService : ILookItUpService
                 Kind = string.IsNullOrWhiteSpace(mention.Kind) ? "other" : mention.Kind,
                 StartMs = mention.StartMs,
                 EndMs = Math.Max(mention.EndMs, mention.StartMs + popupMs)
-            });
-            decisions.Add(new AiVerifyDecision
-            {
-                Term = term,
-                StartMs = mention.StartMs,
-                CueText = candidate.CueText,
-                Kept = true,
-                Reason = "model-batch",
-                Category = mention.Kind,
-                AtUtc = DateTime.UtcNow
             });
         }
 

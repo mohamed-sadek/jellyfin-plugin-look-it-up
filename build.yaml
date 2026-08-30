@@ -1,17 +1,19 @@
 ---
 name: "Look it up"
 guid: "a8ab0fed-cac9-406d-b98b-58161bf970b8"
-version: "1.2.59.0"
+version: "1.2.60.0"
 targetAbi: "10.11.0.0"
 framework: "net9.0"
 overview: "Timed subtitle popups from a chat model (Groq/OpenAI/Ollama)"
 description: >
-  Batches subtitle lines to Groq (or OpenAI/Ollama). The model picks cultural references
-  a non-US viewer would miss and writes the popup text. Popup appearance survives plugin updates.
+  Finds capitalized names in subtitles, then batches those names to Groq (or OpenAI/Ollama).
+  The model explains US culture a non-native with some knowledge would still miss (Roosevelt),
+  and skips states, money, and filler. Popup appearance survives plugin updates.
 category: "General"
 owner: "lookitup"
 artifacts:
   - "Jellyfin.Plugin.LookItUp.dll"
 changelog: >
-  Keep popup appearance across plugin updates. Batch subtitle lines into Groq/OpenAI calls
-  instead of one request per name (fewer rate limits). Re-prepare items (cache v20).
+  Find names locally before Groq. Skip US states, money, and filler in code.
+  Prompt for a non-native with some US knowledge (explain Roosevelt, not Missouri).
+  Re-prepare items (cache v21).

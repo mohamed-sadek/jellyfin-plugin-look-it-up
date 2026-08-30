@@ -506,7 +506,7 @@ public partial class NameCandidateFinder : INameCandidateFinder
             return;
         }
 
-        if (IsSubtitleNoise(term))
+        if (IsSubtitleNoise(term) || CulturalSkipList.ShouldNeverPopup(term))
         {
             return;
         }

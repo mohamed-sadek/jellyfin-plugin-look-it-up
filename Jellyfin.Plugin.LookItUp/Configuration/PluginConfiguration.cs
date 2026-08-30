@@ -116,7 +116,7 @@ public class PluginConfiguration : BasePluginConfiguration
     /// </summary>
     public int IncrementalPrepareBootstrapWindowMs { get; set; }
 
-    /// <summary>Gets or sets subtitle cues sent in each model HTTP call (clamped 8–40).</summary>
+    /// <summary>Gets or sets name candidates sent in each model HTTP call (clamped 8–40).</summary>
     public int IncrementalAiNamesPerWindow { get; set; }
 
     /// <summary>Gets or sets whether to persist AI keep/reject reasons in cache JSON for debugging.</summary>
