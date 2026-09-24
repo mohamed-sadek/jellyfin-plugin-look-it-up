@@ -402,15 +402,18 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             decisions.AddRange(part.Decisions);
         }
 
+        var collapsed = BatchKeepPolicy.Collapse(
+            BatchKeepPolicy.DropContradictedKeeps(mentions, decisions),
+            decisions);
         _logger.LogInformation(
             "Look it up verified {Kept} popups from {Names} local names in {Batches} batched calls",
-            mentions.Count,
+            collapsed.Count,
             work.Count,
             (work.Count + batchSize - 1) / batchSize);
 
         return new AiExtractionResult
         {
-            Mentions = mentions,
+            Mentions = collapsed,
             Decisions = decisions,
             Warning = warning
         };
@@ -553,6 +556,23 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
 
             var kind = item.TryGetProperty("kind", out var kindEl) ? kindEl.GetString() : "other";
             var cleanedSummary = ClampSummary(SanitizeSummary(summary.Trim(), cleanedTerm), 220);
+            if (IsFictionalOrInShowKeep(null, null, kind, cleanedSummary, media.ShowName)
+                || BatchKeepPolicy.IsVacuousSummary(cleanedTerm, cleanedSummary))
+            {
+                decisions.Add(new AiVerifyDecision
+                {
+                    Term = cleanedTerm,
+                    StartMs = candidate.StartMs,
+                    CueText = candidate.CueText,
+                    Kept = false,
+                    Reason = "Local filter: in-show name or summary with no external fact",
+                    Category = "in-show",
+                    AtUtc = DateTime.UtcNow
+                });
+                continue;
+            }
+
+            cleanedTerm = BatchKeepPolicy.RestorePossessive(cleanedTerm, candidate.CueText);
             mentions.Add(new AiEntityMention
             {
                 Term = cleanedTerm,
@@ -573,7 +593,10 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             });
         }
 
-        return new AiExtractionResult { Mentions = mentions, Decisions = decisions };
+        var collapsed = BatchKeepPolicy.Collapse(
+            BatchKeepPolicy.DropContradictedKeeps(mentions, decisions),
+            decisions);
+        return new AiExtractionResult { Mentions = collapsed, Decisions = decisions };
     }
 
     /// <inheritdoc />

@@ -1268,7 +1268,7 @@ public partial class NameCandidateFinder : INameCandidateFinder
     [GeneratedRegex(@"\[([^\]]{2,60})\]", RegexOptions.CultureInvariant)]
     private static partial Regex SpeakerBracketRegex();
 
-    [GeneratedRegex(@"\b\d{1,4}(?:st|nd|rd|th)\b|\b[\p{L}][\p{L}\p{Mn}']*\b|[,;:!?.…\-—–\[\]\(\)]", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"\b\d{1,4}(?:st|nd|rd|th)\b|\b[\p{L}][\p{L}\p{Mn}']*(?:-[\p{L}][\p{L}\p{Mn}']+)*\b|[,;:!?.…\-—–\[\]\(\)]", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase)]
     private static partial Regex TokenRegex();
 
     [GeneratedRegex(@"[\u201C""]([^""\u201C\u201D]{2,80})[\u201D""]", RegexOptions.CultureInvariant)]

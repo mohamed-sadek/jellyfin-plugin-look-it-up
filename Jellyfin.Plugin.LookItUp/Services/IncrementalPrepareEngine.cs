@@ -15,6 +15,7 @@ public sealed class IncrementalPrepareEngine
     private readonly INameCandidateFinder _finder;
     private readonly IAiEntityExtractor _ai;
     private readonly IReferenceGate _gate;
+    private readonly IWikipediaLookupService _wikipedia;
     private readonly ILogger<IncrementalPrepareEngine> _logger;
 
     /// <summary>
@@ -25,12 +26,14 @@ public sealed class IncrementalPrepareEngine
         INameCandidateFinder finder,
         IAiEntityExtractor ai,
         IReferenceGate gate,
+        IWikipediaLookupService wikipedia,
         ILogger<IncrementalPrepareEngine> logger)
     {
         _subtitleParser = subtitleParser;
         _finder = finder;
         _ai = ai;
         _gate = gate;
+        _wikipedia = wikipedia;
         _logger = logger;
     }
 
@@ -120,7 +123,19 @@ public sealed class IncrementalPrepareEngine
         var extracted = await _ai
             .ResolveNamesAsync(mediaContext, windowNames, config, cancellationToken)
             .ConfigureAwait(false);
-        AiDecisionStore.Merge(cache, extracted.Decisions, enabled: true);
+        var grounded = await BatchKeepPolicy.GroundAsync(
+                extracted.Mentions,
+                extracted.Decisions,
+                (title, ct) => _wikipedia.LookupAsync(title, "en", ct),
+                cancellationToken)
+            .ConfigureAwait(false);
+        AiDecisionStore.Merge(cache, extracted.Decisions.Concat(grounded.Rejects), enabled: true);
+        extracted = new AiExtractionResult
+        {
+            Mentions = grounded.Mentions,
+            Decisions = extracted.Decisions,
+            Warning = extracted.Warning
+        };
         var popupMs = Math.Max(config.PopupDurationMs, 8000);
         var verified = new List<string>();
 
@@ -152,6 +167,8 @@ public sealed class IncrementalPrepareEngine
                         Summary = summary.StartsWith(term, StringComparison.OrdinalIgnoreCase)
                             ? summary
                             : $"{term}: {summary}",
+                        Url = mention.Url,
+                        ImageUrl = mention.ImageUrl,
                         Kind = string.IsNullOrWhiteSpace(mention.Kind) ? "other" : mention.Kind,
                         StartMs = mention.StartMs,
                         EndMs = Math.Max(mention.EndMs, mention.StartMs + popupMs)
