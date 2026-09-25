@@ -60,7 +60,6 @@ static async Task<int> MainAsync(string[] args)
         new NameCandidateFinder(),
         aiExtractor,
         new ReferenceGate(),
-        new WikipediaLookupService(loggerFactory.CreateLogger<WikipediaLookupService>()),
         loggerFactory.CreateLogger<IncrementalPrepareEngine>());
 
     var request = new IncrementalPrepareRequest

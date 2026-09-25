@@ -34,15 +34,6 @@ public static class AiDecisionStore
             {
                 cache.AiDecisions.Add(decision);
             }
-
-            if (!decision.Kept
-                && !IsRetryableFailure(decision)
-                && !string.IsNullOrWhiteSpace(decision.Term)
-                && !string.Equals(decision.Term, "(window)", StringComparison.OrdinalIgnoreCase))
-            {
-                cache.Annotations?.RemoveAll(a =>
-                    a.Term.Equals(decision.Term, StringComparison.OrdinalIgnoreCase));
-            }
         }
 
         if (cache.AiDecisions.Count > MaxDecisions)
@@ -61,11 +52,6 @@ public static class AiDecisionStore
     public static bool IsRetryableFailure(AiVerifyDecision? decision)
     {
         if (decision is null || decision.Kept || string.IsNullOrWhiteSpace(decision.Term))
-        {
-            return false;
-        }
-
-        if (string.Equals(decision.Term, "(window)", StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }

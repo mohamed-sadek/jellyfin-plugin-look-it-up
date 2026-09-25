@@ -25,14 +25,6 @@ public class AiEntityMention
     [JsonPropertyName("summary")]
     public string Summary { get; set; } = string.Empty;
 
-    /// <summary>Gets or sets a Wikipedia page URL when the keep was grounded.</summary>
-    [JsonPropertyName("url")]
-    public string? Url { get; set; }
-
-    /// <summary>Gets or sets a Wikipedia image URL when the keep was grounded.</summary>
-    [JsonPropertyName("imageUrl")]
-    public string? ImageUrl { get; set; }
-
     /// <summary>
     /// Gets or sets when the mention occurs (ms).
     /// </summary>

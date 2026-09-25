@@ -280,8 +280,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             "You explain culture a non-US viewer would not know, from TV/movie subtitle lines.\n" +
             "For each cue, list real-world references that need a popup. You write the definition yourself.\n" +
             "KEEP: US brands, cars, sports teams, politicians, celebrities, TV/film titles, songs, regional US places that are not NYC/LA/Chicago.\n" +
-            "SKIP: New York, God, Monday, greetings, filler (wait, sure, boys, coffee), the current show title, " +
-            "and every fictional character from this show, including ranks and nicknames (Major Colvin is still Colvin) even if they are missing from the list below.\n" +
+            "SKIP: New York, God, Monday, greetings, filler (wait, sure, boys, coffee), in-show people listed below, the current show title.\n" +
             "Use the full canonical name when you know who they mean (James T. Kirk, not Kirk).\n" +
             "If unsure, omit. Never invent a person or brand that is not implied by the cue.\n" +
             "JSON only: {\"mentions\":[{\"cue\":1,\"term\":\"Dan Quayle\",\"kind\":\"person\",\"summary\":\"one sentence for a non-US viewer\"}]}\n" +
@@ -403,18 +402,15 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             decisions.AddRange(part.Decisions);
         }
 
-        var collapsed = BatchKeepPolicy.Collapse(
-            BatchKeepPolicy.DropContradictedKeeps(mentions, decisions),
-            decisions);
         _logger.LogInformation(
             "Look it up verified {Kept} popups from {Names} local names in {Batches} batched calls",
-            collapsed.Count,
+            mentions.Count,
             work.Count,
             (work.Count + batchSize - 1) / batchSize);
 
         return new AiExtractionResult
         {
-            Mentions = collapsed,
+            Mentions = mentions,
             Decisions = decisions,
             Warning = warning
         };
@@ -447,13 +443,9 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             "These phrases were already extracted from TV/movie subtitles. Decide keep or drop for each numbered term. Do not add extra terms from the cue.\n" +
             "Viewer: not a US native, but has some US cultural knowledge (movies, news, big brands). They still need famous US people and institutions explained (Roosevelt, Dan Quayle, the IRS, the Oscars).\n" +
             "KEEP: US celebrities, politicians, brands, cars, sports teams, TV/film titles, distinctive regional places that are not states or mega-cities.\n" +
-            "DROP: US states (Missouri, Ohio), New York/LA/Chicago/God/Monday, money and numbers ($25, 25 dollars), dictionary words, greetings, filler, the current show.\n" +
-            "DROP every fictional character from this show: cast, guests, relatives, cops, dealers, and politicians who exist only on the show. " +
-            "A rank, title, or nickname still counts (Major Colvin is Colvin; Bunny Colvin is Colvin). " +
-            "Drop them even when they are missing from the list below. " +
-            "Do not write a real-world biography for someone who is only a character.\n" +
-            "If the cue is a well-known real person, use the full canonical name (Theodore Roosevelt, not Roosevelt) and write one sentence for that viewer.\n" +
-            "If unsure whether they are a real public figure, drop. Never invent a person or brand that is not this candidate.\n" +
+            "DROP: US states (Missouri, Ohio), New York/LA/Chicago/God/Monday, money and numbers ($25, 25 dollars), dictionary words, greetings, filler, in-show people listed below, the current show.\n" +
+            "If the cue is a well-known person, use the full canonical name (Theodore Roosevelt, not Roosevelt) and write one sentence for that viewer.\n" +
+            "If unsure, drop. Never invent a person or brand that is not this candidate.\n" +
             "JSON only: {\"decisions\":[{\"index\":1,\"keep\":true,\"term\":\"Theodore Roosevelt\",\"kind\":\"person\",\"summary\":\"one sentence\"}]}\n" +
             "keep=false needs no summary. Empty decisions if nothing.\n" +
             "Show: " + show + "\n" +
@@ -561,23 +553,6 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
 
             var kind = item.TryGetProperty("kind", out var kindEl) ? kindEl.GetString() : "other";
             var cleanedSummary = ClampSummary(SanitizeSummary(summary.Trim(), cleanedTerm), 220);
-            if (IsFictionalOrInShowKeep(null, null, kind, cleanedSummary, media.ShowName)
-                || BatchKeepPolicy.IsVacuousSummary(cleanedTerm, cleanedSummary))
-            {
-                decisions.Add(new AiVerifyDecision
-                {
-                    Term = cleanedTerm,
-                    StartMs = candidate.StartMs,
-                    CueText = candidate.CueText,
-                    Kept = false,
-                    Reason = "Local filter: in-show name or summary with no external fact",
-                    Category = "in-show",
-                    AtUtc = DateTime.UtcNow
-                });
-                continue;
-            }
-
-            cleanedTerm = BatchKeepPolicy.RestorePossessive(cleanedTerm, candidate.CueText);
             mentions.Add(new AiEntityMention
             {
                 Term = cleanedTerm,
@@ -598,10 +573,7 @@ public class OpenAiCompatibleEntityExtractor : IAiEntityExtractor
             });
         }
 
-        var collapsed = BatchKeepPolicy.Collapse(
-            BatchKeepPolicy.DropContradictedKeeps(mentions, decisions),
-            decisions);
-        return new AiExtractionResult { Mentions = collapsed, Decisions = decisions };
+        return new AiExtractionResult { Mentions = mentions, Decisions = decisions };
     }
 
     /// <inheritdoc />

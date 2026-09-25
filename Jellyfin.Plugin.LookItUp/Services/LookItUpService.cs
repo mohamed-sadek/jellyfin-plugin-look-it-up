@@ -114,7 +114,7 @@ public partial class LookItUpService : ILookItUpService
     /// <summary>
     /// Bump when scan logic changes so stale caches are ignored.
     /// </summary>
-    public const int CurrentCacheVersion = 23;
+    public const int CurrentCacheVersion = 24;
 
     private static readonly HashSet<string> TextSubtitleCodecs = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -1469,21 +1469,8 @@ public partial class LookItUpService : ILookItUpService
         var extracted = await _ai
             .ResolveNamesAsync(media, pending, config, cancellationToken)
             .ConfigureAwait(false);
-        var grounded = await BatchKeepPolicy.GroundAsync(
-                extracted.Mentions,
-                extracted.Decisions,
-                (title, ct) => _wikipedia.LookupAsync(title, "en", ct),
-                cancellationToken)
-            .ConfigureAwait(false);
         warning = extracted.Warning;
         decisions.AddRange(extracted.Decisions);
-        decisions.AddRange(grounded.Rejects);
-        extracted = new AiExtractionResult
-        {
-            Mentions = grounded.Mentions,
-            Decisions = extracted.Decisions,
-            Warning = extracted.Warning
-        };
 
         foreach (var mention in extracted.Mentions)
         {
@@ -1515,8 +1502,6 @@ public partial class LookItUpService : ILookItUpService
                 Summary = summary.StartsWith(term, StringComparison.OrdinalIgnoreCase)
                     ? summary
                     : $"{term}: {summary}",
-                Url = mention.Url,
-                ImageUrl = mention.ImageUrl,
                 Kind = string.IsNullOrWhiteSpace(mention.Kind) ? "other" : mention.Kind,
                 StartMs = mention.StartMs,
                 EndMs = Math.Max(mention.EndMs, mention.StartMs + popupMs)
